@@ -1,9 +1,22 @@
-<!-- BEGIN:nextjs-agent-rules -->
+# Agent instructions
 
-# This is NOT the Next.js you know
+**See [`CLAUDE.md`](./CLAUDE.md)** — it is the single source of truth for this
+project's scope, architecture, conventions and rules. Read it before making any
+change.
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+For a factual history of what has been built and changed, see
+[`CHANGELOG.md`](./CHANGELOG.md).
 
-This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+---
 
-<!-- END:nextjs-agent-rules -->
+### Note on a previous version of this file
+
+This file originally contained an auto-generated `nextjs-agent-rules` block from
+the `create-next-app` scaffold, which shipped Next.js 16. It instructed agents to
+read `node_modules/next/dist/docs/` before writing code.
+
+This project was subsequently pinned to **Next.js 15.5.23** to match its
+specified stack. Neither that docs directory nor the generator that re-adds the
+block (`next/dist/server/lib/generate-agent-files.js`) exists in Next 15, so the
+block was stale and misleading and has been removed. It will not be regenerated
+while the project stays on Next 15.

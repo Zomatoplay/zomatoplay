@@ -8,6 +8,28 @@ It is not a changelog — factual history of changes belongs in `CHANGELOG.md`.
 
 ---
 
+## 0. Two applications, one codebase
+
+This repository contains **two separate frontends** that share a design system,
+a currency layer and a set of domain types:
+
+| | User application | Master CRM |
+|---|---|---|
+| Routes | `/`, `/plans`, `/wallet`, `/referral`, `/settings` | `/admin/*` |
+| Source | `src/app/(app)/`, `src/components/{home,plans,wallet,referral,settings}/` | `src/app/admin/`, `src/components/admin/` |
+| Shell | `AppShell` — bottom nav, mobile-first | `AdminShell` — sidebar, desktop-first |
+| State | `src/lib/prototype-store.tsx` | `src/lib/admin-store.tsx` |
+| Data | `src/data/` | `src/data/admin/` |
+| Priority | **Mobile-first** (§7) | **Desktop-first**, usable on tablet/phone |
+
+They are deliberately isolated: neither imports the other's shell, navigation or
+store. What they *do* share is `components/ui`, `components/shared`,
+`lib/currency`, `lib/utils`, `utils/format` and `src/types`. Sections §1–§14
+below describe the user application unless stated otherwise; §15 covers the
+Master CRM.
+
+---
+
 ## 1. What this application is
 
 Nanotron is a **mobile-first crypto investment platform** delivered as a web
@@ -36,17 +58,19 @@ If a request seems to imply any of the above, stop and clarify.
 ## 2. Current project scope
 
 **Frontend only.** This build is a functional prototype with realistic mock
-data and local state.
+data and local state. This applies to the Master CRM as much as the user app.
 
 ### Intentionally NOT implemented
 
-- Real authentication / sessions
+- Real authentication / sessions (for users *or* administrators)
+- Authorization enforcement — the CRM's permission model is UI-only (§15.3)
 - Database or persistence of any kind
 - Backend API or server actions that mutate real data
 - Blockchain connectivity, wallet integration, real deposit verification
 - Real withdrawals or payment gateway
-- Real KYC provider integration
+- Real KYC provider integration, and no real document storage
 - Real investment engine or referral payout system
+- Real notification delivery
 
 The architecture exists so these can be integrated **without rebuilding the
 UI**. Search the codebase for `INTEGRATION POINT` — each marks a seam where a
@@ -135,17 +159,25 @@ To integrate a live rates API, change **only** `getUsdtInrRate()`.
 
 ```
 src/
-  app/                      App Router routes
-    page.tsx                Home
-    plans/                  Plans + [slug] detail
-    wallet/                 Wallet, deposit, withdraw, transactions
-    referral/               Referral
-    settings/               Settings + subpages (kyc, security, wallet,
+  app/
+    layout.tsx              Root document only — fonts, skip link, Toaster.
+                            Carries NO shell: each area brings its own.
+    not-found.tsx           Global 404 (wraps itself in AppShell)
+    globals.css
+    (app)/                  ── USER APPLICATION (route group, adds no URL segment)
+      layout.tsx            PrototypeStoreProvider + AppShell
+      page.tsx              Home
+      plans/                Plans + [slug] detail
+      wallet/               Wallet, deposit, withdraw, transactions
+      referral/             Referral
+      settings/             Settings + subpages (kyc, security, wallet,
                             investments, notifications, language, support,
                             legal/[document])
-    layout.tsx  error.tsx  not-found.tsx  globals.css
+      error.tsx
+    admin/                  ── MASTER CRM (see §15)
   components/
-    ui/                     shadcn/ui primitives (button, card, sheet, tabs, …)
+    ui/                     shadcn/ui primitives (button, card, sheet, tabs,
+                            dropdown-menu, …) — shared by both applications
     navigation/             AppShell, BottomNavigation, DesktopSidebar, TopBar
     shared/                 Cross-section components (CurrencyDisplay,
                             StatTile, InfoRow, SectionHeader, StatusBadge,
@@ -153,15 +185,23 @@ src/
                             QrCode, EarningsChart, PageHeader, notices)
     home/  plans/  wallet/  referral/  settings/
                             Section-specific components
-  constants/                app.ts (config, rates), navigation.ts (the 5 tabs)
+    admin/                  Master CRM components (see §15)
+  constants/                app.ts (config, rates), navigation.ts (the 5 tabs),
+                            admin.ts (CRM nav + permission catalogue)
   data/                     user, plans, investments, transactions, referrals,
                             notifications, support
+    admin/                  CRM mock data (see §15)
   hooks/                    use-copy-to-clipboard, use-mounted
   lib/                      utils (cn), currency, qr (server-only),
-                            prototype-store
-  types/                    Domain types — the contract for a future API
+                            prototype-store, admin-store, admin-permissions
+  types/                    index.ts (user domain), admin.ts (CRM domain)
   utils/                    Pure formatters with no app knowledge (dates, etc.)
 ```
+
+**Why the `(app)` route group exists.** A Next.js layout cannot be *removed* by
+a descendant, so as long as `AppShell` lived in the root layout, `/admin` would
+inherit the mobile bottom navigation. Moving the user routes into a route group
+gives each area its own layout without changing a single URL.
 
 **Placement rule:** if a component is used by two or more sections it belongs in
 `shared/`; otherwise it belongs in its section folder. `ui/` is reserved for
@@ -364,11 +404,199 @@ Ordered roughly by dependency:
 2. Read `CHANGELOG.md` for what has actually happened.
 3. Inspect before editing. Match the surrounding style.
 4. Respect the server/client split in §4.1 and the currency rule in §4.4.
-5. Mobile-first, always — verify at 360px.
+5. Mobile-first for the user app, always — verify at 360px. The Master CRM is
+   desktop-first but must still work at 360px.
 6. Never add guaranteed-return language; never remove risk or prototype
-   notices.
+   notices. This applies to the CRM too — an operator reads the same figures.
 7. Do not introduce dependencies casually.
 8. Do not turn this into an exchange or a desktop SaaS dashboard.
-9. Run the checks in §12 and verify in a browser before reporting completion.
-10. Update `CHANGELOG.md` with what changed. Keep this file as durable
+9. Keep the two applications isolated (§0, §15.1).
+10. Run the checks in §12 and verify in a browser before reporting completion.
+11. Update `CHANGELOG.md` with what changed. Keep this file as durable
     knowledge only.
+
+---
+
+## 15. The Master CRM (`/admin`)
+
+The administrative control panel for the platform: users, KYC, deposits,
+withdrawals, investments, plans, referrals, agents, notifications, audit logs
+and settings.
+
+It is an **operations tool**, not a second consumer product. Dense tables,
+sidebar navigation, one filter row per screen, confirmation before anything
+consequential. Same visual language as the user app — light neutral surfaces,
+charcoal type, restrained muted teal accent, `rounded-2xl` cards — but laid out
+for a desk.
+
+**It is not, and must never become, an exchange back office.** The same
+prohibition in §1 applies: no trading, order books, pairs, leverage or
+candlestick charts.
+
+### 15.1 Isolation rules
+
+- Nothing under `src/app/admin/` or `src/components/admin/` may import
+  `AppShell`, `BottomNavigation`, `DesktopSidebar`, `TopBar`, `PageContainer`
+  or `prototype-store`.
+- Nothing in the user application may import from `components/admin`,
+  `data/admin`, `lib/admin-store` or `lib/admin-permissions`.
+- Shared ground is `components/ui`, `components/shared`, `lib/currency`,
+  `lib/utils`, `utils/format`, `src/types` and `data/referrals` (the VIP
+  configuration both sides read).
+- `src/app/admin/[...unmatched]/page.tsx` exists so unknown `/admin/*` URLs
+  resolve to the admin 404 rather than dropping an operator into the user app's
+  shell. Do not delete it.
+
+### 15.2 Routes
+
+| Route | Contents |
+|---|---|
+| `/admin` | Queue counts, platform totals, four charts, six recent-activity panels |
+| `/admin/users` | Searchable/filterable directory, 13 columns, row actions |
+| `/admin/users/[id]` | Full profile across 10 tabs (SSG, one page per seed user) |
+| `/admin/kyc` | Review queue → case detail with documents, notes and decisions |
+| `/admin/deposits` | Deposit ledger; credit / mark-failed |
+| `/admin/withdrawals` | Payout queue with full fee arithmetic; approve / reject / mark paid |
+| `/admin/investments` | Every allocation, filterable by plan and status |
+| `/admin/plans` | Plan catalogue cards; create / edit / disable |
+| `/admin/referrals` | Referral accounts + commission ledger, VIP configuration |
+| `/admin/agents` | Operator directory, permission matrix, activity |
+| `/admin/notifications` | Composer (template → audience → channels) + send history |
+| `/admin/audit-logs` | Filterable append-only audit trail |
+| `/admin/settings` | Platform, currency, fee, investment, referral, security config |
+
+Plus `error.tsx`, `not-found.tsx` and the catch-all above.
+
+### 15.3 Roles and the permission model
+
+Two conceptual roles, defined in `src/types/admin.ts`:
+
+- **Master admin** — holds `manage` on everything implicitly. The role *is* the
+  grant; their permission map is never consulted.
+- **Agent** — holds exactly what has been assigned.
+
+Permissions are **graded, not boolean**: `none` / `view` / `manage`. Real
+operations teams need a read-only tier (support staff who look but cannot
+approve) distinct from an operator tier.
+
+The 13 governable areas are in `ADMIN_PERMISSIONS` (`src/constants/admin.ts`):
+`users`, `user_details`, `kyc`, `deposits`, `withdrawals`, `investments`,
+`plans`, `referrals`, `notifications`, `audit_logs`, `settings`, `security`,
+`agents`. That list is the contract a backend authorization layer must
+implement — do not add a permission to a component without adding it there.
+
+How it is enforced in the UI:
+
+- `AdminNavList` omits destinations the operator cannot `view`.
+- `PermissionGate` replaces a whole screen with an access notice.
+- `canManage()` disables individual actions rather than hiding them, so the
+  operator can see the feature exists and who to ask.
+
+> **`src/lib/admin-permissions.ts` is a usability affordance, never a security
+> boundary.** All data is in the client bundle. The same permission ids must be
+> enforced server-side on every route handler and query at integration time.
+
+Agent creation starts from a preset (`AGENT_PRESETS`: support, compliance,
+finance, operations, custom) rather than 13 empty toggles; the matrix stays
+fully editable underneath.
+
+### 15.4 Mock state
+
+`src/lib/admin-store.tsx` — context + reducer, seeded from `src/data/admin/`.
+Same contract as the user app's store: **in-memory, resets on a full reload**,
+one action per future API call.
+
+Two things about it are load-bearing:
+
+1. **Every mutating action writes its audit entry in the same reducer case**,
+   through `withAudit()`. The write and its audit record are one transaction —
+   never two call sites that can drift apart. This is why the audit log shows
+   real consequences of what the operator just did.
+2. **Reasons collected by a dialog reach the audit entry.** Confirmation
+   dialogs tell the operator "This is recorded in the audit log", and several
+   *require* a reason. `withNote()` joins it onto the detail line so that
+   promise actually holds. If you add an action that collects a reason, thread
+   it through — do not let the dialog lie.
+
+Because state is client-side, the session switcher and permission gating are
+only exercised through **client-side navigation**; a hard reload restores the
+master-admin session and the seed data.
+
+### 15.5 Components
+
+`src/components/admin/`:
+
+- `layout/` — `AdminShell`, `AdminPage`, `AdminSection`, `AdminSidebar`
+  (+ `AdminNavList`, `AdminBrand`), `AdminHeader` (+ operator switcher and the
+  mobile nav drawer).
+- `shared/` — `AdminStatCard`/`AdminStatGrid`, `DataTable` (+ `DataCard`,
+  `DataCardRow`, `PrimaryCell`), `FilterBar`/`SearchField`/`FilterChips`/
+  `FilterSelect`, `AdminStatusBadge` (+ `UserStatusBadge`, `KycStatusBadge`,
+  `DepositStatusBadge`, `WithdrawalStatusBadge`), `ConfirmActionDialog`,
+  `ActivityTimeline`, `AuditLogTable`, `PermissionMatrix`/`PermissionSummary`,
+  `PermissionGate`, `UserActionMenu`, `DetailCard`/`DetailList`/`DetailRow`/
+  `MonoValue`, `admin-charts`.
+- One folder per section: `dashboard/`, `users/`, `kyc/`, `money/`, `plans/`,
+  `referrals/`, `agents/`, `notifications/`, `audit/`, `settings/`.
+
+**`DataTable` is the table primitive for every list screen.** It renders the
+same rows two ways from one column definition: a real `<table>` from `md` up
+inside its own horizontal scroll container, and a card list below it. A
+thirteen-column table crammed into 360px is not a readable table, it is a
+broken one — so never drop the `renderCard` prop.
+
+Two non-obvious layout constraints, both found by testing and both commented in
+place:
+
+- The table's scroll container needs `relative`. The visually-hidden caption
+  and `sr-only` column headers are `position: absolute`; without a positioned
+  ancestor their containing block is the viewport, so they sit at the table's
+  x-offset and make the whole document scroll sideways.
+- Chart frames and dashboard panels need `min-w-0`. As grid children the
+  default `min-width: auto` lets a 12-point axis widen the track past the
+  viewport.
+
+### 15.6 Charts
+
+`admin/shared/admin-charts.tsx`: `PlatformFlowChart` (deposits above a zero
+baseline, withdrawals below), `SeriesBarChart`, `TrendChart`,
+`StatusBreakdownBar`. Rules followed:
+
+- A single series carries no legend — the heading names it.
+- The flow chart encodes direction by **position**, so the reading never
+  depends on hue. Two series therefore also get a legend.
+- Hues are `--chart-1` (brand teal) and `--chart-5` (amber), validated as a
+  pair against the card surface in both modes: CVD ΔE 10.1 light / 9.7 dark and
+  normal-vision ΔE 17.9 / 18.0, each above 3:1 contrast. The brand teal sits
+  under the usual chroma floor *by design* (§8 mandates a restrained accent),
+  which is exactly why position, legend and table view all carry the meaning
+  too.
+- Every chart ships a screen-reader table. No value is reachable only by hover.
+
+### 15.7 Currency in the CRM
+
+Identical rule to §4.4 — **no component converts or formats currency itself**.
+Use `CurrencyDisplay`, `formatUsdt`, `formatUsdtAsInr`, `formatInr`. Withdrawals
+show the payout rate stored on the record (quoted at request time), which is
+deliberately distinct from the indicative display rate.
+
+### 15.8 Future backend integration
+
+In addition to §13, for the CRM:
+
+1. **Admin auth** — replace the operator switcher with a real session; delete
+   the demo control, keep the avatar and role badge.
+2. **Server-side authorization** — enforce the §15.3 permission ids on every
+   handler. The client checks stay as affordances.
+3. **Admin API** — replace `@/data/admin` reads with fetches and the reducer
+   cases with mutations + `router.refresh()`.
+4. **Audit log** — becomes backend-written and read-only here. It must never
+   become editable or deletable from the UI.
+5. **KYC provider** — the case list, documents and decisions become provider
+   calls; `reviewedBy` comes from the session.
+6. **Chain watcher / payout rails** — drive deposit and withdrawal status
+   transitions instead of the reducer.
+7. **Configuration service** — `/admin/settings` becomes its write side, and
+   `getUsdtInrRate()` reads from it. Until then, editing settings in the CRM
+   does **not** move the user application, which still reads
+   `@/constants/app`.

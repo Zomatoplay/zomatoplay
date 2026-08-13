@@ -1,12 +1,22 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
-import { AppShell } from "@/components/navigation/app-shell";
 import { Toaster } from "@/components/ui/sonner";
 import { APP_DESCRIPTION, APP_NAME, APP_TAGLINE } from "@/constants/app";
-import { PrototypeStoreProvider } from "@/lib/prototype-store";
 
 import "./globals.css";
+
+/**
+ * Root document shell only.
+ *
+ * The user application and the Master CRM are two separate frames living under
+ * one Next.js app, so neither one's chrome can live here:
+ *   - `(app)/layout.tsx`  — user app: prototype store + mobile/desktop AppShell
+ *   - `admin/layout.tsx`  — Master CRM: admin store + AdminShell
+ *
+ * Only what is genuinely global belongs in this file: the document, fonts, the
+ * skip link and the toaster.
+ */
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -63,9 +73,7 @@ export default function RootLayout({
         >
           Skip to content
         </a>
-        <PrototypeStoreProvider>
-          <AppShell>{children}</AppShell>
-        </PrototypeStoreProvider>
+        {children}
         <Toaster />
       </body>
     </html>

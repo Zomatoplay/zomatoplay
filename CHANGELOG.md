@@ -4,6 +4,202 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-08-09 — Master CRM (admin frontend)
+
+Added a complete administrative control panel at `/admin`, architecturally
+separated from the user application. Frontend only: no authentication,
+database, API, blockchain, KYC provider or payment processing.
+
+### Structural change: route groups
+
+The root layout previously carried `PrototypeStoreProvider` + `AppShell`. A
+Next.js layout cannot be removed by a descendant, so `/admin` would have
+inherited the mobile bottom navigation.
+
+- Moved every user route into `src/app/(app)/` — a route group, so **no URL
+  changed**.
+- `src/app/layout.tsx` is now the document only: fonts, skip link, `Toaster`.
+- `src/app/(app)/layout.tsx` carries the user app's store and shell.
+- `src/app/admin/layout.tsx` carries the CRM's store and shell.
+- The global `not-found.tsx` now wraps itself in `AppShell`, preserving the
+  previous 404 behaviour for unmatched URLs.
+- Added `src/app/admin/[...unmatched]/page.tsx` calling `notFound()`. Without
+  it an unknown `/admin/*` URL never enters the admin segment, so Next resolves
+  the *root* 404 and drops an administrator into the user app's shell.
+
+### Admin domain model
+
+- `src/types/admin.ts` — roles, graded permissions, agents, sessions, admin
+  users, KYC cases, deposits, withdrawals, investments, plans, referrals,
+  device sessions, security events, audit entries, notification campaigns,
+  platform settings, dashboard metrics. Reuses the user domain (`KycStatus`,
+  `RiskLevel`, `VipLevelId`, …) rather than redefining it.
+- `src/constants/admin.ts` — CRM navigation, the 13-permission catalogue, agent
+  role presets.
+- `src/lib/admin-permissions.ts` — `canView` / `canManage` / `permissionLevel`.
+
+### Permission model
+
+Two roles: **master admin** (holds `manage` implicitly — the role is the grant)
+and **agent** (holds what is assigned). Permissions are graded `none` / `view` /
+`manage` rather than boolean, because support staff who may look but not approve
+are a real tier.
+
+Enforced in the UI three ways: nav items omitted, `PermissionGate` replacing a
+screen, and `canManage()` disabling individual controls rather than hiding them.
+Documented in `CLAUDE.md` §15.3 as a **usability affordance, not a security
+boundary**.
+
+Since there is no authentication, the "signed-in" operator is chosen from a
+clearly-labelled demo control in the header — which is what makes the model
+reviewable at all.
+
+### Mock data (`src/data/admin/`)
+
+32 users (the first is the same account the user app signs in as), 15 KYC
+cases, 21 deposits, 15 withdrawals, 28 investments, the plan catalogue derived
+from `@/data/plans`, 15 referral accounts + 17 commission entries, 9 agents, 12
+device sessions, 15 security events, 8 notification campaigns, 26 seed audit
+entries, dashboard aggregates and four chart series.
+
+VIP percentages and thresholds are **not** restated here — both applications
+read `@/data/referrals`.
+
+### Admin store (`src/lib/admin-store.tsx`)
+
+Context + reducer, in-memory, seeded from `@/data/admin`. 30 actions, each
+mapping 1:1 to a future API call.
+
+Two deliberate properties:
+
+1. **Every mutating case writes its audit entry in the same reducer case** via
+   `withAudit()` — the write and its audit record are one transaction, so the
+   audit screen shows real consequences of what the operator just did.
+2. **Reasons collected by a dialog reach the audit entry** via `withNote()`.
+
+### Routes created (13)
+
+`/admin`, `/admin/users`, `/admin/users/[id]` (SSG, 32 pages), `/admin/kyc`,
+`/admin/deposits`, `/admin/withdrawals`, `/admin/investments`, `/admin/plans`,
+`/admin/referrals`, `/admin/agents`, `/admin/notifications`,
+`/admin/audit-logs`, `/admin/settings`, plus admin `error.tsx`,
+`not-found.tsx` and the catch-all.
+
+The user detail page has 10 tabs: Overview, Investments, Deposits, Withdrawals,
+Profits, Referrals, KYC, Devices, Security, Activity.
+
+### Components created
+
+`AdminShell`/`AdminPage`/`AdminSection`, `AdminSidebar`, `AdminHeader` (with
+operator switcher + mobile drawer), `AdminStatCard`, `DataTable`, `FilterBar`,
+`AdminStatusBadge` and its named wrappers, `ConfirmActionDialog`,
+`ActivityTimeline`, `AuditLogTable`, `PermissionMatrix`, `PermissionGate`,
+`UserActionMenu`, `DetailCard`/`DetailList`, four chart components, and one
+folder per section.
+
+`DataTable` renders one column definition two ways — a real `<table>` from `md`
+up inside its own scroll container, and a card list below it.
+
+### Charts
+
+`PlatformFlowChart` (deposits above a zero baseline, withdrawals below —
+position carries the direction, colour reinforces it), `SeriesBarChart`,
+`TrendChart`, `StatusBreakdownBar`. The two-hue pair (`--chart-1` teal /
+`--chart-5` amber) was validated against the card surface in both modes: CVD ΔE
+10.1 light / 9.7 dark, normal-vision ΔE 17.9 / 18.0, each above 3:1 contrast.
+Every chart ships a screen-reader table.
+
+### Shared-component changes
+
+- `ui/sheet.tsx` — added a `side` prop (`bottom` default, `left` for the CRM's
+  mobile nav drawer). Default behaviour unchanged; the close control is always
+  visible on the edge drawer.
+- `ui/dropdown-menu.tsx` — new primitive for table row action menus.
+
+### Dependencies
+
+Added `@radix-ui/react-dropdown-menu` — same family as the nine Radix packages
+already in use, and the alternative was hand-rolling an accessible menu for
+every table row.
+
+### Testing performed
+
+Automated with Puppeteer against the **production build** (`next start`).
+
+- **Layout audit** — 18 routes × 3 widths (1440, 820, 360): horizontal
+  overflow, elements escaping the viewport, text below 11px, missing
+  `#main-content`. Result: **0 problems, no console output**.
+- **Admin flows — 84 assertions, all passing**: sticky header; table scrolls
+  internally without the page scrolling; search by name / member ID / wallet
+  address; status filter chips; row → detail navigation; tab switching; device
+  logout with a required reason, and the reason appearing in the audit trail;
+  KYC review → approve; deposit credit with an under-confirmation warning;
+  withdrawal approve with the payout breakdown shown first; plan create
+  including validation that rejects a headline projection outside its range;
+  agent create with the 13-row permission matrix; **permission gating** (nav
+  items disappear, forbidden actions disable) via the operator switcher; audit
+  log category filters; settings dirty/save cycle writing an audit entry;
+  notification send; admin 404 not rendering the user app's navigation; mobile
+  drawer and card-list rendering.
+- **User app regression — 22 assertions, all passing**: the route-group move
+  changed no behaviour (bottom nav, `aria-current`, KYC gating, 404 with shell,
+  desktop sidebar).
+- **Visual review** — screenshots of 7 admin screens at 1440px and 390px.
+
+### Issues found during testing and fixed
+
+1. **Document scrolled sideways on wide tables.** The table was correctly
+   clipped, but the `sr-only` caption and action-column headers are
+   `position: absolute`; with no positioned ancestor their containing block was
+   the viewport, so they sat at the table's x-offset and made the whole page
+   scrollable. Fixed with `relative` on the scroll container. (An
+   `overflow-x-clip` attempt was tried first, measured, found to be a no-op for
+   this cause, and removed rather than left in with a wrong comment.)
+2. **Dashboard overflowed at 360px** — chart frames and panels needed `min-w-0`
+   as grid children; the 12-point axis label rows needed shrinkable labels and
+   tighter gaps below `sm`; stat-card figures needed compact notation above 10k
+   and a smaller mobile size.
+3. **Confirmation dialogs discarded the operator's reason.** Every dialog says
+   "This is recorded in the audit log" and several require a reason, but ~14
+   actions dropped it. Threaded through the store and into the audit detail.
+4. **Unknown `/admin/*` URLs rendered the user app's 404** with its bottom
+   navigation. Fixed with the admin catch-all route.
+5. **Stale-server false negatives** — a `next start` left running across a
+   rebuild served deleted chunks, producing `ChunkLoadError` and a cascade of
+   spurious failures. Same trap as the previous session; noted again because
+   the first two runs' results were invalid.
+6. Table cell polish: VIP labels and INR sub-figures no longer wrap mid-value.
+
+### Build result
+
+```
+✓ Compiled successfully
+✓ Generating static pages (72/72)
+```
+
+- `npx tsc --noEmit` — clean
+- `npx eslint .` — clean
+- First Load JS shared by all: **102 kB**; largest admin route 217 kB
+  (`/admin/users/[id]`, which carries all ten tab panels).
+
+### Known limitations
+
+- Admin state is in-memory: **a full page reload resets** it and restores the
+  master-admin session. Permission gating and the session switcher must be
+  exercised via in-app navigation.
+- The permission model is not enforced anywhere but the UI. All data is in the
+  client bundle.
+- Editing settings in the CRM does not move the user application, which still
+  reads `@/constants/app`. Joining them needs a real configuration service.
+- KYC documents are references only; there is no document storage or preview.
+- Dashboard aggregates describe a ~2,800-account platform while the tables show
+  a ~30-record sample. This is deliberate — a real deployment computes those
+  server-side rather than by summing a page of rows — but the two will not
+  reconcile.
+- Notification audience sizes are static estimates.
+
+---
+
 ## 2026-08-09 — Initial frontend implementation
 
 Built the complete frontend of the Nanotron mobile-first crypto investment

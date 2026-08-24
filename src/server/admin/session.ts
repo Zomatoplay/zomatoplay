@@ -12,6 +12,7 @@ import type {
   AdminSession,
 } from "@/types/admin";
 import { getAuthPrincipal } from "@/server/auth/session";
+import { resilientRead } from "@/server/database";
 import { describeTraceActor, trackQuery } from "@/server/observability";
 import type { Actor } from "@/server/write";
 
@@ -113,7 +114,11 @@ const loadOperator = cache(
    * is a real state — a master admin's rows are never consulted — and an inner
    * join would have made them invisible to themselves.
    */
-  const rows = await (async () =>
+  // Deadline and bounded connection retry, for the same reason the customer
+  // account lookup has them: this gates every console page, and without a
+  // deadline one unhealthy pooler endpoint hangs the request rather than
+  // failing it. A read, so retrying is safe.
+  const rows = await resilientRead(async () =>
       db
         .select({
           id: t.adminAgents.id,
@@ -129,7 +134,7 @@ const loadOperator = cache(
           t.adminAgentPermissions,
           eq(t.adminAgentPermissions.agentId, t.adminAgents.id),
         )
-        .where(eq(t.adminAgents.authUserId, authUserId)))();
+        .where(eq(t.adminAgents.authUserId, authUserId)));
 
   const agent = rows[0];
 

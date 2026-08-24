@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { and, eq, ne, sql } from "drizzle-orm";
 
 import { getDb, isDatabaseConfigured } from "@/db";
+import { resilientRead } from "@/server/database";
 import { describeTraceActor, trackQuery } from "@/server/observability";
 import * as t from "@/db/schema";
 import { ensureWallet } from "@/server/repositories/wallet.repository";
@@ -100,7 +101,19 @@ const loadAccountFor = cache(
 async function findAccountForPrincipal(
   principal: AuthPrincipal,
 ): Promise<AuthenticatedAccount | null> {
-  const [row] = await (async () =>
+  /*
+   * The single hottest query in the application: every authenticated request
+   * resolves its account through here.
+   *
+   * It is wrapped in `resilientRead` because it was also the one failing most
+   * visibly. Telemetry over one measurement session: 73 failures, split between
+   * `CONNECT_TIMEOUT` and a wrapped driver error, at an average of **55–71
+   * seconds** each — one unhealthy pooler endpoint, no deadline, no retry, on
+   * the query that gates every page.
+   *
+   * A read, and idempotent, so retrying it is safe.
+   */
+  const [row] = await resilientRead(async () =>
       getDb()
         // Only the columns this projection uses. `select()` pulled all
         // thirty-odd, including internal notes and restriction flags, on the
@@ -115,7 +128,7 @@ async function findAccountForPrincipal(
         })
         .from(t.users)
         .where(eq(t.users.authUserId, principal.authUserId))
-        .limit(1))();
+        .limit(1));
 
   if (!row) return null;
 

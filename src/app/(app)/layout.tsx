@@ -1,8 +1,10 @@
 import { redirect } from "next/navigation";
 
 import { AppShell } from "@/components/navigation/app-shell";
+import { SessionUnavailableNotice } from "@/components/shared/session-unavailable-notice";
 import { PrototypeStoreProvider } from "@/lib/prototype-store";
 import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
+import { AuthProviderUnavailableError } from "@/server/auth/session";
 import { traceRender } from "@/server/trace-action";
 
 /**
@@ -43,7 +45,38 @@ export default async function AppLayout({
 }
 
 async function renderAppLayout(children: React.ReactNode) {
-  const account = await getAuthenticatedAccount();
+  let account;
+  try {
+    account = await getAuthenticatedAccount();
+  } catch (error) {
+    /*
+     * "WE COULD NOT CHECK" IS NOT "YOU ARE NOT SIGNED IN"
+     * ---------------------------------------------------
+     * A brief failure to reach Supabase used to arrive here as `null` — the
+     * same value as a genuinely absent session — so a signed-in person was
+     * redirected to `/login` mid-navigation and, on the pages that read before
+     * the redirect landed, met `NotAuthenticatedError: Not signed in.` That is
+     * the reported authentication instability, and `getAuthPrincipal` now
+     * throws instead of lying (see `@/server/auth/session`).
+     *
+     * The response is deliberately *not* a redirect and *not* a crash. Signing
+     * someone out because a network call failed destroys good state over a
+     * problem that fixes itself in seconds. So the shell renders — navigation
+     * stays usable — with a recoverable notice in the content area.
+     */
+    if (error instanceof AuthProviderUnavailableError) {
+      return (
+        <PrototypeStoreProvider>
+          <AppShell>
+            <SessionUnavailableNotice />
+          </AppShell>
+        </PrototypeStoreProvider>
+      );
+    }
+    // Anything else — a database outage, a genuine fault — belongs to the error
+    // boundary in `app/error.tsx`, which is the boundary that covers a layout.
+    throw error;
+  }
 
   if (!account) redirect("/login");
   // An operator's decision in the CRM has to reach the product, or the CRM is

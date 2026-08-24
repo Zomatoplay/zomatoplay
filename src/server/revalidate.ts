@@ -1,6 +1,8 @@
 import "server-only";
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
+
+import { CATALOGUE_TAG } from "./services/catalogue.service";
 
 /**
  * Invalidates cached routes after a mutation, without letting that failure
@@ -23,5 +25,26 @@ export function revalidate(...paths: string[]): void {
     } catch {
       // No request scope. The data changed regardless.
     }
+  }
+}
+
+/**
+ * Drops the cross-request catalogue cache.
+ *
+ * Plans, VIP levels and deposit networks are cached between requests because
+ * they are public and identical for everyone (see `catalogue.service`). That
+ * cache is keyed by tag rather than by path, so `revalidatePath("/plans")`
+ * alone does **not** clear it — an operator's plan edit would sit invisible
+ * behind a five-minute TTL, which is exactly the "the CRM says one thing and
+ * the app shows another" failure the service layer exists to prevent.
+ *
+ * Swallowed for the same reason as above: by the time this runs the write has
+ * committed, and a stale cache is a display problem, not a failed mutation.
+ */
+export function revalidateCatalogue(): void {
+  try {
+    revalidateTag(CATALOGUE_TAG);
+  } catch {
+    // No request scope. The TTL is the backstop.
   }
 }

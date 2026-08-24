@@ -87,6 +87,9 @@ export function classifyError(error: unknown): ErrorCategory {
 
   // Application errors name themselves.
   if (name === "NotAuthenticatedError") return "UNAUTHENTICATED";
+  // "We could not reach the auth provider", which is emphatically not the same
+  // as "this person is not signed in" — see `@/server/auth/session`.
+  if (name === "AuthProviderUnavailableError") return "AUTH_PROVIDER_UNAVAILABLE";
   if (name === "AdminAuthorizationError" || name === "NotAuthenticatedOperatorError") {
     return "PERMISSION_DENIED";
   }

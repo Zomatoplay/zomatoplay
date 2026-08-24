@@ -4,6 +4,7 @@ import { cache } from "react";
 import { unstable_noStore as noStore } from "next/cache";
 
 import { getDb, isDatabaseConfigured } from "@/db";
+import { resilientRead } from "../database";
 import type {
   AppNotification,
   BankAccount,
@@ -61,7 +62,22 @@ export class AccountUnavailableError extends Error {
   }
 }
 
-/** Reads live account state. Opts the render out of static generation. */
+/**
+ * Reads live account state. Opts the render out of static generation.
+ *
+ * WHY THIS GOES THROUGH `resilientRead`
+ * -------------------------------------
+ * It used to call `query(getDb())` directly — no deadline and no retry — while
+ * `fromDatabase()` next door had both. That asymmetry was not cosmetic: these
+ * are the *hottest* reads in the application (every wallet, balance, profile
+ * and allocation screen), and they were the only ones with nothing bounding
+ * them.
+ *
+ * Measured before the change: `auth.resolveAccount` failing after an average of
+ * **55–71 seconds**, and page requests observed at 33s, 46s and 49s. The 15s
+ * deadline was never reaching this path, so a single unhealthy pooler endpoint
+ * turned into a request that hung until something upstream gave up.
+ */
 async function read<T>(query: (db: ReturnType<typeof getDb>) => Promise<T>): Promise<T> {
   if (!isDatabaseConfigured()) {
     throw new AccountUnavailableError(
@@ -70,7 +86,7 @@ async function read<T>(query: (db: ReturnType<typeof getDb>) => Promise<T>): Pro
     );
   }
   noStore();
-  return query(getDb());
+  return resilientRead(() => query(getDb()));
 }
 
 /**

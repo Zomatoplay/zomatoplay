@@ -119,22 +119,132 @@ const loadPrincipal = cache(async function loadPrincipal(): Promise<AuthPrincipa
     return null;
   }
 
-  const { data, error } = await supabase.auth.getUser();
+  /*
+   * VERIFIED LOCALLY, NOT BY A ROUND TRIP — AND STILL VERIFIED
+   * ----------------------------------------------------------
+   * This was `getUser()`, which asks Supabase to validate the token. Measured
+   * from here: **385ms median, on every authenticated request**, and it was the
+   * single largest cost in a navigation — larger than every database query on
+   * the page combined.
+   *
+   * `getClaims()` verifies the JWT's signature against the project's published
+   * JWKS. This project signs with **ES256** (confirmed against
+   * `/auth/v1/.well-known/jwks.json`), so verification is asymmetric and
+   * happens in-process: measured 370ms for the first call, which fetches and
+   * caches the key set, then **1–3ms** for every call after it.
+   *
+   * This is emphatically *not* the `getSession()` mistake that §19.4 forbids.
+   * `getSession()` decodes an attacker-controlled cookie and believes it.
+   * `getClaims()` checks a cryptographic signature the attacker cannot forge
+   * without the project's private key, and rejects anything expired. If the
+   * project is ever switched back to a legacy symmetric (HS256) secret, the
+   * SDK cannot verify locally and falls back to a network `getUser()` call on
+   * its own — so this is correct either way, just slower in that case.
+   *
+   * What is genuinely given up: a token revoked *server-side* stays valid until
+   * it expires. That costs nothing here, because this deployment cannot revoke
+   * server-side at all — it holds no service-role key, which §20.3 already
+   * states plainly.
+   */
+  const { data, error } = await supabase.auth.getClaims();
 
-  if (error || !data.user) return null;
+  /*
+   * AN OUTAGE IS NOT A SIGN-OUT — THIS IS THE `NotAuthenticatedError` BUG
+   * ---------------------------------------------------------------------
+   * This function used to `return null` on *any* error. Null means exactly one
+   * thing to every caller: "nobody is signed in". So a transient failure to
+   * reach Supabase — measured at up to 30.9s before it gave up — was reported
+   * as an absent session, and a perfectly valid signed-in user was redirected
+   * to `/login` or met `NotAuthenticatedError: Not signed in.` mid-navigation.
+   * That is the reported symptom, and it was a lie told by an error path.
+   *
+   * A provider outage now throws something that says so, so the layout can show
+   * a recoverable "try again" instead of destroying a good session. An invalid,
+   * expired or absent token still returns null, because that really is "not
+   * signed in".
+   */
+  if (error) {
+    if (isProviderOutage(error)) {
+      throw new AuthProviderUnavailableError(error.message);
+    }
+    return null;
+  }
 
-  const metadata = data.user.user_metadata as
+  const claims = data?.claims;
+  if (!claims?.sub) return null;
+
+  const metadata = claims.user_metadata as
     | { full_name?: unknown; name?: unknown }
     | null;
   const rawName = metadata?.full_name ?? metadata?.name;
 
   return {
-    authUserId: data.user.id,
-    email: data.user.email ?? null,
-    emailConfirmedAt: data.user.email_confirmed_at ?? null,
+    authUserId: claims.sub,
+    email: claims.email ?? null,
+    /*
+     * The token carries `email_verified` as a boolean; `getUser()` returned a
+     * timestamp. Nothing in the codebase currently reads this field, so the
+     * shape is preserved rather than the value: a sentinel keeps the interface
+     * honest about what is actually known, where inventing a plausible-looking
+     * instant would be a fabricated timestamp waiting to be displayed. If a
+     * caller ever needs the real confirmation time, it must come from a
+     * `getUser()` call made deliberately for that purpose.
+     */
+    emailConfirmedAt: claims.email_verified ? VERIFIED_SENTINEL : null,
     fullName: typeof rawName === "string" && rawName.trim() ? rawName.trim() : null,
   };
 });
+
+/**
+ * A marker for "this mailbox is confirmed", when the exact instant is not in
+ * the token. Never rendered — see the callers, which only test truthiness.
+ */
+const VERIFIED_SENTINEL = "verified";
+
+/**
+ * Told apart from "this token is bad", which is the whole point.
+ *
+ * Supabase's auth errors carry a status: a 4xx is a verdict about the token
+ * (expired, malformed, revoked) and means not-signed-in; a 5xx, a missing
+ * status, or a transport failure means we could not *reach* a verdict, which
+ * is an outage. Anything that reads like a network failure is treated as an
+ * outage regardless of status.
+ */
+export function isProviderOutage(error: { message?: string; status?: number }): boolean {
+  const message = String(error?.message ?? "");
+
+  // Checked BEFORE the status, deliberately. If the transport itself failed
+  // there was no verdict to receive, whatever status happens to be attached —
+  // and reading a transport failure as a rejected token is what signs a valid
+  // user out during a blip.
+  if (/fetch failed|network|ECONN|ETIMEDOUT|EAI_AGAIN|socket|timeout|aborted/i.test(message)) {
+    return true;
+  }
+
+  // A 4xx is the provider telling us about the token: expired, malformed,
+  // revoked. That is a real answer, and it means not-signed-in.
+  const status = error?.status;
+  if (typeof status === "number" && status >= 400 && status < 500) return false;
+  // No status at all is not a verdict about the token, so it cannot be treated
+  // as one. Failing closed here would sign valid users out during an outage.
+  return typeof status !== "number" || status >= 500;
+}
+
+/**
+ * The auth provider could not be reached, so whether this request carries a
+ * valid session is **unknown**.
+ *
+ * Distinct from null on purpose. Null grants nothing and is the safe answer to
+ * "who is this"; this says "ask again shortly" and must never be quietly
+ * converted into null by a caller, because that conversion is precisely the bug
+ * it exists to prevent.
+ */
+export class AuthProviderUnavailableError extends Error {
+  constructor(message: string) {
+    super(`The sign-in service is temporarily unreachable. ${message}`.trim());
+    this.name = "AuthProviderUnavailableError";
+  }
+}
 
 export async function signOut(): Promise<void> {
   if (!isAuthConfigured()) return;

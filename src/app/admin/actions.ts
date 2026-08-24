@@ -11,7 +11,7 @@ import { sendPasswordRecovery } from "@/lib/supabase/auth-rest";
 import { trackPipeline } from "@/server/observability";
 import { traceAction } from "@/server/trace-action";
 import { requirePermission } from "@/server/admin/session";
-import { revalidate } from "@/server/revalidate";
+import { revalidate, revalidateCatalogue } from "@/server/revalidate";
 import {
   revokeDeviceSessions,
   setUserRestriction,
@@ -723,6 +723,10 @@ export async function createPlanAction(
 
     // The public catalogue reads the same rows, so it moves with the CRM.
     revalidate("/admin/plans", "/admin", "/plans");
+    // The user-facing catalogue is cached across requests by tag, which a
+    // path revalidation does not reach. Without this an operator's edit
+    // would be invisible to users behind the TTL.
+    revalidateCatalogue();
     return { ok: true, message: "Plan created." };
   } catch (error) {
     return failed(error, "The plan was not created.");
@@ -770,6 +774,10 @@ export async function updatePlanAction(input: {
     });
 
     revalidate("/admin/plans", "/admin", "/plans");
+    // The user-facing catalogue is cached across requests by tag, which a
+    // path revalidation does not reach. Without this an operator's edit
+    // would be invisible to users behind the TTL.
+    revalidateCatalogue();
     return { ok: true, message: "Plan updated." };
   } catch (error) {
     return failed(error, "The plan was not updated.");
@@ -811,6 +819,10 @@ export async function setPlanDisabledAction(input: {
     });
 
     revalidate("/admin/plans", "/admin", "/plans");
+    // The user-facing catalogue is cached across requests by tag, which a
+    // path revalidation does not reach. Without this an operator's edit
+    // would be invisible to users behind the TTL.
+    revalidateCatalogue();
     return {
       ok: true,
       message: input.disabled ? "Plan disabled." : "Plan enabled.",

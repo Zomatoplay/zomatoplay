@@ -833,10 +833,16 @@ trips. Everything below follows from that.
    what removes that; see §16.2a.
 
 4. **Parallel is only free up to `max`.** Six concurrent reads against a
-   five-connection pool is two waves. Raising `DATABASE_POOL_MAX` to 12 measured
-   13–20% faster on the widest pages; the default stays 5 for the reason in
-   §16.1 (per instance, and a serverless deployment runs many). Raise it
-   deliberately for a single long-running server.
+   five-connection pool is two waves. An earlier note here recommended raising
+   `DATABASE_POOL_MAX` to 12; **that was re-measured on 2026-08-24 and does not
+   hold** — 12 made a cold five-query burst *worse* (3,270ms vs 2,008ms) with no
+   warm improvement, because a bigger pool only means more simultaneous
+   handshakes. The default stays 5. What actually removes that cost is warming
+   the pool (§16.8), not enlarging it.
+
+5. **A connection that is never opened costs nothing.** Cold five-query burst:
+   2,008ms. Warm: 203ms. `warmConnectionPool()` opens four in the background
+   when the pool is created, so only the very first request pays.
 
 Do not "optimise" by adding indexes or trimming columns before checking the
 round-trip count. On this deployment the query plan is almost never the problem.
@@ -980,7 +986,7 @@ the seeded rows.
 `npm test` runs `node:test` through `tsx`, with `--conditions=react-server` so
 `server-only` modules resolve the way Next resolves them. Tests that need a
 database skip themselves when `DATABASE_URL` is unset, so the suite stays green
-on a fresh clone. **105 tests with a database configured.**
+on a fresh clone. **127 tests with a database configured.**
 
 **Do not assert exact row counts against the live database.** Four assertions
 did, and all four broke the first time a real person registered and submitted
@@ -991,6 +997,8 @@ appears twice, that there are *at least* `SEED_USER_COUNT` accounts.
 | File | Needs a database | Covers |
 |---|---|---|
 | `db/env.test.ts` | no | the configuration switch |
+| `db/resilience.test.ts` | no | what is retried, what is not, and the bounds |
+| `server/auth/session.test.ts` | no | outage vs. "not signed in" |
 | `db/seed/seed.test.ts` | no | the seed, against a recorder |
 | `server/database.test.ts` | no | fallback, no-silent-fallback, the deadline |
 | `db/connection.integration.test.ts` | yes | both connections, parallel load |
@@ -1012,6 +1020,87 @@ Two are worth knowing about:
   column has become a float.
 
 ---
+
+### 16.8 Connection resilience — retry, deadline, warm-up
+
+Three mechanisms, and they are sized against each other. Changing one in
+isolation breaks the arithmetic.
+
+| | where | value |
+|---|---|---|
+| `connect_timeout` | `db/client.ts` | 6s |
+| retry budget | `db/resilience.ts` | 12s, 2 retries |
+| read deadline | `server/database.ts` | 15s |
+
+**The retry exists because one pooler endpoint is intermittently broken.** The
+host resolves to three A records and one of them accepts the TCP connection then
+never completes the Postgres handshake. **Which one is broken changes over
+time** — the address that failed 3/3 on 2026-08-24 answered 4/4 when re-probed
+hours later. That is why this is a retry and not a pinned IP: pinning would
+hard-code today's healthy endpoint and become tomorrow's outage. postgres.js
+re-resolves per attempt, so a retry lands on a different endpoint.
+
+Rules, all load-bearing:
+
+- **Only connection-establishment failures are retried.** `CONNECT_TIMEOUT`,
+  `ECONNRESET`, SQLSTATE class `08`, `57P01`/`57P03`. A constraint violation or
+  syntax error is re-thrown on the first attempt. Retrying a permanent error
+  hides a bug behind a delay.
+- **Reads only. Never `mutate()`.** A write that failed after its statements
+  reached the server may have committed; replaying it would double it. Nothing
+  in `@/server/write` goes through `resilientRead`, and nothing should.
+- **The deadline is outside the retry**, so three attempts cannot cost three
+  deadlines.
+- `connect_timeout` was *lowered* from 10s, not raised. It is how long a doomed
+  attempt burns before a retry can pick a different endpoint. Healthy handshakes
+  are 2.3–4.6s; 6s clears them and makes the worst case exactly two attempts
+  (~12s). **Raising it fixes nothing — the broken endpoint does not complete in
+  20s either — and it would push the second attempt outside the budget so no
+  retry happens at all.**
+- A retry is recorded as `database.connectRetry` with `willRetry: true`. A
+  recovered fault is invisible in every other signal, so without that row the
+  pooler could be failing a third of its connections silently.
+
+**The warm-up lives on `getDb()`, not in `instrumentation.ts`.** Next compiles
+that hook for the Edge runtime too and webpack resolves the graph statically, so
+even a dynamic `import()` behind a `NEXT_RUNTIME` guard drags `postgres` →
+`node:net` into the edge bundle and fails the build with `UnhandledSchemeError`.
+This has now been hit twice; do not try it a third time.
+
+### 16.9 What may be cached across requests, and what may not
+
+| | scope | why |
+|---|---|---|
+| Plans, VIP levels, deposit networks | **cross-request** (`unstable_cache`, tag `catalogue`, 300s) | identical for everyone, belongs to nobody |
+| Everything user-scoped | **per request only** (`cache()`) | it is one person's money |
+
+Caching a balance, an allocation, a KYC state or a security setting across
+requests would mean serving one person's data to another, and would break the
+guarantee that an operator blocking an account takes effect on that account's
+next request. **Do not extend the catalogue cache to anything user-scoped.**
+
+The catalogue cache is invalidated **by tag**, so a `revalidatePath("/plans")`
+does not clear it. Every CRM plan mutation must also call
+`revalidateCatalogue()`, or an operator's edit sits invisible behind the TTL.
+
+### 16.10 Loading and error boundaries
+
+Every user and console route has a `loading.tsx`. They are not decoration: a
+page awaits a database read before emitting any HTML, so without one a slow read
+renders as a **blank page**. They also make link prefetching cheap — Next
+prefetches a dynamic route only as far as its nearest loading boundary, so it no
+longer speculatively renders authenticated pages.
+
+`app/error.tsx` and `app/global-error.tsx` exist because **an error boundary
+covers the segments below it, never the layout beside it**. `(app)/error.tsx`
+never covered `(app)/layout.tsx` — which is exactly where the gate and the two
+riskiest calls live — so those failures had nowhere to land and took out the
+whole document. Do not delete either file.
+
+`/login` and `/admin/login` must keep rendering when the database is down. They
+resolve an account only to offer a convenience redirect and fall back to showing
+the form; `redirect()` is called **outside** the `try`, because it works by
+throwing a signal a broad `catch` would swallow.
 
 ## 17. The write layer
 
@@ -1300,9 +1389,29 @@ for development only.
 `getCurrentUserId()` resolves the session and nothing else. It used to return a
 fixed demo account, which meant every visitor saw one person's wallet.
 
-- `getAuthPrincipal()` uses `supabase.auth.getUser()`, which **verifies** the
-  token, not `getSession()`, which decodes whatever is in the cookie. The cookie
-  is attacker-controlled; the verification is the point.
+- `getAuthPrincipal()` **verifies** the token rather than decoding it. It uses
+  `supabase.auth.getClaims()`, which checks the JWT's signature against the
+  project's published JWKS — this project signs with **ES256**, so that happens
+  in-process (measured: 370ms for the first call, which caches the key set, then
+  1–3ms). It replaced `getUser()`, a network round trip measured at **385ms on
+  every authenticated request** and averaging 1,024ms under load.
+
+  **This is not `getSession()`, and the difference is the whole point.**
+  `getSession()` decodes an attacker-controlled cookie and believes it;
+  `getClaims()` checks a signature that cannot be forged without the project's
+  private key, and rejects anything expired. If the project ever reverts to a
+  legacy symmetric (HS256) secret, the SDK cannot verify locally and falls back
+  to a network `getUser()` call on its own, so this stays correct either way.
+  What it gives up is server-side revocation taking effect before the token
+  expires — which costs nothing here, because this deployment holds no
+  service-role key and cannot revoke server-side at all (§19.6, §20.3).
+
+- **An outage is not a sign-out.** `getAuthPrincipal()` returns null only when a
+  token is genuinely absent, expired or rejected. When the provider cannot be
+  *reached* it throws `AuthProviderUnavailableError`, and `(app)/layout.tsx`
+  renders the shell with a recoverable notice. It used to return null for both,
+  which signed valid users out during a blip and produced the reported
+  `NotAuthenticatedError`. Do not collapse those two cases back together.
 - Server actions take no `userId`. The account comes from the session, so there
   is no parameter to tamper with.
 - The middleware refreshes the session cookie and **decides nothing**. The gate

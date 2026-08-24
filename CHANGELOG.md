@@ -4,6 +4,88 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-08-24 (reliability & performance pass)
+
+Focused pass on reliability, database connectivity and page-load performance.
+No product behaviour changed: deposits, referrals, investments, withdrawals,
+KYC rules and admin business actions are untouched.
+
+Full analysis, measurements and status table: `FUTURE_TASKS.md` →
+"Reliability & Performance Audit".
+
+### Root causes
+
+1. **One Supabase pooler A record intermittently fails the Postgres handshake**,
+   and *which* of the three is broken moves over time — the endpoint that failed
+   3/3 earlier answered 4/4 when re-probed. Fixed with a bounded retry, not a
+   pinned IP and not a longer timeout.
+
+2. **The hottest read path had no deadline.** `account.service` and the `users`
+   lookup called `getDb()` directly while only `fromDatabase()` had one.
+   `auth.resolveAccount` was failing after an average of **55–71 seconds**;
+   requests were observed at 33s, 46s and 49s. Pages hung rather than failed.
+
+3. **`getAuthPrincipal()` returned null on any error**, so a transient failure to
+   reach Supabase (measured up to 30.9s) was indistinguishable from "not signed
+   in" — it signed valid users out mid-navigation and produced the reported
+   `NotAuthenticatedError: Not signed in.` A bug in an error path, not in login.
+
+4. **No `loading.tsx` anywhere and no root error boundary.** A slow read rendered
+   as a blank page, and because a boundary does not cover the layout beside it,
+   a failure in `(app)/layout.tsx` had nowhere to land and took out the document.
+
+### Changes
+
+- `db/resilience.ts` — retries only connection-establishment failures, bounded by
+  count (2) *and* a 12s wall-clock budget. Reads only; `mutate()` is untouched so
+  no retry can duplicate a write. Permanent errors re-thrown on the first attempt.
+  Retries recorded as `database.connectRetry`.
+- `connect_timeout` **lowered** 10s → 6s, chosen against the retry budget so the
+  worst case is two attempts (~12s) with room to reach a different endpoint.
+- `resilientRead()` — deadline *outside* the retry, applied to the three paths
+  that had none.
+- `auth/session.ts` — `getUser()` → `getClaims()`. This project signs with ES256,
+  so verification is local: **385ms → 1–3ms per request**. Still cryptographic;
+  a forged token is still rejected (verified). New `AuthProviderUnavailableError`
+  so an outage renders a recoverable notice inside the shell instead of a
+  sign-out.
+- `db/warmup.ts` — background pool warm-up. Cold five-query burst **2,008ms →
+  203ms**. Lives on `getDb()` because `instrumentation.ts` is edge-compiled and
+  pulls `node:net` into the edge bundle, failing the build.
+- 32 `loading.tsx` files plus shared skeletons; `app/error.tsx` and
+  `app/global-error.tsx`.
+- `/login` and `/admin/login` now survive a database outage (**500 → 200**,
+  8,612ms → 2,089ms) — they are the recovery path.
+- Catalogue reads cached across requests, tag-invalidated on plan edits (M8).
+  No user-scoped data is cached across requests.
+
+### Measured
+
+Interleaved A/B (both builds served alternately, so network drift hits both):
+**every authenticated route improved, 7–29%, aggregate −17%**. Server-side,
+`auth.resolvePrincipal` 1,024ms → 21ms average and `auth.resolveAccount`
+failures **56 → 0**.
+
+`DATABASE_POOL_MAX` was re-measured and **stays at 5**: raising it to 12 made the
+cold burst worse (3,270ms vs 2,008ms). This supersedes the older suggestion in
+CLAUDE.md §16.1a for this deployment shape.
+
+**No index was added and no query rewritten.** The hottest query executes in
+**0.05ms** on an existing index inside a 200–500ms round trip — the cost is
+network, not the plan.
+
+### Not fixed
+
+The ~200ms distance between the application and `ap-northeast-2` is now the
+dominant cost and is an infrastructure question (co-location), not a code one.
+The unhealthy pooler endpoint needs Supabase. Browser/360px visual verification
+was not possible in this session — the Chrome extension was not connected.
+
+`npm run build` exits 0, `npm run lint` clean, `npm run typecheck` clean,
+**127/127 tests pass** (20 new).
+
+---
+
 ## 2026-08-24 (later still) — The Vercel build no longer touches the database
 
 ### Root cause

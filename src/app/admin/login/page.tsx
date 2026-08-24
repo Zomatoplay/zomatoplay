@@ -21,17 +21,37 @@ export default async function AdminLoginPage({
   const { reason } = await searchParams;
 
   let refusal = reason;
+  let operator: Awaited<ReturnType<typeof getCurrentOperator>> = null;
+
   try {
-    const operator = await getCurrentOperator();
-    if (operator) redirect("/admin");
+    operator = await getCurrentOperator();
   } catch (error) {
     // A disabled operator account. Say so here rather than looping.
     if (error instanceof Error && error.name === "AdminAuthorizationError") {
       refusal = error.message;
-    } else {
-      throw error;
     }
+    /*
+     * Anything else is infrastructure — the database unreachable, the auth
+     * provider briefly down — and it used to be re-thrown, which turned the
+     * operator sign-in page into a 500 during exactly the outage an operator
+     * would be signing in to investigate.
+     *
+     * Resolving the operator here only decides whether to skip the form. It
+     * grants nothing: the console's gate is `(console)/layout.tsx`, which
+     * still refuses when the session cannot be resolved. So the safe
+     * degradation is to show the sign-in form.
+     */
   }
+
+  /*
+   * Outside the `try`, and that is load-bearing.
+   *
+   * `redirect()` works by throwing a signal Next catches. Called inside the
+   * block above it would be swallowed by the very catch that is there to
+   * tolerate infrastructure failures, and an authenticated operator would be
+   * shown the sign-in form forever instead of the console.
+   */
+  if (operator) redirect("/admin");
 
   return <AdminSignInForm configured={isAuthConfigured()} reason={refusal} />;
 }

@@ -418,7 +418,13 @@ attribution far safer. Medium. **Note:** it reduces mis-attribution risk but doe
 not eliminate it — two users can intend the same amount. Per-user addresses (C6)
 is the real answer.
 
-### M8 — No client-side caching of read-only data
+### M8 — No client-side caching of read-only data — **DONE (2026-08-24)**
+
+> Implemented in the reliability pass; see "Reliability & Performance Audit"
+> below. Catalogue reads are cached across requests and invalidated by tag on
+> plan edits. User-scoped data remains per-request only.
+
+### M8 (original note)
 
 Static plan catalogue, VIP tiers and deposit networks are refetched on every
 navigation even though they are identical for every user and change rarely.
@@ -427,7 +433,13 @@ data belongs to nobody. It must never extend to a balance, an allocation, a KYC
 state or anything else user-scoped: those are correct only because they are read
 fresh, per request, under the session. Small.
 
-### M9 — No route prefetching strategy
+### M9 — No route prefetching strategy — **largely resolved (2026-08-24)**
+
+> Adding `loading.tsx` to every route changed this: Next prefetches a dynamic
+> route only as far as its nearest loading boundary, so prefetch no longer
+> speculatively renders authenticated pages. Per-link tuning was not done.
+
+### M9 (original note)
 
 Next prefetches `<Link>` targets in the viewport by default, which for
 authenticated pages means speculative database traffic for pages the user may
@@ -531,3 +543,471 @@ verified. It is **not** production-ready, and the blockers are concentrated in
 three places — money that cannot actually move (C2, C3), deposit attribution
 (C6, H1), and the absence of any operational apparatus (backups, monitoring,
 deployment).
+
+---
+
+# Reliability & Performance Audit
+
+Added 2026-08-24, after a focused reliability pass. No product features were
+added or changed; deposits, referrals, investments, withdrawals, KYC rules and
+admin business actions are untouched.
+
+Every number below was measured on this machine against the configured Supabase
+project (session pooler, ap-northeast-2, requests originating from India).
+**Re-measure before trusting them elsewhere — the shape generalises, the
+milliseconds do not.**
+
+A note on method, because it changes how the timings should be read: network
+conditions to this database moved by more than 2× *during* the work (a cold
+five-connection burst measured 2,008ms early on and 4,769ms an hour later). A
+sequential before/after would have measured the weather, not the change. The
+timings below therefore come from an **interleaved A/B**: both revisions were
+built, then served and measured alternately (before, after, before, after) so
+drift lands on both arms.
+
+---
+
+## Root causes discovered
+
+### R1 — One pooler endpoint fails the Postgres handshake, and *which* one moves
+
+`aws-0-ap-northeast-2.pooler.supabase.com` resolves to three A records. Probed
+with real handshakes, same credentials, same TLS, only the address pinned:
+
+| endpoint | 2026-08-24 (earlier, from CHANGELOG) | re-probed during this pass |
+|---|---|---|
+| `15.164.120.176` | **CONNECT_TIMEOUT 3/3** | ok 4/4 (2.3–2.5s) |
+| `15.165.245.138` | ok 3/3 | ok 4/4 (2.5–4.6s) |
+| `13.124.111.232` | ok 3/3 | ok 4/4 (2.3–2.7s) |
+
+The endpoint that was broken earlier answered fine later. **The fault rotates.**
+That is the evidence for a bounded retry and against pinning an IP: pinning
+would hard-code today's healthy endpoint and become tomorrow's outage.
+
+### R2 — The hottest read path had no deadline at all
+
+`fromDatabase()` had a 15s deadline. `account.service`'s `read()` and the
+`users` lookup in `auth/account.ts` called `getDb()` directly and had **none** —
+and those are the reads every authenticated page depends on.
+
+From `pipeline_events` over one measurement session:
+
+| operation | failures | average duration of a failure |
+|---|---|---|
+| `auth.resolveAccount` (SERVER_ERROR) | 40 | **55,349 ms** |
+| `auth.resolveAccount` (DATABASE_TIMEOUT) | 33 | **71,212 ms** |
+
+Observed request times during the same window: 33,088ms, 46,581ms, 49,406ms.
+A page did not fail — it hung.
+
+### R3 — A Supabase outage was reported as "not signed in" (the `NotAuthenticatedError`)
+
+`getAuthPrincipal()` ended with:
+
+```ts
+const { data, error } = await supabase.auth.getUser();
+if (error || !data.user) return null;   // ← an outage becomes "no session"
+```
+
+Null means exactly one thing to every caller: nobody is signed in. So a
+transient failure to reach Supabase — measured at up to **30,915 ms** before it
+gave up — signed a valid user out mid-navigation, redirected them to `/login`,
+and produced `NotAuthenticatedError: Not signed in.` on any page that read
+before the redirect landed.
+
+This was a bug in an error path, not in the login system. Login itself was
+working correctly throughout.
+
+### R4 — No loading boundaries, and no root error boundary
+
+There was no `loading.tsx` anywhere in `src/app`, so every page awaited its
+database read before emitting any HTML — a slow read rendered as a **blank
+page**. That is the "pages appear missing" symptom.
+
+Worse, there was no `app/error.tsx` and no `app/global-error.tsx`. An error
+boundary catches failures from the segments *below* it, never from the layout
+beside it, so `(app)/error.tsx` did **not** cover `(app)/layout.tsx` — which is
+where the gate lives and where R2 and R3 both fire. Those failures had nowhere
+to land and took out the whole document. That is the "application crashes".
+
+### R5 — `getUser()` was the largest single cost in every navigation
+
+A network call to Supabase on every authenticated request:
+
+| | measured |
+|---|---|
+| `getUser()` (network verification) | 327, 409, 230, 385, 411, 244 ms — **385 ms median** |
+| `getClaims()` (local verification) | 370 ms first call (fetches JWKS), then **1–3 ms** |
+
+`auth.resolvePrincipal` averaged **1,024 ms** in production telemetry, with a
+maximum of 30,915 ms.
+
+---
+
+## Slowest routes (before)
+
+Best of two interleaved rounds, median of three requests each.
+
+| route | before | after | change |
+|---|---:|---:|---:|
+| `/` | 2,847 ms | 2,203 ms | **−23%** |
+| `/wallet` | 2,567 ms | 2,185 ms | **−15%** |
+| `/referral` | 2,235 ms | 1,774 ms | **−21%** |
+| `/plans` | 1,985 ms | 1,828 ms | **−8%** |
+| `/settings` | 1,982 ms | 1,777 ms | **−10%** |
+| `/settings/kyc` | 1,595 ms | 1,342 ms | **−16%** |
+| `/settings/profile` | 1,587 ms | 1,367 ms | **−14%** |
+| `/settings/security` | 1,572 ms | 1,365 ms | **−13%** |
+| `/wallet/withdraw` | 1,569 ms | 1,458 ms | **−7%** |
+| `/settings/notifications` | 1,388 ms | 1,160 ms | **−16%** |
+| `/settings/investments` | 1,181 ms | 950 ms | **−20%** |
+| `/settings/wallet` | 1,162 ms | 911 ms | **−22%** |
+| `/wallet/transactions` | 1,222 ms | 960 ms | **−21%** |
+| `/wallet/deposit` | 752 ms | 566 ms | **−25%** |
+| `/admin` | 1,585 ms | 1,134 ms | **−28%** |
+| `/admin/users` | 1,241 ms | 880 ms | **−29%** |
+| `/admin/deposits` | 1,142 ms | 961 ms | **−16%** |
+| `/admin/kyc` | 1,112 ms | 1,028 ms | **−8%** |
+| `/login` (no session) | 43 ms | 45 ms | — |
+| **aggregate (excl. `/login`)** | **28,724 ms** | **23,849 ms** | **−17%** |
+
+Every authenticated route improved. One caveat stated plainly: round 2 of the
+"after" arm shows three consecutive outliers (`/` 3,850ms, `/plans` 4,067ms,
+`/wallet` 5,373ms) while the settings routes measured moments later in the same
+round were at their fastest. That is a transient network event, not a
+regression — which is exactly why the table uses best-of-two.
+
+Server-side, from `pipeline_events`:
+
+| operation | before | after |
+|---|---:|---:|
+| `auth.resolvePrincipal` (avg) | 1,024 ms | **21 ms** |
+| `auth.resolveAccount` (avg) | 713 ms | 456 ms |
+| `auth.resolveAccount` failures | **56** | **0** |
+
+---
+
+## Slowest queries
+
+**There are none worth optimising, and that is the finding.** `EXPLAIN ANALYZE`
+on the hottest query in the application — the `users` lookup by `auth_user_id`
+that gates every page:
+
+```
+Limit  (actual time=0.020..0.020 rows=1 loops=1)
+  ->  Index Scan using users_auth_user_id_key on users
+        Index Cond: (auth_user_id = '…'::uuid)
+Execution Time: 0.050 ms
+```
+
+**0.05 ms of execution inside a 200–500 ms round trip.** The index already
+exists and is used. Measured round trips on a warm connection: 173, 268, 216,
+192, 172, 237 ms.
+
+So **no index was added and no query was rewritten** — neither would move a
+number that is 99.98% network. What matters here is the *count* of round trips
+and whether a connection is already open, which is what the changes below
+address. Adding indexes "for performance" against this deployment would be
+cargo cult.
+
+The one real query-shape issue remains open and is already filed as **M1**:
+`listTransactionsForUser` and `listNotificationsForUser` have no `LIMIT`.
+
+---
+
+## Connection behaviour
+
+| | cold pool | warm pool |
+|---|---:|---:|
+| five concurrent queries | **2,008 ms** | **203 ms** |
+
+Ten to one, and none of it is the queries: the Postgres startup handshake is
+roughly ten round trips against a query's one.
+
+`DATABASE_POOL_MAX` was re-measured rather than assumed. Raising it to 12 made
+the cold burst **worse** (3,270 ms vs 2,008 ms) with no warm improvement — more
+connections simply means more simultaneous handshakes. **It stays at 5**, which
+contradicts the older note in CLAUDE.md §16.1a suggesting 12; that note was
+measured under different conditions and should be treated as superseded for
+this deployment shape.
+
+---
+
+## Fixes implemented
+
+### FIXED — Bounded retry for transient connection failures (`src/db/resilience.ts`)
+
+- Retries **only** failures that mean "the connection never got established":
+  `CONNECT_TIMEOUT`, `ECONNRESET`, `CONNECTION_CLOSED`, SQLSTATE class `08`,
+  `57P01`/`57P03`, and the same codes found on a nested `cause`.
+- A constraint violation, syntax error or permission error is re-thrown on the
+  **first** attempt, untouched. Permanent errors are never hidden.
+- Bounded by **both** a retry count (2 retries) and a **12 s wall-clock budget**,
+  because a count alone is not a bound when each attempt can burn a timeout.
+- Backoff is short with jitter, so several failing renders do not retry in
+  lockstep.
+- **Reads only.** No mutation is routed through it. `mutate()` is untouched, so
+  a retry can never duplicate a write — a mutation that failed after its
+  statements reached the server may have committed.
+- Every retry is recorded to `pipeline_events` as `database.connectRetry` with
+  `willRetry: true`, so a *recovered* fault is still visible. Without that, the
+  pooler could be failing a third of its connections and nothing would say so.
+- 13 unit tests in `src/db/resilience.test.ts`, no database required.
+
+`connect_timeout` was **lowered** from 10 s to 6 s — deliberately, and against
+the retry budget rather than in isolation. Healthy handshakes measure 2.3–4.6 s,
+so 6 s clears the worst healthy case while making the worst failure case exactly
+two attempts (~12 s), leaving room for the retry to reach a different endpoint.
+Raising it would not help: the broken endpoint does not complete in 20 s either.
+**The timeout was not increased, and no IP is hard-coded.**
+
+### FIXED — A deadline on every read
+
+`resilientRead()` in `@/server/database` now wraps the retry in the existing
+deadline, with the deadline **outside** the retry so three attempts cannot cost
+three deadlines. Applied to `account.service`, the `users` lookup in
+`auth/account.ts` and the operator lookup in `admin/session.ts` — the three
+paths that previously had none.
+
+Verified against a blackholed database: reads now fail at the deadline instead
+of hanging. `src/server/database.test.ts` pins this (12,207 ms for a fully dead
+host, versus never before).
+
+### FIXED — An outage is no longer a sign-out
+
+`getAuthPrincipal()` now throws `AuthProviderUnavailableError` when it cannot
+*reach* a verdict, and returns null only when the token is genuinely absent,
+expired or rejected. `(app)/layout.tsx` catches it and renders the shell with a
+recoverable "Unable to confirm your sign-in — you have not been signed out"
+notice, so **navigation stays usable and a good session is not destroyed**.
+
+The classification is pinned by 7 tests in `src/server/auth/session.test.ts`,
+including the direction that matters most: an unknown failure is treated as an
+outage, never as a rejection, because failing closed there is the bug.
+
+### FIXED — `getUser()` → `getClaims()` (≈385 ms off every authenticated request)
+
+This project signs JWTs with **ES256** (confirmed against
+`/auth/v1/.well-known/jwks.json`), so `getClaims()` verifies the signature
+in-process against the cached JWKS.
+
+**This is not the `getSession()` mistake CLAUDE.md §19.4 forbids.**
+`getSession()` decodes an attacker-controlled cookie and believes it;
+`getClaims()` checks a signature that cannot be forged without the project's
+private key, and rejects anything expired. Verified: a forged/garbage token
+still redirects to `/login` on `/`, `/wallet` and `/admin`. If the project ever
+reverts to a legacy HS256 secret, the SDK falls back to a network `getUser()`
+call by itself, so this stays correct either way.
+
+What is given up: a token revoked *server-side* stays valid until it expires.
+That costs nothing here, because this deployment cannot revoke server-side at
+all — it holds no service-role key (§19.6, §20.3).
+
+### FIXED — Loading boundaries (32 files)
+
+`loading.tsx` for every user route (14) and every console route (14), plus two
+shared skeleton vocabularies (`page-skeleton.tsx`, `admin-skeleton.tsx`) shaped
+like the screens they stand in for, so content lands where it was outlined.
+Server-rendered, `aria-busy` + `sr-only` labelled, no client JS needed.
+
+A side benefit worth knowing: Next prefetches a dynamic route only as far as its
+nearest `loading.tsx`. Adding them made link prefetching both **cheaper** (it no
+longer speculatively renders authenticated pages — the concern raised in **M9**)
+and **useful** (the skeleton is ready before the click resolves).
+
+### FIXED — Root error boundaries
+
+`src/app/error.tsx` (covers layout failures — the gap that let R2/R3 crash the
+document) and `src/app/global-error.tsx` (covers the root layout itself, with
+inline styles and no imports, since it cannot depend on what it is catching).
+
+Both show "Unable to load this information … Retry" and a digest reference.
+Verified with the database blackholed: **no stack trace, no SQL, no connection
+string reaches the browser** — checked by pattern-matching the response bodies.
+
+### FIXED — The sign-in page survives a database outage
+
+`/login` and `/admin/login` resolved the account/operator to offer a
+convenience redirect, and re-threw on failure — so during an outage the one page
+a stuck user is told to go to returned **500**. Both now fall back to showing
+the form, and `/login` bounds that lookup at 2 s of its own.
+
+Measured with the database blackholed: `/login` went **500 → 200**, and from
+**8,612 ms → 2,089 ms**.
+
+`redirect()` is called *outside* the `try` in both, because it works by throwing
+a signal that a broad `catch` would otherwise swallow.
+
+### FIXED — Connection pool pre-warming (`src/db/warmup.ts`)
+
+Opens four connections in the background when the pool is created, turning a
+cold five-query burst from 2,008 ms into 203 ms for everyone after the first
+request. Fire-and-forget; every failure swallowed, because a cold pool is slow,
+not broken.
+
+It hangs off `getDb()` rather than `instrumentation.ts`, and that is not a
+stylistic choice: Next compiles `instrumentation.ts` for the Edge runtime too
+and webpack resolves the graph statically, so even a dynamic `import()` behind a
+`NEXT_RUNTIME === "nodejs"` guard drags `postgres` → `node:net` into the edge
+bundle and **fails the build** with `UnhandledSchemeError`. This was verified,
+not assumed — it is the same wall the earlier attempt recorded in CLAUDE.md hit.
+(`node:net` in `client.ts` was also made a lazy import while fixing this.)
+
+`keep_alive` (60 s) was added so a socket dropped by a NAT or by Supavisor
+surfaces as an error the retry can handle rather than as a stall.
+
+### FIXED — M8: catalogue caching (`catalogue.service.ts`)
+
+Plans, VIP levels and deposit networks are now cached across requests with
+`unstable_cache`, tagged `catalogue`, TTL 300 s as a backstop only.
+
+Safe precisely because that data **belongs to nobody** — identical for every
+visitor, no balance, no identity, no verification state. The CRM's three plan
+mutations call the new `revalidateCatalogue()`, so an operator's edit appears on
+the next request rather than up to five minutes later (a path revalidation does
+not clear a tag-keyed entry).
+
+**No user-scoped data is cached across requests, and none must be.** Balances,
+allocations, KYC state and security data remain memoised *per request* only and
+re-read on the next one — which is what keeps "an operator blocks an account and
+it takes effect on their next request" true.
+
+It degrades to an uncached read when Next's incremental cache is absent (scripts,
+the scanner, the test suite), matched narrowly on that one invariant so real
+database errors still propagate.
+
+---
+
+## Duplicate queries removed
+
+**None were found, and this was checked rather than assumed.** Grouping
+`pipeline_events` by correlation id after the change:
+
+| real account queries per render | renders |
+|---|---|
+| 0 (fully memoised) | 15 |
+| 1 | 108 |
+| 2 or more | **0** |
+
+Exactly one `users` lookup per render. The request-scoped `cache()` work
+recorded in CLAUDE.md §16.2a is holding; the earlier duplication is genuinely
+gone and did not regress.
+
+---
+
+## Authentication problems discovered
+
+- **R3 above** — the one that matters, now fixed.
+- The middleware still uses `getSession()` and authorizes nothing, which stays
+  correct. It is now cheaper *relative* to the render, since the render no
+  longer makes a network call of its own.
+- No change was made to the login flow, the OTP/password paths, the callback,
+  cookie handling or the gate. Sign-in works as it did.
+
+---
+
+## Verified failure scenarios
+
+| scenario | result |
+|---|---|
+| Unauthenticated on every user route | 307 → `/login`, no 500 |
+| Unauthenticated on `/admin`, `/admin/users` | 307 → `/admin/login` |
+| **Forged/garbage session cookie** | 307 → `/login` (local verification rejects it) |
+| Database blackholed — `/login` | **200 in 2,089 ms** |
+| Database blackholed — `/`, `/wallet`, `/settings`, `/admin` | 500 with "Unable to load this information / Retry", bounded ~8 s |
+| Database blackholed — internals leaked? | **No** — no SQL, no connection string, no stack trace |
+| Fully dead database, read deadline | fails at ~12.2 s (two attempts), never hangs |
+| Transient connection failure | recovered by retry; recorded as `database.connectRetry` |
+| Permanent database error (constraint, syntax) | surfaced immediately, never retried |
+
+---
+
+## Remaining bottlenecks
+
+### NOT FIXED — REQUIRES INFRASTRUCTURE ACTION: the application is ~200 ms from its database
+
+This is now the dominant cost and **cannot be fixed in application code.**
+
+A warm round trip is 173–268 ms. Every authenticated page needs at least two
+sequential waves — resolve the account, then read the page's slices — because
+the second depends on the first. That is a **~400–500 ms floor** before Next
+renders anything, and it is why routes sit at 900–2,200 ms rather than the
+500 ms target.
+
+The fix is co-location: run the application in the database's region
+(`ap-northeast-2`), or move the database to the application's. Nothing else
+available in code will close this gap — the query itself already executes in
+0.05 ms.
+
+### NOT FIXED — REQUIRES SUPABASE ACTION: the unhealthy pooler endpoint
+
+The retry routes *around* the fault; it does not repair it. One of three
+endpoints intermittently accepts TCP and never completes the handshake, which is
+a Supabase-side problem worth raising with them. Watch
+`operation = 'database.connectRetry'` in `/admin/system-logs` to see how often it
+is actually happening — that telemetry did not exist before this pass.
+
+### PARTIALLY FIXED — per-section streaming
+
+`loading.tsx` gives page-first rendering: the shell and a shaped skeleton appear
+immediately and the content area streams in. Inner `<Suspense>` boundaries per
+section were **not** added, because each page's reads already run as a single
+parallel wave (`Promise.all` in `getUserSlices`), so splitting them would let
+sections arrive at the same moment in three pieces instead of one. It becomes
+worth doing if any page ever gains a genuinely slow independent section.
+
+### NOT FIXED — no browser-based verification
+
+Everything here was verified by HTTP request, database query and the built
+output. The Chrome extension was not connected during this pass, so **the
+loading and error states were not visually confirmed in a browser, and nothing
+was checked at 360 px**. The markup is present in the build (verified by
+string-matching the compiled output) and the components follow the existing
+mobile-first primitives, but CLAUDE.md §12's "actually look at it" step is
+outstanding. **M4** (no end-to-end browser tests) remains the right fix.
+
+### Still open, unchanged
+
+**M1** (unbounded list reads) is the one query-shape problem worth fixing next
+and becomes a real issue as history grows. **M9** is largely resolved as a side
+effect of the loading boundaries but was not explicitly tuned per link.
+
+---
+
+## Recommended next steps, in order of expected benefit
+
+1. **Co-locate the application and the database.** Worth more than every code
+   change in this pass combined — it attacks the ~400 ms floor directly.
+2. **Raise the pooler endpoint with Supabase**, with the `database.connectRetry`
+   counts as evidence.
+3. **M1 — paginate the unbounded list reads** before any account has real
+   history.
+4. **M4 — Playwright over the production build**, which would close the browser
+   verification gap noted above.
+5. Consider a short-TTL cache for the `auth_user_id → users.id` mapping *only*
+   if step 1 is impossible. It would remove one of the two waves, but it trades
+   away the "a block takes effect on the next request" guarantee, so it is a
+   deliberate trade and not a free win.
+
+---
+
+## Status summary
+
+| item | status |
+|---|---|
+| Transient connection failures retried, safely and boundedly | **FIXED** |
+| Deadline on every read path | **FIXED** |
+| Auth-provider outage no longer signs users out | **FIXED** |
+| Loading boundaries on every route | **FIXED** |
+| Root and global error boundaries | **FIXED** |
+| Sign-in page survives a database outage | **FIXED** |
+| Connection pool pre-warming | **FIXED** |
+| Catalogue cached across requests (M8) | **FIXED** |
+| Internal errors never shown to users | **FIXED** |
+| Duplicate queries | **none found** (already fixed previously, verified) |
+| Missing indexes | **none** — the hot query executes in 0.05 ms |
+| Navigation well under 500 ms | **NOT FIXED** — blocked by the ~200 ms RTT floor |
+| Per-section streaming | **PARTIALLY FIXED** — not warranted yet |
+| Unhealthy pooler endpoint | **REQUIRES SUPABASE ACTION** |
+| ~200 ms application↔database distance | **REQUIRES INFRASTRUCTURE ACTION** |
+| Browser/360 px visual verification | **NOT DONE** — extension unavailable |

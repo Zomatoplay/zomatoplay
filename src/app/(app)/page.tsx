@@ -1,3 +1,5 @@
+import { UserDataProvider } from "@/lib/prototype-store";
+import { getUserSlices } from "@/server/services/account.service";
 import { AddFundsCard } from "@/components/home/balance-card";
 import { EarningsCard } from "@/components/home/earnings-card";
 import {
@@ -9,33 +11,40 @@ import {
 import { PageContainer } from "@/components/navigation/app-shell";
 import { TopBar } from "@/components/navigation/top-bar";
 import { SectionHeader } from "@/components/shared/section-header";
-import { earningsSummary } from "@/data/investments";
-import { currentUser } from "@/data/user";
+import { getEarningsSummary } from "@/server/services/earnings.service";
 
-export default function HomePage() {
-  const firstName = currentUser.fullName.split(" ")[0];
+export default async function HomePage() {
+  // One wave, not three: these are independent reads and awaiting them in
+  // sequence would add a round trip each.
+  const [earnings, slices] = await Promise.all([
+    getEarningsSummary(),
+    getUserSlices(["profile", "balance", "investments", "transactions"] as const),
+  ]);
+  const firstName = slices.profile.fullName.split(" ")[0];
 
   return (
-    <>
-      <TopBar eyebrow="Welcome back" title={firstName} />
+    <UserDataProvider data={slices}>
+      <>
+        <TopBar eyebrow="Welcome back" title={firstName} />
 
-      <PageContainer className="space-y-6">
-        {/* KYC reminder sits above balances and investments, as specified. */}
-        <KycBannerLive />
+        <PageContainer className="space-y-6">
+          {/* KYC reminder sits above balances and investments, as specified. */}
+          <KycBannerLive />
 
-        <AccountSummaryLive />
+          <AccountSummaryLive />
 
-        <AddFundsCard />
+          <AddFundsCard />
 
-        <ActiveInvestmentsLive />
+          <ActiveInvestmentsLive />
 
-        <section className="space-y-3">
-          <SectionHeader title="Earnings overview" />
-          <EarningsCard earnings={earningsSummary} />
-        </section>
+          <section className="space-y-3">
+            <SectionHeader title="Earnings overview" />
+            <EarningsCard earnings={earnings} />
+          </section>
 
-        <RecentActivityLive />
-      </PageContainer>
-    </>
+          <RecentActivityLive />
+        </PageContainer>
+      </>
+  </UserDataProvider>
   );
 }

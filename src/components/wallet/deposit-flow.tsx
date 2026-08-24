@@ -1,9 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
-  CheckCircle2,
   ChevronRight,
   Loader2,
   Radio,
@@ -18,12 +17,9 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
-import { depositNetworks } from "@/data/transactions";
 import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
-import { usePrototypeStore } from "@/lib/prototype-store";
 import { cn } from "@/lib/utils";
-import { truncateMiddle } from "@/utils/format";
+import { requestTestDeposit } from "@/app/(app)/wallet/deposit/actions";
 import type { DepositFlowStage, DepositNetwork, DepositNetworkId } from "@/types";
 
 /**
@@ -39,7 +35,8 @@ import type { DepositFlowStage, DepositNetwork, DepositNetworkId } from "@/types
  * demo panel — the stages and their UI stay exactly as they are.
  */
 
-const DEMO_DEPOSIT_DEFAULT = 250;
+/** The default amount in the development-only pending-deposit control. */
+const TEST_DEPOSIT_DEFAULT = 250;
 
 function NetworkOption({
   network,
@@ -98,76 +95,59 @@ function NetworkOption({
 }
 
 export function DepositFlow({
+  networks,
   qrCodes,
 }: {
+  /** The deposit network catalogue, read server-side. */
+  networks: DepositNetwork[];
   /** Server-rendered QR SVGs, keyed by network id. */
   qrCodes: Record<DepositNetworkId, string>;
 }) {
-  const { creditDeposit } = usePrototypeStore();
-
   const [stage, setStage] = useState<DepositFlowStage>("select_network");
   const [networkId, setNetworkId] = useState<DepositNetworkId>("trc20");
-  const [confirmations, setConfirmations] = useState(0);
-  const [demoAmount, setDemoAmount] = useState(String(DEMO_DEPOSIT_DEFAULT));
-  const [reference, setReference] = useState<string | null>(null);
-  const [creditedAmount, setCreditedAmount] = useState(0);
+  const [testAmount, setTestAmount] = useState(String(TEST_DEPOSIT_DEFAULT));
+  const [pending, startTransition] = useTransition();
+  const router = useRouter();
 
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const network = depositNetworks.find((item) => item.id === networkId)!;
+  const network = networks.find((item) => item.id === networkId)!;
+  const amount = Number.parseFloat(testAmount);
+  const amountValid = Number.isFinite(amount) && amount >= network.minDeposit && amount > 0;
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
-
-  const amount = Number.parseFloat(demoAmount);
-  const amountValid =
-    Number.isFinite(amount) && amount >= network.minDeposit && amount > 0;
-
-  /** Stands in for the chain watcher detecting and confirming a transfer. */
-  const simulateIncomingTransfer = useCallback(() => {
-    if (!amountValid) return;
-
-    const txReference = `0x${Math.random().toString(16).slice(2).padEnd(12, "0")}${Math.random()
-      .toString(16)
-      .slice(2, 14)}`;
-    setReference(txReference);
-    setCreditedAmount(amount);
-    setConfirmations(0);
-    setStage("detected");
-
-    // Brief "detected" beat, then confirmations tick up to the requirement.
-    setTimeout(() => {
-      setStage("confirming");
-      timerRef.current = setInterval(() => {
-        setConfirmations((current) => {
-          const next = current + 1;
-          if (next >= network.requiredConfirmations) {
-            if (timerRef.current) clearInterval(timerRef.current);
-            setStage("credited");
-            creditDeposit({
-              amount,
-              network: network.id,
-              reference: txReference,
-            });
-            toast.success("Deposit credited", {
-              description: `${formatUsdt(amount)} added to your balance.`,
-            });
-            return network.requiredConfirmations;
-          }
-          return next;
-        });
-      }, 220);
-    }, 1200);
-  }, [amount, amountValid, creditDeposit, network.id, network.requiredConfirmations]);
+  /**
+   * Asks the server to record a pending deposit.
+   *
+   * This replaced a control that walked a fake confirmation counter and then
+   * credited the wallet in the browser. Two things were wrong with that, and
+   * the second is why React complained:
+   *
+   *  - It made up money. The balance moved without a ledger entry, without a
+   *    chain transfer, and without anything server-side ever agreeing.
+   *  - It called `creditDeposit()` from inside a `setConfirmations` updater.
+   *    Updater functions must be pure — React runs them during render — so
+   *    dispatching to the store from one updated `PrototypeStoreProvider`
+   *    while `DepositFlow` was rendering. That is exactly the "Cannot update a
+   *    component while rendering a different component" warning, and the fix
+   *    is not to defer the call but to not make it.
+   *
+   * The wallet now only ever moves because the scanner verified a solidified
+   * transfer.
+   */
+  function requestTestTransfer() {
+    if (!amountValid || pending) return;
+    startTransition(async () => {
+      const result = await requestTestDeposit({ amount: testAmount });
+      if (!result.ok) {
+        toast.error(result.message);
+        return;
+      }
+      setStage("awaiting_transfer");
+      toast.success("Pending deposit recorded", { description: result.message });
+      router.refresh();
+    });
+  }
 
   function restart() {
-    if (timerRef.current) clearInterval(timerRef.current);
     setStage("select_network");
-    setConfirmations(0);
-    setReference(null);
-    setCreditedAmount(0);
   }
 
   /* ---------------------------------------------------------------- */
@@ -187,7 +167,7 @@ export function DepositFlow({
         </div>
 
         <div className="space-y-3">
-          {depositNetworks.map((item) => (
+          {networks.map((item) => (
             <NetworkOption
               key={item.id}
               network={item}
@@ -211,59 +191,12 @@ export function DepositFlow({
   }
 
   /* ---------------------------------------------------------------- */
-  /* Stage: credited                                                   */
+  /* Stages: address / awaiting                                        */
   /* ---------------------------------------------------------------- */
-  if (stage === "credited") {
-    return (
-      <div className="space-y-5">
-        <Card className="p-6 text-center">
-          <span className="mx-auto flex size-14 items-center justify-center rounded-full bg-brand-soft text-brand">
-            <CheckCircle2 className="size-7" aria-hidden />
-          </span>
-          <h2 className="mt-4 text-lg font-semibold">Deposit credited</h2>
-          <p className="tabular mt-2 text-3xl font-semibold tracking-tight">
-            {formatUsdt(creditedAmount)}
-          </p>
-          <p className="tabular text-sm text-muted-foreground">
-            {formatUsdtAsInr(creditedAmount)}
-          </p>
-        </Card>
-
-        <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
-          <InfoRow label="Network" value={network.name} />
-          <InfoRow
-            label="Confirmations"
-            value={`${network.requiredConfirmations}/${network.requiredConfirmations}`}
-          />
-          {reference ? (
-            <InfoRow
-              label="Transaction ID"
-              value={
-                <span className="font-mono text-xs">
-                  {truncateMiddle(reference, 10, 8)}
-                </span>
-              }
-            />
-          ) : null}
-        </div>
-
-        <div className="space-y-2">
-          <Button asChild variant="brand" size="lg" block>
-            <Link href="/wallet">Back to wallet</Link>
-          </Button>
-          <Button variant="ghost" size="lg" block onClick={restart}>
-            Make another deposit
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Stages: address / awaiting / detected / confirming                */
-  /* ---------------------------------------------------------------- */
-  const watching = stage === "detected" || stage === "confirming";
-  const progress = (confirmations / network.requiredConfirmations) * 100;
+  // `detected` / `confirming` / `credited` are no longer client stages. They
+  // are database statuses driven by the scanner, and the wallet reads them
+  // from there — the browser has no way to know a transfer arrived.
+  const watching = stage === "awaiting_transfer";
 
   return (
     <div className="space-y-5">
@@ -319,61 +252,50 @@ export function DepositFlow({
           ) : (
             <Radio className="size-4 shrink-0 text-muted-foreground" aria-hidden />
           )}
-          <p className="text-sm font-medium">
-            {stage === "detected"
-              ? "Transaction detected"
-              : stage === "confirming"
-                ? "Confirming on-chain"
-                : "Waiting for your transfer"}
-          </p>
+          <p className="text-sm font-medium">Waiting for your transfer</p>
         </div>
 
-        <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground" aria-live="polite">
-          {stage === "detected"
-            ? "We found your transaction in the mempool. Waiting for the first confirmation."
-            : stage === "confirming"
-              ? `${confirmations} of ${network.requiredConfirmations} confirmations. Your balance updates automatically.`
-              : "This page updates automatically as soon as your deposit is detected on-chain. You can safely leave and come back."}
+        <p
+          className="mt-1.5 text-xs leading-relaxed text-muted-foreground"
+          aria-live="polite"
+        >
+          Deposits are detected on-chain and credited after the transaction is
+          final. Your balance updates once that happens — this page does not
+          decide it, and cannot.
         </p>
-
-        {stage === "confirming" ? (
-          <Progress
-            value={progress}
-            className="mt-3"
-            aria-label="Confirmation progress"
-          />
-        ) : null}
-
-        {reference ? (
-          <p className="mt-3 break-all font-mono text-[11px] text-muted-foreground">
-            {truncateMiddle(reference, 14, 10)}
-          </p>
-        ) : null}
       </Card>
 
-      {/* Demo-only control. Replaced by the real chain watcher at integration. */}
-      {!watching ? (
+      {/*
+        Development only, and absent from a production build.
+
+        It records a *pending* deposit through the same service layer an
+        operator reviews. It does not credit anything, does not fabricate a
+        transaction hash the explorer would resolve, and does not claim the
+        chain saw anything. Only the scanner can turn a transfer into money.
+      */}
+      {process.env.NODE_ENV !== "production" && !watching ? (
         <Card className="space-y-3 border-dashed p-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Demo control
+              Development control
             </p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              No blockchain is connected in this build. Use this to simulate an
-              incoming transfer and watch the confirmation states.
+              Records a <strong className="font-medium text-foreground">pending</strong>{" "}
+              deposit for the operator queue. It does not credit your balance —
+              only a verified on-chain transfer does that.
             </p>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="demo-amount" className="text-xs">
-              Simulated amount (USDT)
+            <Label htmlFor="test-amount" className="text-xs">
+              Amount (USDT)
             </Label>
             <Input
-              id="demo-amount"
+              id="test-amount"
               inputMode="decimal"
               type="text"
-              value={demoAmount}
+              value={testAmount}
               onChange={(event) =>
-                setDemoAmount(event.target.value.replace(/[^0-9.]/g, ""))
+                setTestAmount(event.target.value.replace(/[^0-9.]/g, ""))
               }
               aria-invalid={!amountValid}
             />
@@ -387,10 +309,10 @@ export function DepositFlow({
             variant="outline"
             size="sm"
             block
-            disabled={!amountValid}
-            onClick={simulateIncomingTransfer}
+            disabled={!amountValid || pending}
+            onClick={requestTestTransfer}
           >
-            Simulate incoming transfer
+            {pending ? "Recording…" : "Record pending deposit"}
           </Button>
         </Card>
       ) : null}

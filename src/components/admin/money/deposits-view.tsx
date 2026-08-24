@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, Wallet, XCircle } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CheckCircle2, ExternalLink, UserPlus, Wallet, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { AdminHeader } from "@/components/admin/layout/admin-header";
@@ -31,7 +32,15 @@ import { PermissionGate } from "@/components/admin/shared/permission-gate";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PrototypeNote } from "@/components/shared/notices";
 import { Button } from "@/components/ui/button";
+import { DepositAssignmentDialog } from "@/components/admin/money/deposit-assignment-dialog";
 import { ADMIN_PAGE_SIZE } from "@/constants/admin";
+import { NETWORK_LABELS, transactionUrl } from "@/lib/tron-explorer";
+import {
+  assignDepositAction,
+  creditDepositAction,
+  failDepositAction,
+  ignoreDepositAction,
+} from "@/app/admin/actions";
 import { depositNetworkLabels } from "@/data/admin/deposits";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
@@ -72,7 +81,12 @@ function DepositsBrowser() {
   const [status, setStatus] = useState<StatusFilter>("all");
   const [crediting, setCrediting] = useState<string | null>(null);
   const [failing, setFailing] = useState<string | null>(null);
+  const [assigning, setAssigning] = useState<string | null>(null);
+  const [pending, setPending] = useState<string | null>(null);
+  const router = useRouter();
 
+  // An affordance. The boundary is `requirePermission("deposits")` inside each
+  // action, on the server.
   const allowed = canManage(store.session, "deposits");
   const deposits = store.deposits;
 
@@ -124,8 +138,76 @@ function DepositsBrowser() {
 
   const creditTarget = deposits.find((deposit) => deposit.id === crediting);
   const failTarget = deposits.find((deposit) => deposit.id === failing);
+  const assignTarget = deposits.find((deposit) => deposit.id === assigning) ?? null;
 
-  /** Only a confirmed deposit is safe to credit; anything earlier can reorg. */
+  /**
+   * Runs a server action and re-reads.
+   *
+   * `router.refresh()` re-renders this page segment, which re-reads the
+   * deposits slice from the database. Without it the write would land and the
+   * screen would keep showing the old row.
+   */
+  async function run(
+    label: string,
+    action: () => Promise<{ ok: boolean; message: string }>,
+  ) {
+    setPending(label);
+    try {
+      const result = await action();
+      if (result.ok) {
+        toast.success(result.message, {
+          icon: <CheckCircle2 className="size-4 text-positive" />,
+        });
+        router.refresh();
+      } else {
+        // Surfaced, never swallowed: a refusal the operator cannot see is a
+        // refusal they will retry forever.
+        toast.error(result.message, {
+          icon: <XCircle className="size-4 text-destructive" />,
+        });
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "The deposit was not changed.",
+      );
+    } finally {
+      setPending(null);
+    }
+  }
+
+  /**
+ * A transaction hash, linked to the explorer when it is a real chain hash.
+ *
+ * The seeded sample rows carry placeholder hashes, and linking those would
+ * send an operator to a "not found" page — which is worse than no link,
+ * because it makes them distrust the real ones.
+ */
+function TxLink({ deposit }: { deposit: AdminDeposit }) {
+  const href = transactionUrl(deposit.chainNetwork, deposit.txHash);
+  const label = truncateMiddle(deposit.txHash, 10, 6);
+
+  if (!href) {
+    return <MonoValue className="text-muted-foreground">{label}</MonoValue>;
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="inline-flex items-center gap-1 rounded font-mono text-xs text-brand underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+    >
+      {label}
+      <ExternalLink className="size-3" aria-hidden />
+      <span className="sr-only">
+        {" "}
+        (opens {NETWORK_LABELS[deposit.chainNetwork]} explorer in a new tab)
+      </span>
+    </a>
+  );
+}
+
+/** Only a confirmed deposit is safe to credit; anything earlier can reorg. */
   const canCredit = (deposit: AdminDeposit) =>
     deposit.status === "confirmed" ||
     deposit.status === "confirming" ||
@@ -145,18 +227,41 @@ function DepositsBrowser() {
     },
     {
       id: "user",
-      header: "User",
-      cell: (deposit) => (
-        <Link
-          href={`/admin/users/${deposit.userId}`}
-          className="block rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        >
-          <PrimaryCell
-            title={deposit.userName}
-            subtitle={deposit.userDisplayId}
-          />
-        </Link>
-      ),
+      header: "Assigned to",
+      cell: (deposit) =>
+        deposit.userId ? (
+          <Link
+            href={`/admin/users/${deposit.userId}`}
+            className="block rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          >
+            <PrimaryCell
+              title={deposit.userName}
+              subtitle={deposit.userDisplayId}
+            />
+          </Link>
+        ) : (
+          // Not a placeholder for a missing name — the deposit genuinely
+          // belongs to nobody until an operator attributes it.
+          <span className="flex flex-col">
+            <span className="text-sm font-medium text-warning">Unassigned</span>
+            <span className="text-xs text-muted-foreground">
+              Needs attribution
+            </span>
+          </span>
+        ),
+    },
+    {
+      id: "sender",
+      header: "From",
+      hideBelow: "xl",
+      cell: (deposit) =>
+        deposit.senderAddress ? (
+          <MonoValue className="text-muted-foreground">
+            {truncateMiddle(deposit.senderAddress, 6, 6)}
+          </MonoValue>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        ),
     },
     {
       id: "amount",
@@ -178,8 +283,14 @@ function DepositsBrowser() {
       header: "Network",
       hideBelow: "lg",
       cell: (deposit) => (
-        <span className="text-xs text-muted-foreground">
-          {depositNetworkLabels[deposit.network]}
+        <span className="flex flex-col">
+          <span className="text-xs text-muted-foreground">
+            {depositNetworkLabels[deposit.network]}
+          </span>
+          <span className="text-[11px] text-muted-foreground">
+            {NETWORK_LABELS[deposit.chainNetwork]} ·{" "}
+            {deposit.tokenSymbol ?? "USDT"}
+          </span>
         </span>
       ),
     },
@@ -197,11 +308,7 @@ function DepositsBrowser() {
       id: "tx",
       header: "Transaction",
       hideBelow: "xl",
-      cell: (deposit) => (
-        <MonoValue className="text-muted-foreground">
-          {truncateMiddle(deposit.txHash, 10, 6)}
-        </MonoValue>
-      ),
+      cell: (deposit) => <TxLink deposit={deposit} />,
     },
     {
       id: "confirmations",
@@ -227,7 +334,29 @@ function DepositsBrowser() {
       srOnlyHeader: true,
       numeric: true,
       cell: (deposit) =>
-        canCredit(deposit) ? (
+        // An unattributed chain deposit needs a user before it can be credited,
+        // so its primary action is attribution rather than "Credit".
+        deposit.userId === null && deposit.status !== "ignored" ? (
+          <span className="flex justify-end gap-1.5">
+            <Button
+              variant="brand"
+              size="sm"
+              disabled={!allowed || pending !== null}
+              onClick={() => setAssigning(deposit.id)}
+            >
+              <UserPlus className="size-3.5" aria-hidden />
+              Assign
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!allowed || pending !== null}
+              onClick={() => setFailing(deposit.id)}
+            >
+              Ignore
+            </Button>
+          </span>
+        ) : canCredit(deposit) ? (
           <span className="flex justify-end gap-1.5">
             <Button
               variant="brand"
@@ -255,9 +384,10 @@ function DepositsBrowser() {
   return (
     <AdminSection className="space-y-4">
       <PrototypeNote>
-        No blockchain connection exists in this build. Transaction hashes and
-        confirmation counts are sample values, and crediting a deposit changes
-        prototype state only.
+        Deposits detected on TRON Shasta are real testnet transfers, recorded in
+        the database and credited for good when assigned. Rows carrying
+        placeholder hashes are sample data from before the chain integration.
+        Withdrawals remain records only — nothing pays out.
       </PrototypeNote>
 
       <AdminStatGrid className="md:grid-cols-3 xl:grid-cols-3">
@@ -390,10 +520,10 @@ function DepositsBrowser() {
         reason={{ label: "Note", placeholder: "Anything worth recording?" }}
         onConfirm={(note) => {
           if (!crediting) return;
-          store.creditDeposit(crediting, note);
-          toast.success("Deposit credited", {
-            icon: <CheckCircle2 className="size-4 text-positive" />,
-          });
+          void run("credit", () =>
+            creditDepositAction({ depositId: crediting, note }),
+          );
+          setCrediting(null);
         }}
       >
         {creditTarget &&
@@ -436,10 +566,35 @@ function DepositsBrowser() {
         }}
         onConfirm={(reason) => {
           if (!failing) return;
-          store.failDeposit(failing, reason);
-          toast.success("Deposit marked failed", {
-            icon: <XCircle className="size-4 text-destructive" />,
-          });
+          const target = deposits.find((deposit) => deposit.id === failing);
+          // Two different statements, so two different actions. An
+          // unattributed transfer is "not ours" — ignored, internal. An
+          // attributed one is "your deposit did not go through" — failed, and
+          // the reason is shown to that account.
+          void run(target?.userId ? "fail" : "ignore", () =>
+            target?.userId
+              ? failDepositAction({ depositId: failing, reason })
+              : ignoreDepositAction({ depositId: failing, reason }),
+          );
+          setFailing(null);
+        }}
+      />
+
+      <DepositAssignmentDialog
+        deposit={assignTarget}
+        users={store.users}
+        open={assigning !== null}
+        onOpenChange={(open) => !open && setAssigning(null)}
+        onConfirm={(userId, note) => {
+          if (!assigning) return;
+          void run("assign", () =>
+            assignDepositAction({
+              depositId: assigning,
+              userId,
+              note,
+            }),
+          );
+          setAssigning(null);
         }}
       />
     </AdminSection>

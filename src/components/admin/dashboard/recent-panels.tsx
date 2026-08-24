@@ -18,8 +18,6 @@ import {
   ActivityTimeline,
   type TimelineEntry,
 } from "@/components/admin/shared/activity-timeline";
-import { adminInvestments } from "@/data/admin/investments";
-import { recentSecurityEvents } from "@/data/admin/security";
 import { formatUsdt } from "@/lib/currency";
 import { useAdminStore } from "@/lib/admin-store";
 import { cn } from "@/lib/utils";
@@ -242,7 +240,8 @@ export function RecentKycSubmissions() {
 }
 
 export function RecentInvestments() {
-  const rows = [...adminInvestments]
+  const { investments } = useAdminStore();
+  const rows = [...investments]
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
     .slice(0, 5);
 
@@ -281,7 +280,8 @@ const SECURITY_ICONS: Record<SecurityEventType, LucideIcon> = {
 };
 
 export function RecentSecurityEvents() {
-  const entries: TimelineEntry[] = recentSecurityEvents.slice(0, 6).map((event) => ({
+  const { securityEvents } = useAdminStore();
+  const entries: TimelineEntry[] = securityEvents.slice(0, 6).map((event) => ({
     id: event.id,
     title: event.description,
     timestamp: event.createdAt,

@@ -1,5 +1,4 @@
 import { Card } from "@/components/ui/card";
-import { monthlyEarningsHistory } from "@/data/investments";
 import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import type { EarningsSummary } from "@/types";
@@ -10,12 +9,15 @@ import type { EarningsSummary } from "@/types";
  */
 export function EarningsBreakdown({
   earnings,
+  monthlyHistory,
   className,
 }: {
   earnings: EarningsSummary;
+  /** Month-by-month totals, read server-side. */
+  monthlyHistory: { month: string; amount: number; partial: boolean }[];
   className?: string;
 }) {
-  const peak = Math.max(...monthlyEarningsHistory.map((row) => row.amount));
+  const peak = Math.max(...monthlyHistory.map((row) => row.amount));
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -45,7 +47,7 @@ export function EarningsBreakdown({
       <Card className="p-5">
         <h3 className="text-sm font-semibold">Previous months</h3>
         <ul className="mt-4 space-y-3.5">
-          {monthlyEarningsHistory.map((row) => (
+          {monthlyHistory.map((row) => (
             <li key={row.month} className="space-y-1.5">
               <div className="flex items-baseline justify-between gap-3">
                 <span className="min-w-0 truncate text-sm text-foreground">

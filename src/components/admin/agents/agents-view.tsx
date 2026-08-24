@@ -10,7 +10,6 @@ import {
   SlidersHorizontal,
   UserCog,
 } from "lucide-react";
-import { toast } from "sonner";
 
 import { AgentFormSheet } from "@/components/admin/agents/agent-form-sheet";
 import { AdminHeader } from "@/components/admin/layout/admin-header";
@@ -58,6 +57,13 @@ import {
 } from "@/components/ui/sheet";
 import { canManage, summarisePermissions } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
+import { useAdminAction } from "@/components/admin/shared/use-admin-action";
+import {
+  createAgentAction,
+  sendAgentPasswordResetAction,
+  setAgentDisabledAction,
+  updateAgentAction,
+} from "@/app/admin/actions";
 import type { AdminAgent, AdminPermissionSet, AgentStatus } from "@/types/admin";
 import { formatDate, formatDateTime } from "@/utils/format";
 
@@ -90,6 +96,7 @@ export function AgentsView() {
 
 function AgentsManager() {
   const store = useAdminStore();
+  const { run } = useAdminAction();
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [creating, setCreating] = useState(false);
@@ -377,8 +384,9 @@ function AgentsManager() {
         open={creating}
         onOpenChange={setCreating}
         onSubmit={(draft) => {
-          store.createAgent(draft);
-          toast.success(`${draft.name} invited`);
+          run(() => createAgentAction(draft), {
+            onSuccess: () => setCreating(false),
+          });
         }}
       />
 
@@ -389,8 +397,9 @@ function AgentsManager() {
         onOpenChange={(open) => !open && setEditing(null)}
         onSubmit={(draft) => {
           if (!editing) return;
-          store.updateAgent(editing.id, draft);
-          toast.success(`${draft.name} updated`);
+          run(() => updateAgentAction({ agentId: editing.id, ...draft }), {
+            onSuccess: () => setEditing(null),
+          });
         }}
       />
 
@@ -399,8 +408,20 @@ function AgentsManager() {
         onOpenChange={(open) => !open && setPermissionsFor(null)}
         onSave={(permissions) => {
           if (!permissionsFor) return;
-          store.setAgentPermissions(permissionsFor.id, permissions);
-          toast.success(`Permissions updated for ${permissionsFor.name}`);
+          // Permissions travel with the rest of the operator record: one
+          // action, one transaction, one audit entry. Splitting them would let
+          // a name change succeed while the grants it accompanied did not.
+          run(
+            () =>
+              updateAgentAction({
+                agentId: permissionsFor.id,
+                name: permissionsFor.name,
+                email: permissionsFor.email,
+                note: permissionsFor.note,
+                permissions,
+              }),
+            { onSuccess: () => setPermissionsFor(null) },
+          );
         }}
       />
 
@@ -442,9 +463,14 @@ function AgentsManager() {
         reason={{ label: "Reason", required: toggling?.status !== "disabled" }}
         onConfirm={(reason) => {
           if (!toggling) return;
-          const disabling = toggling.status !== "disabled";
-          store.setAgentDisabled(toggling.id, disabling, reason);
-          toast.success(disabling ? "Agent disabled" : "Agent enabled");
+          run(() =>
+            setAgentDisabledAction({
+              agentId: toggling.id,
+              disabled: toggling.status !== "disabled",
+              note: reason,
+            }),
+          );
+          setToggling(null);
         }}
       />
 
@@ -467,8 +493,8 @@ function AgentsManager() {
         reason={{ label: "Note" }}
         onConfirm={(note) => {
           if (!resetting) return;
-          store.resetAgentPassword(resetting.id, note);
-          toast.success(`Password reset sent to ${resetting.email}`);
+          run(() => sendAgentPasswordResetAction({ agentId: resetting.id, note }));
+          setResetting(null);
         }}
       />
     </AdminSection>

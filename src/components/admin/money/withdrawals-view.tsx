@@ -2,8 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Banknote, CheckCircle2 } from "lucide-react";
-import { toast } from "sonner";
+import { Banknote } from "lucide-react";
 
 import { AdminHeader } from "@/components/admin/layout/admin-header";
 import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
@@ -35,6 +34,12 @@ import { ADMIN_PAGE_SIZE } from "@/constants/admin";
 import { withdrawalRejectionReasons } from "@/data/admin/withdrawals";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
+import { useAdminAction } from "@/components/admin/shared/use-admin-action";
+import {
+  approveWithdrawalAction,
+  markWithdrawalPaidAction,
+  rejectWithdrawalAction,
+} from "@/app/admin/actions";
 import { formatInr, formatUsdt } from "@/lib/currency";
 import type { AdminWithdrawal, AdminWithdrawalStatus } from "@/types/admin";
 import { formatDateTime } from "@/utils/format";
@@ -69,6 +74,7 @@ export function WithdrawalsView() {
 
 function WithdrawalsBrowser() {
   const store = useAdminStore();
+  const { run } = useAdminAction();
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [approving, setApproving] = useState<string | null>(null);
@@ -421,10 +427,8 @@ function WithdrawalsBrowser() {
         reason={{ label: "Note", placeholder: "Anything worth recording?" }}
         onConfirm={(note) => {
           if (!approving) return;
-          store.approveWithdrawal(approving, note);
-          toast.success("Withdrawal approved", {
-            icon: <CheckCircle2 className="size-4 text-positive" />,
-          });
+          run(() => approveWithdrawalAction({ withdrawalId: approving, note }));
+          setApproving(null);
         }}
       >
         {approveTarget ? <PayoutBreakdown withdrawal={approveTarget} /> : null}
@@ -453,8 +457,11 @@ function WithdrawalsBrowser() {
         }}
         onConfirm={(reason) => {
           if (!rejecting) return;
-          store.rejectWithdrawal(rejecting, reason);
-          toast.success("Withdrawal rejected");
+          // Returns the held balance as its own ledger entry, so the user's
+          // history shows the hold and its reversal rather than a balance that
+          // silently came back.
+          run(() => rejectWithdrawalAction({ withdrawalId: rejecting, reason }));
+          setRejecting(null);
         }}
       />
 
@@ -482,8 +489,15 @@ function WithdrawalsBrowser() {
         }}
         onConfirm={(reference) => {
           if (!paying) return;
-          store.markWithdrawalPaid(paying, reference);
-          toast.success("Withdrawal marked paid");
+          // Records that an operator sent the money by some means outside this
+          // system. Nothing here pays anyone — there is no payout rail.
+          run(() =>
+            markWithdrawalPaidAction({
+              withdrawalId: paying,
+              payoutReference: reference,
+            }),
+          );
+          setPaying(null);
         }}
       >
         {payTarget ? <PayoutBreakdown withdrawal={payTarget} /> : null}

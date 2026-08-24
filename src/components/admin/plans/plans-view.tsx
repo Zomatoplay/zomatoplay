@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { Layers, PencilLine, Plus, Power, PowerOff } from "lucide-react";
-import { toast } from "sonner";
 
 import { AdminHeader } from "@/components/admin/layout/admin-header";
 import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
@@ -18,6 +17,12 @@ import { planStatusDescriptions } from "@/data/admin/plans";
 import { rewardFrequencyLabels, riskLabels } from "@/data/plans";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
+import { useAdminAction } from "@/components/admin/shared/use-admin-action";
+import {
+  createPlanAction,
+  setPlanDisabledAction,
+  updatePlanAction,
+} from "@/app/admin/actions";
 import { formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import type { AdminPlan } from "@/types/admin";
@@ -49,6 +54,7 @@ export function PlansView() {
 
 function PlansManager() {
   const store = useAdminStore();
+  const { run } = useAdminAction();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<AdminPlan | null>(null);
   const [toggling, setToggling] = useState<AdminPlan | null>(null);
@@ -102,8 +108,7 @@ function PlansManager() {
         open={creating}
         onOpenChange={setCreating}
         onSubmit={(draft) => {
-          store.createPlan(draft);
-          toast.success(`${draft.name} created`);
+          run(() => createPlanAction(draft), { onSuccess: () => setCreating(false) });
         }}
       />
 
@@ -114,8 +119,9 @@ function PlansManager() {
         onOpenChange={(open) => !open && setEditing(null)}
         onSubmit={(draft) => {
           if (!editing) return;
-          store.updatePlan(editing.id, draft);
-          toast.success(`${draft.name} updated`);
+          run(() => updatePlanAction({ planId: editing.id, plan: draft }), {
+            onSuccess: () => setEditing(null),
+          });
         }}
       />
 
@@ -156,9 +162,18 @@ function PlansManager() {
         reason={{ label: "Reason", required: toggling?.status !== "disabled" }}
         onConfirm={(reason) => {
           if (!toggling) return;
-          const disabling = toggling.status !== "disabled";
-          store.setPlanDisabled(toggling.id, disabling, reason);
-          toast.success(disabling ? "Plan disabled" : "Plan re-opened");
+          // The public catalogue reads the same `plans` rows, so disabling here
+          // withdraws the plan from the user application too. That is the whole
+          // point: an admin change that left `/plans` reading a separate
+          // hardcoded constant would look successful and do nothing.
+          run(() =>
+            setPlanDisabledAction({
+              planId: toggling.id,
+              disabled: toggling.status !== "disabled",
+              note: reason,
+            }),
+          );
+          setToggling(null);
         }}
       />
     </AdminSection>

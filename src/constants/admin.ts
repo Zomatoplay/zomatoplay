@@ -1,22 +1,5 @@
-import {
-  BadgeCheck,
-  Banknote,
-  BellRing,
-  ClipboardList,
-  LayoutDashboard,
-  Layers,
-  ScrollText,
-  Settings,
-  TrendingUp,
-  UserCog,
-  Users,
-  Wallet,
-  type LucideIcon,
-} from "lucide-react";
-
 import type {
   AdminPermissionDescriptor,
-  AdminPermissionId,
   AdminPermissionSet,
 } from "@/types/admin";
 
@@ -25,129 +8,15 @@ import type {
  *
  * Kept separate from `@/constants/app` (the user application) so the two areas
  * never share navigation or configuration by accident.
+ *
+ * Deliberately free of any UI import: the seed data in `@/data/admin` reads the
+ * permission catalogue below, and the server layer reads the seed data. The
+ * navigation, which needs an icon per entry, lives in
+ * `@/constants/admin-navigation`.
  */
 
 export const ADMIN_APP_NAME = "Nanotron";
 export const ADMIN_APP_SUBTITLE = "Master CRM";
-
-/* -------------------------------------------------------------------------- */
-/* Navigation                                                                  */
-/* -------------------------------------------------------------------------- */
-
-export interface AdminNavItem {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-  /** Permission that gates this destination. */
-  permission: AdminPermissionId;
-  /** Grouping in the sidebar. */
-  group: "Overview" | "Operations" | "Platform" | "Administration";
-}
-
-/**
- * Single source of truth for the admin sidebar and the mobile nav drawer.
- * Adding an entry here adds it to both, and it is automatically hidden from
- * agents who lack the permission.
- */
-export const ADMIN_NAV: AdminNavItem[] = [
-  {
-    href: "/admin",
-    label: "Dashboard",
-    icon: LayoutDashboard,
-    permission: "users",
-    group: "Overview",
-  },
-  {
-    href: "/admin/users",
-    label: "Users",
-    icon: Users,
-    permission: "users",
-    group: "Operations",
-  },
-  {
-    href: "/admin/kyc",
-    label: "KYC",
-    icon: BadgeCheck,
-    permission: "kyc",
-    group: "Operations",
-  },
-  {
-    href: "/admin/deposits",
-    label: "Deposits",
-    icon: Wallet,
-    permission: "deposits",
-    group: "Operations",
-  },
-  {
-    href: "/admin/withdrawals",
-    label: "Withdrawals",
-    icon: Banknote,
-    permission: "withdrawals",
-    group: "Operations",
-  },
-  {
-    href: "/admin/investments",
-    label: "Investments",
-    icon: TrendingUp,
-    permission: "investments",
-    group: "Operations",
-  },
-  {
-    href: "/admin/plans",
-    label: "Plans",
-    icon: Layers,
-    permission: "plans",
-    group: "Platform",
-  },
-  {
-    href: "/admin/referrals",
-    label: "Referrals",
-    icon: ClipboardList,
-    permission: "referrals",
-    group: "Platform",
-  },
-  {
-    href: "/admin/notifications",
-    label: "Notifications",
-    icon: BellRing,
-    permission: "notifications",
-    group: "Platform",
-  },
-  {
-    href: "/admin/agents",
-    label: "Agents",
-    icon: UserCog,
-    permission: "agents",
-    group: "Administration",
-  },
-  {
-    href: "/admin/audit-logs",
-    label: "Audit logs",
-    icon: ScrollText,
-    permission: "audit_logs",
-    group: "Administration",
-  },
-  {
-    href: "/admin/settings",
-    label: "Settings",
-    icon: Settings,
-    permission: "settings",
-    group: "Administration",
-  },
-];
-
-export const ADMIN_NAV_GROUPS = [
-  "Overview",
-  "Operations",
-  "Platform",
-  "Administration",
-] as const;
-
-/** True when `pathname` should highlight `item` in the admin navigation. */
-export function isAdminNavItemActive(item: AdminNavItem, pathname: string) {
-  if (item.href === "/admin") return pathname === "/admin";
-  return pathname === item.href || pathname.startsWith(`${item.href}/`);
-}
 
 /* -------------------------------------------------------------------------- */
 /* Permissions                                                                 */

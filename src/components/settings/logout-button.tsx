@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { LogOut, RotateCcw } from "lucide-react";
-import { toast } from "sonner";
+import { useState, useTransition } from "react";
+import { Loader2, LogOut } from "lucide-react";
 
 import { ListGroup, ListRow } from "@/components/shared/list-row";
 import { Button } from "@/components/ui/button";
@@ -15,42 +14,28 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { usePrototypeStore } from "@/lib/prototype-store";
+import { signOutAction } from "@/app/(app)/settings/actions";
 
 /**
- * Logout, plus a demo-only control to reset the in-memory prototype state.
+ * Sign out.
  *
- * INTEGRATION POINT: `handleLogout` will clear the session and redirect to the
- * sign-in route once authentication exists.
+ * The "reset demo data" control that used to sit here is gone: it restored an
+ * in-memory copy of one demo account's balances and verification status, and
+ * account state now lives in PostgreSQL where a button cannot rewrite it.
  */
 export function AccountActions() {
-  const { reset } = usePrototypeStore();
   const [open, setOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
 
   function handleLogout() {
-    setOpen(false);
-    toast("Signed out", {
-      description: "Authentication is not part of this build — nothing changed.",
-    });
-  }
-
-  function handleReset() {
-    reset();
-    toast.success("Demo data reset", {
-      description: "Balances, investments and verification are back to their seed values.",
+    startTransition(async () => {
+      await signOutAction();
     });
   }
 
   return (
     <>
       <ListGroup>
-        <ListRow
-          icon={RotateCcw}
-          title="Reset demo data"
-          description="Restore the sample balances, investments and KYC status."
-          onClick={handleReset}
-          hideChevron
-        />
         <ListRow
           icon={LogOut}
           title="Log out"
@@ -70,13 +55,22 @@ export function AccountActions() {
           </SheetHeader>
           <SheetBody>
             <p className="text-sm leading-relaxed text-muted-foreground">
-              Authentication is not implemented in this build, so this is a
-              demonstration of the confirmation step only.
+              Your session will end on this device. Your balances, allocations
+              and verification stay on your account.
             </p>
           </SheetBody>
           <SheetFooter>
-            <Button variant="destructive" size="lg" block onClick={handleLogout}>
-              Log out
+            <Button
+              variant="destructive"
+              size="lg"
+              block
+              onClick={handleLogout}
+              disabled={pending}
+            >
+              {pending ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : null}
+              {pending ? "Signing out…" : "Log out"}
             </Button>
             <Button variant="ghost" size="lg" block onClick={() => setOpen(false)}>
               Cancel

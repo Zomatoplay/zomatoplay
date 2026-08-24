@@ -4,6 +4,1226 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-08-24 — Referral attribution, the deposit mystery, layout fetching
+
+### The deposits that "were not being detected" were not deposits
+
+The reported failure was that test USDT sent to the Shasta receiving address
+never appeared. It was investigated by querying TronGrid directly rather than by
+reading the scanner's code, and the pipeline turned out to be working correctly.
+
+`GET /v1/accounts/TE9hzp…/transactions/trc20` with **no contract filter at all**
+returns exactly **one** transfer to that address, dated 2026-08-20 — the one
+already recorded, verified, solidified and sitting `confirmed`/unassigned in the
+database.
+
+The native-transaction endpoint tells the rest of the story: **six
+`TransferContract` transactions**, three of them on 2026-08-22 (200, 111 and
+100 TRX). The account holds **4,461 TRX and exactly 1,000 USDT**.
+
+The payments were **native TRX, not TRC-20 USDT**. Every TRC-20 address is also a
+valid address for the chain's own coin, and a wallet will happily send it. Those
+transfers succeed on-chain and are invisible to a TRC-20 transfer query — a
+different endpoint entirely — so nothing detected them and nothing could credit
+them.
+
+Scanner state confirms it was never broken: `last_success_at` 2026-08-23,
+`consecutive_failures` 0, `last_error` null.
+
+Two changes follow from this:
+
+- The deposit screen's wrong-asset warning is now the loudest element on the
+  card and names TRX explicitly. It was previously one grey footnote about
+  contract addresses, which was evidently not enough.
+- Recording wrong-asset arrivals so they are at least *visible* is filed as
+  H1 in `FUTURE_TASKS.md`. Today a user can send TRX and watch it vanish from
+  the product's view entirely, which is the part that should not stand.
+
+### Referral attribution now exists
+
+It did not. `/signup` ignored `?ref=` completely, `users.referred_by_code` was
+never set by any code path, and the referral link pointed at
+`https://nanotron.app/join/CODE` — a route that does not exist.
+
+- The **middleware** captures `?ref=` on any route into a short-lived httpOnly
+  cookie. A shared link can point anywhere, and the person following it may
+  browse, sign up, then confirm their email minutes later in a second request;
+  client memory does not survive that.
+- **First one wins.** An existing capture is never overwritten, so a second link
+  cannot steal an attribution the first earned.
+- `ensureAccountForCurrentPrincipal` resolves the code **only on the account-
+  creation path**, writing `referred_by_code`, the `referrals` row and the
+  referrer's counters in the same transaction as the account. An account that
+  already exists is never re-attributed — not when adopted by email, not on a
+  later sign-in. A referrer that can change afterwards is one that can be
+  stolen.
+- Refused: an unknown code, a malformed code, and self-referral (matched by
+  email, since the new row has no id yet). A bad code costs the signup nothing —
+  the account is created unattributed rather than refused, because a broken link
+  is not the new user's fault.
+- The link is now `/signup?ref=CODE`, which is what the middleware captures.
+
+Verified against the running server: valid code captured (httpOnly, SameSite=Lax),
+malformed rejected, captured on `/` as well as `/signup`, existing capture not
+overwritten. The lookup and self-referral guards were verified against the
+database. **Not verified end to end**: a live signup consuming the cookie, because
+that needs an email confirmation and Supabase's development sender is rate
+limited.
+
+No commission is calculated or paid. That is C1 in `FUTURE_TASKS.md`.
+
+### Layout fetching, measured rather than assumed
+
+The route-group layout fetched six account slices on **every** user page,
+including screens that rendered none of them. It now fetches **nothing**: pages
+declare what they need via `getUserSlices([...])` and pass it to a page-level
+provider, the same split the CRM already uses.
+
+Reading a slice a page did not provide **throws**, naming the slice, rather than
+defaulting. For a wallet, a zero is not a missing value — it is a wrong one, and
+a plausible wrong number about money is the worst thing this application can
+render. The regression sweep found two pages I had mis-mapped exactly this way;
+both were caught immediately rather than shipping a silent zero.
+
+**The result was mixed, and the middle step was worse than the start.** Measured
+interleaved with an untouched control route (`/admin/users`, stable at
+1,228–1,298ms across all four rounds, so the environment held):
+
+| Route | 6 slices in layout | 1 in layout | 0 in layout | final |
+|---|---|---|---|---|
+| `/settings/kyc` | 2,048 | 1,799 | 1,608 | **1,823** |
+| `/plans` | 1,942 | 2,249 | 2,757 | **2,050** |
+| `/wallet` | 2,098 | 2,261 | 2,671 | **2,500** |
+| `/` | 2,420 | 2,874 | 2,704 | **2,675** |
+
+Two things were learned the hard way. Leaving a *single* read in the layout was
+worse than leaving six, because an await in a layout gates every page beneath it
+— one query serialised everything after it. And the page-level rewrite
+introduced five sequential awaits where parallel ones belonged; fixing those
+recovered `/plans` from 2,757 to 2,050.
+
+`/wallet` and `/` still measure above their starting point and the cause is not
+established — both now issue *fewer* distinct queries than before, which makes
+the result counter-intuitive. Filed as H2a rather than explained away.
+
+### Also
+
+- `FUTURE_TASKS.md` added: 6 critical, 7 high, 7 medium, 5 low, known
+  limitations, and a production-readiness checklist that says "no" in the places
+  it should.
+- A network blip during measurement produced `ConnectTimeoutError …
+  supabase.co:443` and the tracer caught it precisely — `auth.resolvePrincipal`
+  averaging 6,030ms, `render.redirected` averaging 10,500ms (the connect
+  timeout). That run was discarded rather than reported. It also exposed C5: an
+  auth-provider outage is currently indistinguishable from a logout.
+
+### Checks
+
+`typecheck`, `lint`, `next build`, **107/107 tests**, `db:check` (32 tables, 41
+enums, 26 foreign keys, 102 indexes), and a sweep confirming **all 27 user and
+admin routes render 200** with no missing-slice errors.
+
+---
+
+## 2026-08-23 (later) — The slowness was connection churn, not queries
+
+Navigation felt slow. The cause was not the database being busy, the queries
+being unindexed, or authentication being chatty — it was the application
+throwing away its database connections every twenty seconds and rebuilding them
+on the next click.
+
+### The measurement that found it
+
+Timings against the configured Supabase project (session pooler,
+ap-northeast-2, from India), medians:
+
+| | |
+|---|---|
+| DNS resolution | **1 ms** |
+| TCP connect | **~200 ms** |
+| **Opening a pooled connection** | **~1,930–2,042 ms** |
+| Query on an open connection | **~199–206 ms** |
+| Supabase Auth `getUser()` | **~345 ms** |
+
+Opening a connection costs ten times a query, because the Postgres startup
+handshake — SSLRequest, TLS, SCRAM, ready-for-query — is roughly ten round
+trips at 200 ms each.
+
+`idle_timeout` was **20 seconds**, which is how long a person spends reading a
+page before clicking the next thing. Isolated proof, A/B on the same code:
+
+| | after 30 s idle |
+|---|---|
+| `idle_timeout: 20` | **2,187 ms** — reconnected |
+| `idle_timeout: 0` | **278 ms** — stayed warm |
+
+### Two false starts, both worth recording
+
+**The first hypothesis was wrong.** Static analysis said the bottleneck was
+repeated session verification: every bare service call resolved the session
+again, and the Referral page made five of them — nominally ~2.2 s of redundant
+`getUser()`. Memoising it changed nothing measurable, because the instrumented
+`auth.supabase.getUser` turned out to average 9 ms on a cold session and ~345 ms
+on a live one, not the 2 s the page was losing. The memoisation was kept — it
+removes real duplicate work — but it was not the answer.
+
+**Two measurement rounds were void.** `pkill` raced `next start`, the old
+process kept port 3100, and two "AFTER" runs silently measured the previous
+build. They were discarded, not reported. Every number below comes from a server
+whose PID was confirmed on the port after printing *Ready*.
+
+The instrumentation is what settled it: `db.users.findByAuthUserId` averaging
+1,095 ms with a 3,375 ms maximum, for a single indexed row, makes no sense as a
+query cost and every sense as a connection cost.
+
+### The fix
+
+- **`idle_timeout: 0`** on the runtime pool — never close a connection for being
+  idle. Overridable with `DATABASE_IDLE_TIMEOUT`. `max_lifetime` still rotates
+  connections every 30–60 minutes, so nothing lives forever.
+- **Request-scoped memoisation** with React `cache()` on `getAuthPrincipal`,
+  `getAuthenticatedAccount`, `getCurrentOperator`, every read in
+  `account.service`, and the earnings rollup. The layout fetched the account
+  seed and the page then fetched parts of it again — Home read the profile
+  twice, Wallet built the same earnings rollup twice (six queries where three
+  would do).
+- **`getCurrentOperator()` reads the agent and its grants in one left join**
+  rather than two sequential statements: one round trip instead of two, on every
+  admin request.
+- **The middleware uses `getSession()` instead of `getUser()`.** It authorizes
+  nothing — the gate is in the layouts and every action, all of which verify
+  against Supabase — so the local decode is sufficient there and saves a network
+  round trip per request. Documented in place, with the condition that would
+  make it wrong.
+- **Narrower columns** on the hottest read (`users` by `auth_user_id` selected
+  all thirty-odd columns, including internal notes).
+
+A startup pool warm-up was written and **removed**: `instrumentation.ts` is
+compiled for the edge runtime too, where the driver's `node:net` has no scheme,
+and the contortions needed to satisfy the bundler cost more than the single
+request they would have saved.
+
+### Before / after — same build, only `DATABASE_IDLE_TIMEOUT` differing
+
+Production build, real sessions, 25-second idle gap before each request (the
+interval that reproduces the complaint), median of 3.
+
+| Route | Before | After (shipped) | |
+|---|---|---|---|
+| Home | 5,351 ms | **2,077 ms** | −61% |
+| Plans | 4,523 ms | **2,010 ms** | −56% |
+| Wallet | 10,374 ms *(307, failed)* | **2,346 ms** | −77% |
+| Deposit | 4,895 ms | **2,038 ms** | −58% |
+| Withdraw | 5,581 ms | **2,002 ms** | −64% |
+| Referral | 5,913 ms | **2,250 ms** | −62% |
+| Settings | 5,317 ms | **2,056 ms** | −61% |
+| KYC | 5,256 ms | **1,954 ms** | −63% |
+| Admin Dashboard | 4,227 ms | **1,240 ms** | −71% |
+| Admin Users | 3,243 ms | **1,433 ms** | −56% |
+| Admin KYC | 3,139 ms | **1,366 ms** | −56% |
+| Admin Deposits | 3,504 ms | **1,399 ms** | −60% |
+| Admin Investments | 3,401 ms | **1,413 ms** | −58% |
+| Admin Withdrawals | 3,913 ms | **1,422 ms** | −64% |
+| Admin System Logs | 3,043 ms | 3,019 ms → page size cut to 200 | see below |
+
+Under the old setting `/wallet` did not merely run slowly — it returned **307**
+after 10.4 s, having exhausted `connect_timeout` while rebuilding connections.
+That failure is gone.
+
+`DATABASE_POOL_MAX` was measured at 12 (13–20% faster on the widest pages) and
+**left at 5**: the documented reason for the small pool — per instance, and a
+serverless deployment runs many — still holds. The measurement is recorded so
+the trade can be made deliberately for a single long-running server.
+
+### Observability: the technical execution trail
+
+`pipeline_events` gained `layer` (client / server / database / external /
+blockchain), `route` and `actor_type` (migrations `0005`, `0006`).
+
+- **One correlation id per request**, stamped by the middleware onto the
+  forwarded headers so the layout, the page and every service share it.
+- **The browser is joined to the server by a short-lived cookie.** A client-side
+  navigation is an RSC fetch Next issues itself — no hook to add a header, no
+  way to read one back — so `NavigationTracer` writes the id it generated on
+  click and the middleware adopts it. That is what makes one filter show
+  `navigation.start` (browser) through to `navigation.complete` (browser).
+- **`/admin/system-logs`** gained filters for pipeline, layer, duration band,
+  time window, status and a search across operation, route, correlation id and
+  account — and a **click-through trace view** rendering one request as an
+  ordered waterfall with a wall-clock total.
+- Instrumented: sign-in, KYC submit/approve/reject, deposit assign, investment
+  create, withdrawal request/approve/reject, profile and settings writes,
+  password recovery email, the TRON scanner, **every TronGrid call**, and the
+  auth and database steps underneath all of them.
+
+**Recording is never on the critical path.** Events are buffered on the
+request's async context and written as one multi-row insert handed to Next's
+`after()`, so it runs after the response. `recordPipelineEvent` is synchronous
+and issues no query. Every write is swallowed on failure.
+
+A subtle bug found and fixed while verifying this: React's `cache()` runs its
+function in its own async context, so instrumentation *inside* a cached function
+lost the request's `AsyncLocalStorage` trace — those events landed under fresh
+correlation ids and each became its own immediate insert. The timing now wraps
+the cached call rather than living inside it, and the two auth steps are
+resolved side by side rather than nested. Verified end to end: a single trace
+now reads CLIENT → EXTERNAL → DATABASE → SERVER → CLIENT.
+
+`/admin/system-logs` became the slowest page — the instrumentation's own table,
+read 500 rows at a time with a jsonb column per row. Default page size cut to
+200; the correlation filter, which is the view that matters for debugging,
+reads one request's steps.
+
+### Checks
+
+`typecheck`, `lint`, `next build`, **107/107 tests**, `db:check` (32 tables, 41
+enums, 26 foreign keys, 102 indexes). One test updated for the two new enums.
+
+43 live checks against the production server: password sign-in for both
+audiences, wrong password refused, unauthenticated redirects, a customer session
+refused by the CRM, all 14 user routes and all 13 admin routes returning 200,
+the newest KYC submission and the unassigned chain deposit visible in the CRM,
+investments/withdrawals/ledger intact, and no secrets in the log. The one
+failure was my own ad-hoc reconciliation formula applied to seeded fixtures,
+whose balances are hand-authored rather than ledger-derived; scoped to accounts
+built by `applyLedgerEntry`, it is zero.
+
+The TRON scanner still records one row per transfer (21 deposits, 21 distinct
+hashes after repeated runs) and its three TronGrid calls now appear under one
+correlation id with per-call timings — which is what shows an 8.9s pass is
+2,228ms solid-block + 1,912ms transfers + 605ms lookup, not a slow database.
+
+Verified by query after the run: **0 rows in `pipeline_events` containing a JWT,
+a connection string, an API key, an access token or the word "password"**.
+
+---
+
+## 2026-08-23 — Admin authentication, per-page CRM reads, pipeline observability
+
+The Master CRM stopped being reachable without signing in, stopped writing to
+browser memory, and stopped showing a snapshot frozen at the moment it was
+opened. The user application's last five in-memory mutations became database
+writes. A system log was added so a failed click can be traced instead of
+guessed at.
+
+### The "KYC does not reach the CRM" report — root cause
+
+The submission was never the problem. A real registered account
+(`usr_mt4ox5lp9v4up`) had a `kyc_submissions` row, status `pending`, joined
+correctly to its user, and `/admin/kyc` rendered it in the server HTML on a cold
+request. The write worked and the read worked.
+
+**The layout did not re-run.** `getAdminSeed()` was called in
+`admin/layout.tsx`, and Next.js re-renders only the *changed* route segments on
+a client navigation — a layout does not execute again. So the platform snapshot
+taken when the console was opened was the snapshot every screen kept rendering,
+and a case submitted a minute later did not appear until somebody hard-reloaded.
+
+Fixed by moving every read down a level: the layout now fetches only the shell
+(platform settings, operator directory) and **each page fetches its own slice**.
+A page segment does re-render, on navigation and on `router.refresh()`.
+
+The user's submit action also revalidates `/admin/kyc`, so the case reaches an
+operator who already has the console open.
+
+### The same change was the performance fix
+
+Measured against the live Supabase session pooler (ap-northeast-2, from India),
+medians of seven runs:
+
+- **Network floor: ~205ms per round trip.** A bare `select 1` costs that. The
+  number of *sequential* round trips is what determines page cost; nothing else
+  is close.
+- **Before: 1,789ms of database time on every admin page.** Fourteen list
+  queries, in parallel, contending for a five-connection pool — the deposits
+  screen paid for the audit log, the plans screen paid for every user's device
+  sessions.
+- **After: ~410ms for eleven of thirteen pages** (shell + one or two slices ≈ two
+  round trips). `/admin` is 1,253ms because the dashboard genuinely spans four
+  list slices; it is the one screen that legitimately does.
+
+`DATABASE_POOL_MAX` was left at 5. Raising it to 12 did drop the old
+fourteen-query case to ~650ms, which confirmed the pool was the contention
+source — but the per-page split removes the contention rather than paying for
+more connections, and the documented reason for 5 (per-instance, and a
+serverless deployment runs many) still holds.
+
+Dev-server first-hit times of 2.8–5.2s were Next.js route compilation, not
+database latency: the same routes served in ~400ms once compiled, and the
+production build has no such phase.
+
+### Admin authentication — the gap CLAUDE.md called the most significant
+
+Operators now sign in. `admin_agents.auth_user_id` (migration
+`0003_admin_auth_link`, unique) links a Supabase principal to an operator row,
+exactly as `users.auth_user_id` does for customers. The two lookups are
+independent: signing in at `/login` grants nothing in the CRM, and there is no
+`role` column on `public.users` — that would put every customer row one `UPDATE`
+away from being an administrator.
+
+- `/admin/login`, and `src/app/admin/(console)/` behind a gate that redirects
+  without an operator session. Verified by request: `/admin`, `/admin/kyc`,
+  `/admin/deposits` and `/admin/users` all return **307 → /admin/login**.
+- The demo session switcher is gone. It was the hole: whatever it was set to
+  travelled with every mutation as the claimed identity, so a caller could name
+  themselves master admin and approve a verification case.
+- `server/admin/guard.ts` deleted. Its `requirePermission(claim, …)` took the
+  agent id as an argument, which was the whole problem;
+  `server/admin/session.ts` takes none.
+- The console lives in a `(console)` route group so the sign-in page can sit
+  outside its layout. Every `/admin/*` URL is unchanged.
+
+**This is why the admin writes below could be connected at all.** Wiring
+twenty-two operator mutations to PostgreSQL while `/admin` was open to the
+public would have been a serious regression, not progress.
+
+### The CRM's twenty-two in-memory mutations are now database writes
+
+`admin-store.tsx` went from 1,247 lines to 172. The reducer is gone; the store
+is a read cache plus the server-resolved operator session. Every operator
+decision is a server action in `src/app/admin/actions.ts` that resolves the
+operator from the session, checks the stored permission, writes in one
+transaction with its audit entry, and revalidates both applications.
+
+Approving KYC, crediting a deposit, rejecting a withdrawal, blocking an account,
+editing a plan, changing an operator's grants, sending a campaign, saving
+settings — all of them previously rewrote a JavaScript object and appended a
+convincing entry to an in-memory audit log describing a decision that had never
+been recorded anywhere.
+
+Three of the new actions deliberately say less than their names suggest:
+
+- **Session revocation** marks a *description* of a session revoked. It does not
+  invalidate a Supabase refresh token — that needs the service-role key, which
+  this project does not hold — and the action's own message says so. An operator
+  who believes an account has been secured when it has not is worse off than one
+  who knows exactly what happened.
+- **Password resets** (user and operator) send a real Supabase recovery email.
+  No operator can see or set a password.
+- **Campaigns** deliver in-app only, and report how many `notifications` rows
+  were written rather than claiming a send. `recipientCount` is now a count of
+  rows written; it used to be a lookup table of made-up reach figures.
+
+Two services were extracted so the actions only authenticate and authorize:
+`kyc-write.service.ts` (the decisions, previously inline SQL in the action) and
+`failDeposit` / `creditAttributedDeposit` in `deposits.service.ts`.
+
+### The user application's remaining browser-memory state
+
+`prototype-store.tsx` is a read cache too. Five mutations became server actions:
+
+| Was | Now |
+|---|---|
+| `createInvestment` reducer case | `createInvestmentAction` → allocation + ledger + balance + plan aggregate, one transaction |
+| `requestWithdrawal` reducer case | `requestWithdrawalAction` → record + immediate balance hold |
+| `setTwoFactor` / `setGoogleAuth` | `setSecondFactorAction` → persisted, with a security event |
+| `toggleNotification` | `setNotificationPreferenceAction` → upsert |
+| Profile form's `setTimeout(500)` + "changes are not persisted" | `updateProfileAction` |
+
+The withdrawal quote is now **built server-side**. The client sends an amount and
+a destination; the fee, payout rate and net INR are computed from
+`@/constants/app` where they cannot be edited — a request body carrying
+`totalFeeUsdt: 0` would otherwise have been honoured.
+
+Two gaps this exposed and closed:
+
+- **A new account could not withdraw at all.** The withdrawal screen requires a
+  payout destination, only seeded accounts had one, and "Add bank account" said
+  "not part of this build". Both destination controls now write; account numbers
+  are masked server-side before they reach a column.
+- **`WithdrawFlow` read `bankAccounts[0].id`**, which threw for an account with
+  none — before the "add a destination first" notice could render.
+
+Password changes are real: the browser re-authenticates with the current
+password (Supabase's `updateUser` does not require it, so requiring it is the
+screen's job) and then calls Supabase directly. The password never passes
+through this application.
+
+### Earnings were one demo person's numbers, shown to everybody
+
+`earnings.service` returned a constant from `@/data/investments` — 842.35 USDT
+of lifetime profit — to every visitor, including a brand-new account with an
+empty wallet, on the home screen, above their real balance of zero.
+
+It now reads that account's own ledger: settled `reward` and `referral` credits,
+bucketed by the day and month they were credited, summed as `numeric` in
+Postgres. A new account reports zeros.
+
+Not an accrual curve, and the repository says why: the ledger records rewards
+when they settle, so deriving a smooth daily line would be inventing a model
+rather than running a query. Week-over-week compares fourteen days of real
+buckets, seven against seven, instead of estimating from a month.
+
+### Pipeline observability and correlation IDs
+
+New table `pipeline_events` (migration `0004_pipeline_events`) and
+`/admin/system-logs`. It answers "what happened when I clicked Submit KYC?" —
+the mechanical steps, their timings, their errors — which the audit log does not,
+because the audit log answers "who decided what".
+
+They differ in a way that matters: audit entries are written *inside* the
+caller's transaction, so a rolled-back decision leaves none; pipeline events are
+written *outside* it, because a rolled-back attempt is the interesting kind.
+
+- A correlation id is generated once per action and propagated through
+  `AsyncLocalStorage`, so nested services inherit it without a `correlationId`
+  parameter on every signature in the codebase.
+- `trackPipeline()` times an operation, records the outcome, and **re-throws**.
+  Swallowing would turn every instrumented call into one that silently succeeds.
+- Recording never throws. An observability table that can fail a KYC submission
+  has made the system less reliable in exchange for knowing more about it.
+- `redact()` strips connection strings, `apikey`/`token`/`password` pairs and
+  JWTs from error text before storage — driver errors quote what they were
+  given, and a log an operator browses is not the place for a connection string.
+  `metadata` takes named scalars only; nothing writes a request body into it.
+
+Instrumented: `auth.sign_in`, `kyc.submit`, `kyc.approve`, `kyc.reject`,
+`deposit.assign`, `chain.scan`, `investment.create`, `withdrawal.request`,
+`withdrawal.approve`, `withdrawal.reject`, `email.password_recovery`.
+
+### Authentication, verified against the live project
+
+`GET /auth/v1/settings` on the configured project reports
+`mailer_autoconfirm: false`, `disable_signup: false`, email provider enabled.
+Confirmation is on, which is exactly why `/auth/callback` had to exist.
+
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` accepted alongside the older
+  `..._ANON_KEY`, newest name first.
+- `getAuthPrincipal()` returns null rather than throwing when there is no
+  request scope. "No request" is "nobody is signed in", which is what null
+  means — and it fixes a pre-existing test failure that only appeared when
+  Supabase credentials were configured.
+- `createClient()` from `@supabase/supabase-js` **throws on Node 20**: it builds
+  a realtime client during construction and there is no global `WebSocket`.
+  Next's runtime polyfills one so the request path was fine, but a `tsx` script
+  is not. The three auth calls that need no session now go through
+  `lib/supabase/auth-rest.ts` — plain `fetch` against the documented GoTrue
+  endpoints, no realtime, no new dependency.
+- Blocked, suspended and deactivated accounts are refused at sign-in and by
+  `(app)/layout.tsx`. An operator's decision in the CRM now reaches the product.
+
+### Development accounts
+
+`npm run db:dev-accounts` links `DEV_ADMIN_EMAIL` / `DEV_ADMIN_PASSWORD` and
+`DEV_TEST_EMAIL` / `DEV_TEST_PASSWORD` to a seeded operator and to an
+application account. It refuses under `NODE_ENV=production`, prints no password,
+and creates the credential through the ordinary public `signUp` endpoint —
+deliberately not the admin API, which needs the service-role key this project
+does not hold anywhere.
+
+**Not completed in this session: Supabase's built-in email sender is rate
+limited** ("email rate limit exceeded" on every attempt), so neither account
+could be created. That is the documented development-only sender doing what
+§19.3 says it does. The script, the environment template and the linking logic
+are in place and untested end to end.
+
+### Tests — 111, from 96
+
+New `pipeline.integration.test.ts` (9): redaction of connection strings, API
+keys and JWTs; one correlation id spanning nested calls and separate ids for
+separate requests; a success recorded with a measured duration; a failure
+recorded **and** re-thrown; recording swallowing an impossible foreign key.
+
+`auth-and-kyc.integration.test.ts` rewritten where admin auth changed it: the
+operator tests now assert that no session means no operator and that server
+actions refuse, rather than passing an agent id to a function that no longer
+takes one. The KYC lifecycle tests call the service directly — the action in
+front of it resolves a session a test process does not have — and `submit()`
+now calls the real `submitKyc` instead of hand-writing the rows it writes,
+which is what let the test and the code drift.
+
+Four assertions were counting instead of testing, and all four broke the moment
+a real user registered and submitted verification:
+
+- `users.length === 30` → at least `SEED_USER_COUNT`. The seeded dataset is a
+  baseline, not a limit; an exact assertion made a successful sign-up look like
+  a regression.
+- `submissions.length === 14`, `documents === 28`, `notes === 5` → assert that
+  no document or note appears twice, which is the property the test existed to
+  protect (a join multiplying submissions by their documents).
+- "seeded accounts carry no Supabase credential" → scoped to seeded ids, since
+  registered accounts are *expected* to carry one.
+- Schema counts updated for `pipeline_events`: 32 tables, 39 enums, 26 foreign
+  keys. `pipeline_events` joins `investment_earnings` and `chain_scan_state` as
+  a table the seed deliberately leaves empty — a fixture there would make the
+  one screen that exists to diagnose real problems the one screen guaranteed to
+  be fiction.
+
+### Also
+
+- `API_DOCUMENTATION.md` added: the two mutation chains, every server action and
+  its permission, the lifecycles, and the environment-variable classification.
+- `/admin/system-logs` is gated on `audit_logs` rather than a fourteenth
+  permission id. Both screens answer "what happened" and both expose other
+  people's activity; they are different questions at the same trust level.
+- The dashboard's "recent activity" panels and the audit log now read the same
+  rows as everything else. The dashboard's *headline* metrics remain seed data
+  (CLAUDE.md §16.5) — they describe the whole platform, which is a reporting
+  service's job.
+
+---
+
+## 2026-08-21 — Supabase Auth, database as source of truth, scanner fix
+
+The application stopped signing everyone in as the same demo person, the
+frontend stopped completing business actions on its own, and the deposit
+scanner started working.
+
+### The scanner bug — root cause
+
+`npm run tron:scan` failed on every run while updating `chain_scan_state`. The
+error read as a database problem and was not one:
+
+```
+TypeError [ERR_INVALID_ARG_TYPE]: The "string" argument must be of type string
+or an instance of Buffer or ArrayBuffer. Received an instance of Date
+```
+
+…wrapped in Drizzle's "Failed query". A `Date` interpolated into a `sql`
+fragment gets **no column type mapper** — a fragment has no column to take one
+from — so postgres.js received a raw `Date` and refused it. Every other write in
+the same file worked because those values went through `.values()` / `.set()`,
+which do apply the mapper.
+
+The tell was in the parameter list: `$6` was `2026-08-20T19:33:15.000Z` and
+`$12`, inside `greatest(...)`, was `Fri Aug 21 2026 01:03:15 GMT+0530`.
+
+Fixed with `timestampValue()` in the new `@/db/sql-values`, which passes ISO
+text with an explicit `::timestamptz`. The hazard is documented there because it
+is general and silent. It was the only occurrence — a sweep of every `sql`
+interpolation in the project found no others.
+
+**Verified against live Shasta.** A real 1000 USDT TRC-20 transfer
+(`bde2fe6004…6edc`, from `TVF2Mp9QY7…`) was detected, contract-verified,
+recipient-verified, confirmed solidified, and recorded as an **unassigned**
+deposit. Re-running the scanner leaves one row. It survived a full reseed and
+re-detection: still one row.
+
+### Supabase Auth (email OTP)
+
+- Migration `0002_auth_user_link.sql`: `users.auth_user_id uuid`, unique.
+  Nullable — seeded accounts have no credential, and inventing auth users for
+  them would mean thirty sign-in-able accounts nobody owns.
+- `@supabase/supabase-js` + `@supabase/ssr`. No other new dependency.
+- `server/auth/session.ts` uses `getUser()` (verifies the token) rather than
+  `getSession()` (decodes the cookie). The cookie is attacker-controlled.
+- `server/auth/account.ts` resolves `auth.users.id → public.users.auth_user_id`.
+  A pre-existing row with the verified email and no link is adopted rather than
+  duplicated — safe only because Supabase just proved control of the mailbox,
+  so the ordering is verify-then-link.
+- `/login` (email → code → verify) and `/complete-profile`. One path for
+  sign-in and sign-up; Supabase creates the auth user.
+- `middleware.ts` refreshes the session cookie and deliberately authorizes
+  nothing.
+- Logout is a real sign-out and redirect. The "reset demo data" control is gone.
+
+**No password, hash, OTP or token is stored in `public`.** A test asserts no
+column in the schema is named like a credential.
+
+### No automatic demo login
+
+`getCurrentUserId()` returned a fixed demo account, so every visitor saw one
+person's wallet, allocations, referrals and verification status. It now resolves
+the session or throws `NotAuthenticatedError`.
+
+`(app)/layout.tsx` redirects to `/login` without a session and is
+`force-dynamic` — those pages render one account's data and must never be
+prerendered.
+
+**The seed-data fallback was removed from every user-scoped read.** It used to
+return the demo person's records when no database was configured. Catalogue
+content keeps its fallback; it belongs to nobody. A database outage now fails
+visibly, which is the point: a wallet rendering a plausible figure from mock
+data during an outage is worse than one rendering an error.
+
+### Fake frontend actions removed
+
+- **Deposit.** "Simulate incoming transfer" walked a fake confirmation counter
+  and then credited the wallet in the browser. Replaced by a development-only
+  control that records a **pending, unverified** deposit through the service
+  layer — no ledger entry, a `intent:` prefixed reference that cannot be
+  mistaken for a transaction hash, and `assignDepositToUser` refuses anything
+  that is not `confirmed`, which only the scanner sets. Absent from a production
+  build.
+- **KYC.** A "Simulate approval" button set the status to `verified` client-side
+  — so the gate on investing and withdrawing was a client-side boolean.
+  Submission is now a server action writing `kyc_submissions`, documents
+  metadata and `users.kyc_status = pending_review`. Approval is an operator
+  decision only.
+
+### The React error, root cause
+
+> Cannot update a component (PrototypeStoreProvider) while rendering a
+> different component (DepositFlow).
+
+`creditDeposit()` and `toast()` were called **inside a `setConfirmations`
+updater**. Updater functions must be pure — React invokes them during render —
+so the dispatch ran mid-render of `DepositFlow`.
+
+Not deferred, not suppressed with a `useEffect`: the call was removed. The
+browser has no business crediting a wallet.
+
+### KYC, end to end
+
+User submits → `kyc_submissions` (`pending`) + `users.kyc_status =
+pending_review` → CRM queue → operator approves or rejects → status and
+`rejection_reason` persist → the user reads it back. One database, one row.
+
+Rejection requires a reason, because the reason is what the user is shown.
+
+### Admin actions, server-side
+
+`server/admin/guard.ts`: every operator mutation resolves the agent **from the
+database** and checks the stored permission level. The client says which agent
+it is; it does not get to say what that agent may do. Master admin holds
+`manage` implicitly, matching §15.3.
+
+KYC approve / reject / request-resubmission / add-note are now server actions
+with permission checks and audit entries. Deposit assign / ignore already were.
+
+**This does not make identity real** — there is no admin authentication, so the
+agent id still comes from the client. Documented as the build's most significant
+gap in CLAUDE.md §20.1.
+
+### Thirty seeded users
+
+`SEED_USER_COUNT = 30`, down from 32. Every dependent collection is filtered
+against those ids: wallets, KYC cases and their documents and notes,
+investments, deposits, withdrawals, referral accounts, referral edges,
+commissions, device sessions, security events, and audit entries whose target is
+a user. No orphans; the CRM never links to an account that does not exist.
+
+583 rows across 29 tables. A baseline, not a limit — registrations push it past
+thirty.
+
+### Also
+
+- `revalidate()` wraps `revalidatePath` and swallows only its missing-store
+  invariant. A mutation has already committed by then; reporting a cache
+  failure as an action failure invites retrying completed work, which for an
+  approval or a credit is the expensive kind of wrong.
+- TRON env aliases: `TRONGRID_API_URL`, `TRONGRID_API_KEY`,
+  `TRON_DEPOSIT_ADDRESS`, `TRON_CONFIRMATIONS` accepted alongside the original
+  names, so a rename in one place cannot silently disable detection.
+- `.env.example` gained the Supabase block and a note that SMTP belongs in the
+  Supabase dashboard, not here.
+
+### Tests — 96, from 81
+
+New `auth-and-kyc.integration.test.ts` (15): unauthenticated requests get
+nothing rather than a demo account; account reads refuse rather than falling
+back; the dataset holds thirty accounts with no orphans and no credential
+columns; the full KYC lifecycle including a rejection with its reason and a
+refused reasonless rejection; operator permission checks; and that a
+development deposit intent is pending, unverified, unlinked to any ledger entry,
+and cannot be credited.
+
+Two bugs the suite found in itself and fixed: cleanup deleted audit rows by
+`actorId = 'agt_master'`, which is a **seeded** operator, so it was destroying
+seed data; and an exact deposit count broke the moment the scanner recorded a
+real transfer — the assertion is now about the join it was actually testing.
+
+### Verification
+
+`typecheck`, `lint`, **96/96 tests**, `next build`, `db:check` (31 tables, 37
+enums, 25 foreign keys, 30 users), `tron:inspect` and `tron:scan` all pass.
+
+Route protection verified by request against the production build: `/`,
+`/wallet`, `/wallet/deposit`, `/referral`, `/settings`, `/settings/kyc` and
+`/plans` all return **307 → /login** unauthenticated; `/login` returns 200 and
+contains zero demo-account data. The CRM renders the real Shasta transaction
+hash, its sender and **Unassigned** from the same database.
+
+**Not verified: OTP email delivery.** No Supabase Auth credentials are
+configured in this environment, so no code has been sent or accepted. The
+integration is complete in code and untested in practice — see CLAUDE.md §19.3
+for exactly what remains to configure.
+
+---
+
+## 2026-08-20 — Persistent writes and TRON Shasta deposit detection
+
+The database stopped being read-only. Money movements are now persisted
+transactionally with a ledger entry and an audit record, and incoming TRC-20
+USDT transfers on TRON Shasta are detected, verified and recorded by a
+server-side scanner. No authentication, no signing, no mainnet, no payouts.
+
+### Money without floating point
+
+The write layer's foundation, and a change of rule rather than of storage.
+
+The columns were already `numeric`; they are read back as JavaScript `number` so
+the domain types keep working, which is fine for display and wrong for
+arithmetic. `src/db/money.ts` introduces `Decimal` — a branded exact decimal
+string — with:
+
+- validating constructors that reject exponents, `NaN`, thousands separators and
+  numbers that are not exactly representable (`0.1 + 0.2` throws rather than
+  banking 0.30000000000000004);
+- `fromTokenUnits` / `toTokenUnits` via `BigInt`, because TRC-20 amounts can
+  exceed `MAX_SAFE_INTEGER` and `Number()` would round them;
+- `numericValue()`, which binds the exact digits and casts to `numeric`.
+
+Balances move with `UPDATE … SET available = available + $1::numeric` —
+Postgres does the arithmetic. Passing a bare `Decimal` where a column expects
+`number` is a type error, which is what keeps the rule enforced rather than
+merely documented. Balance comparisons read the columns cast to `text` so no
+float is involved in deciding whether a withdrawal fits.
+
+A bug this found: `fromTokenUnits` built a fixed-width fraction, so an
+18-decimal token reporting 2.500000000000000000 was rejected for exceeding the
+storable scale. Trailing zeros are now trimmed before the precision check;
+genuine excess precision is still refused rather than silently rounded.
+
+### Schema (2 new tables, 31 total)
+
+- **`deposits` rewritten** for chain data: nullable `user_id`, `sender_address`,
+  `token_contract`, `token_symbol`, `chain`, `chain_network`, `block_number`,
+  `block_timestamp`, `verification`, `detected_at`, `confirmed_at`,
+  `assigned_at`, `assigned_by`, and a **unique index on (chain, tx_hash)**.
+- **`investment_earnings`** — accruals, with a unique `(investment_id,
+  period_key)` so a replayed scheduler cannot pay twice.
+- **`chain_scan_state`** — the scanner's cursor, per (chain, network, address),
+  with failure tracking.
+- New enums: `deposit_verification`, `chain`, `chain_network`; `ignored` added
+  to `deposit_status`.
+
+Migration `0001_chain_deposits.sql`, applied to Supabase. `deposits` gained a
+left join in the admin repository — an inner join silently dropped exactly the
+unattributed rows an operator opens that screen to deal with.
+
+### Write layer
+
+`mutate()` in `@/server/write` is the unit of work: one transaction, buffered
+audit entries written inside it, a named actor, one `now` for every row. Writes
+have no seed-data fallback — a write that appears to succeed against mock data
+is a lie, so it refuses when `DATABASE_URL` is unset.
+
+`applyLedgerEntry()` in `wallet.repository.ts` is the only place a balance
+changes, and it always writes the `transactions` row explaining it. Overdrafts
+are refused by a `WHERE available + delta >= 0` clause rather than a prior read,
+which two concurrent withdrawals would both pass.
+
+Services added: `wallet.service` (credits, debits, earnings),
+`deposits.service` (record, assign, ignore, reopen), `account-write.service`
+(users, status, restrictions, KYC, notifications, referrals, commissions),
+`investments-write.service` (allocate, mature), `withdrawals-write.service`
+(request, approve, reject, mark paid — **records only**).
+
+Idempotency is enforced by database constraints, never by check-then-insert:
+unique `(chain, tx_hash)` for deposits, unique `(investment_id, period_key)` for
+earnings, and status re-assertions in the `WHERE` of every transition.
+
+### TRON integration (`@/server/tron`)
+
+Read-only, Shasta only, no dependency added — `tronweb` was declined in favour
+of forty lines of base58check, because a library that can sign is one that can
+be made to.
+
+- `address.ts` — base58check validation (checksum, not length: a mistyped
+  address still looks like an address) and base58/hex comparison, because
+  TronGrid returns both notations.
+- `config.ts` — validates before use. `mainnet` throws. A plaintext
+  `TRON_GRID_URL` throws. A contract or deposit address that fails base58check
+  throws. `describeTronConfig()` is the only thing that leaves, and it reports
+  the API key's *presence*, never its value.
+- `trongrid.ts` — transfers, head/solid block heights, per-transaction block
+  lookup. Every failure throws, including a body that is not JSON or lacks a
+  `data` array: an empty list is indistinguishable from "no deposits arrived".
+- `parse.ts` — filters by contract, recipient and direction, with named
+  rejection reasons so a skipped transfer can be explained rather than silently
+  dropped. Token decimals are read from the response, never assumed.
+- `scanner.ts` — polls, records solidified transfers as **unassigned** deposits,
+  never advances its cursor past a failed page, and records failures so a
+  scanner that has been broken for a day is visible.
+
+### Deposit attribution
+
+`deposits.user_id` is nullable and the scanner never sets it. One platform
+address receives everything, and a TRC-20 transfer carries no account
+identifier — exchanges pay out from shared wallets, and a user can send from an
+address they never mentioned. Attribution is an operator decision, made in the
+CRM and audited. The dialog shows the sending address and deliberately offers no
+"best match": a plausible suggestion is the one most likely to be accepted
+without checking. Per-user deposit addresses remain possible without schema
+change.
+
+### Admin CRM
+
+- Server actions (`assign`, `ignore`, `reopen`) that write to the database and
+  `revalidatePath`.
+- The store gained a `seed/replace` action and an effect that re-syncs when the
+  server sends a new snapshot — `useReducer` ignores a changed initial state, so
+  without it a successful write left the screen showing stale rows. The chosen
+  operator is preserved across a re-sync.
+- Deposits table: "Assigned to" (with an explicit **Unassigned**), sender
+  address, chain/network/token, and transaction hashes linked to the Shasta
+  explorer — only for real 64-hex hashes, since linking seeded placeholders
+  would send an operator to a "not found" page and make them distrust the real
+  ones.
+
+### User application
+
+The deposit page shows the configured TRC-20 target: TRON, USDT, Shasta,
+the address with a copy action, the contract's last six characters, and a
+testnet warning — real USDT sent to a Shasta address is lost, and this is the
+only place the app can say so first. It receives `PublicDepositTarget`, a
+hand-written projection with no field the API key could occupy.
+
+### Tests (81, from 42)
+
+- `money.test.ts` (11) — exactness, token-unit conversion past
+  `MAX_SAFE_INTEGER`, refusal to round.
+- `tron/tron.test.ts` (16) — base58check including a corrupted checksum,
+  mainnet refusal, contract/recipient/direction filtering, decimals scaling at
+  6 and 18, and every malformed-transfer case.
+- `writes.integration.test.ts` (12) — against the live database: ledger-balance
+  agreement to the last digit, rollback on failure, overdraft refusal writing
+  nothing, the same tx hash recorded once, unassigned-by-default, credit exactly
+  once, unconfirmed and ignored deposits refused, audit entries carrying the
+  operator's reason, and earnings settling once per period.
+
+`npm test` now runs with `--test-concurrency=1`: the files run in parallel by
+default and together exhausted the Supabase session pooler, which surfaced as a
+134-second insert rather than an obvious connection error. The suite leaves the
+database exactly as it found it — verified by running it twice and re-counting.
+
+Also fixed: the write suite leaked system-actor audit rows (cleanup matched only
+its operator), and `data-access.integration.test.ts` asserted an exact audit-log
+count, which is wrong for an append-only table that every write adds to.
+
+### Verified against live Shasta
+
+TronGrid client exercised against the real network without credentials: head
+block 67,657,339, solidified 67,657,320 (19 behind), 50 transfers parsed from a
+live listing. The Shasta USDT contract
+`TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs` reports `decimals: 6`, confirming the code
+reads decimals rather than assuming them. A real transfer not addressed to the
+configured deposit address was correctly rejected as `wrong_recipient`, and a
+block lookup confirmed solidification.
+
+### Checks
+
+`tsc --noEmit`, `eslint .`, 81 tests and `next build` all clean. Schema
+verification: 31/31 tables, 37 enums, 25 foreign keys.
+
+### Not implemented, deliberately
+
+Authentication, KYC provider integration, real withdrawals, mainnet, private-key
+signing, per-user deposit addresses. The CRM's non-deposit operator actions
+still mutate the in-memory store; their write services exist and need admin auth
+before being wired up.
+
+---
+
+## 2026-08-19 — Connected to Supabase PostgreSQL
+
+The database layer built the day before is now running against a real Supabase
+project (AWS ap-northeast-2, PostgreSQL 17.6). Migration applied, seed loaded,
+schema verified. Reads are live; writes still do not exist, and authentication,
+blockchain and real withdrawals remain out of scope.
+
+### Connection architecture
+
+Two environment variables, because the workloads differ:
+
+- `DATABASE_URL` — the runtime. Pooled, `max` 5 per instance (down from 10:
+  per-instance, not per-database, and a serverless deployment runs many).
+- `DIRECT_DATABASE_URL` — `db:migrate`, `db:seed`, `db:studio`. One connection,
+  opened and closed by the script. A migration takes an advisory lock and
+  issues DDL; it has no business sharing the render pool. Optional, falls back
+  to `DATABASE_URL`.
+
+`createAdminDb()` / `closeAdminDb()` were added alongside `getDb()` so the two
+are genuinely separate pools with separate lifecycles, and `drizzle.config.ts`
+plus all three scripts now use the admin connection.
+
+### Which Supabase endpoint — two rejected, with reasons
+
+Both obvious choices turned out to be wrong, and both failures are silent:
+
+- **Direct** (`db.<ref>.supabase.co:5432`) publishes **AAAA records only**.
+  Confirmed: `ENODATA` for A records, `ENETUNREACH` on connect. Vercel's
+  serverless runtime has no IPv6 egress either, so it is unusable in production
+  regardless.
+- **Transaction pooler** (`:6543`) is the standard serverless recommendation and
+  was the first configuration. It had to be abandoned: postgres.js pipelines
+  queries onto a connection, and past roughly two queued queries the pooler
+  stops answering — no error, no timeout, the promise never settles. Measured at
+  every pool size from 1 to 10, and **not** fixed by `prepare: false`.
+  Reproduced with the stock driver and no local patches, ruling out our own
+  socket hook. A page issuing six parallel queries hung.
+- **Session pooler** (`:5432` on the pooler host) is what both variables now
+  use. IPv4, pooled by Supavisor, and it handled 20 queued queries on a single
+  connection in 2.9s.
+
+Transaction-mode support stays in the client (`usesTransactionPooler()` detects
+it and disables prepared statements) so switching back is one env change.
+
+### Fixes found while connecting
+
+- **The credential carried the dashboard's placeholder brackets.** The password
+  in `.env.local` was wrapped in literal `[ ]` — the Supabase connection string
+  is copied as `…:[YOUR-PASSWORD]@…` and the brackets had been left around the
+  real value, so every authentication attempt returned `28P01`. Stripped, and
+  the value re-encoded for URL safety.
+- **A ~5s stall on every new connection**, traced to `getaddrinfo` waiting on
+  AAAA before falling back to IPv4 — `dns.lookup` 4.3s vs 3ms with `family: 4`.
+  Added `DATABASE_FORCE_IPV4` (default **off**), which opens the socket via
+  postgres.js's `socket` hook with `family: 4`. Enabled in this machine's
+  `.env.local` only; the stall is a property of the host, not the application.
+- **A dead database hung instead of failing.** postgres.js retries a refused
+  connection indefinitely, so the query never settled and the request sat open —
+  on a serverless platform, a billed silent stall. `fromDatabase()` now races
+  every read against `DATABASE_QUERY_TIMEOUT_MS` (default 15s). Before: no
+  response at 60s. After: 500 in 15s, with no mock data served.
+
+### Layering fix
+
+`admin.repository.ts` imported `ADMIN_PERMISSIONS` from `@/constants/admin`,
+which also carried the CRM's navigation and therefore `lucide-react` — a UI
+dependency reaching the server bundle to answer a question about a column.
+
+- Navigation moved to `src/constants/admin-navigation.ts` (the only consumer is
+  `admin-sidebar.tsx`). `@/constants/admin` is now free of UI imports.
+- The repository takes its permission ids from `schema.adminPermissionEnum`
+  instead — the database enum *is* what the column accepts.
+- The two lists are pinned to each other by a compile-time assertion in
+  `db/schema/enums.ts`, so adding an id to one without the other is a type error.
+
+No UI changed.
+
+### Migration and seed
+
+`npm run db:migrate` applied `drizzle/0000_init.sql` cleanly. `npm run db:seed`
+loaded **602 rows across all 29 tables** — 32 users, 32 wallets, 128 KYC steps,
+31 investments, 22 deposits, 15 withdrawals, 14 KYC submissions with 28
+documents, 22 referrals, 21 commission entries, 9 agents with 117 permission
+grants, 25 audit entries, 1 settings row.
+
+### Verification
+
+`npm run db:check` was extended to report both connections, the pooler mode in
+use, and — scoped to the `public` schema, which a Supabase database needs, since
+its own `auth`/`storage`/`realtime` schemas otherwise inflate every count — the
+table, enum, foreign-key and index totals. Result: **29/29 tables, 34 enums,
+23 foreign keys, 82 indexes, 32 users.**
+
+Against the running production build, `/admin/investments` renders "31 in total,
+all time" — the seeded count. The mock module holds 29, so the page could not
+have come from the fallback. Every route returns 200; the admin catch-all still
+404s; the server log is clean.
+
+### Tests
+
+41 with a database, 16 without (integration suites skip themselves, so a fresh
+clone stays green). `npm test` now passes `--conditions=react-server`, which is
+how `server-only` modules resolve under Next — without it they throw, and the
+service layer could not be tested at all.
+
+- `db/connection.integration.test.ts` (new) — both connections, prepared-statement
+  selection, and 20-then-40 parallel queries. That last one is the regression
+  test for the transaction-pooler stall: every individual query passed, and the
+  only symptom was a page that never loaded.
+- `db/schema.integration.test.ts` (new) — live database against the declared
+  schema in **both** directions, every enum's labels in order, every foreign
+  key's target, a primary key per table, every declared index, and that no money
+  column has become a float.
+- `server/data-access.integration.test.ts` (new) — repositories and services
+  against seeded records: profile with ordered KYC steps, wallet reconciling
+  against active allocations, `matured`→`completed` translation, KYC documents
+  grouped without join multiplication, each agent's 13-key permission map,
+  audit trail ordering, and settings.
+- `server/database.test.ts` (new, no database needed) — unset URL falls back to
+  seed data, blank URL counts as unset, an unreachable database rejects rather
+  than faking, an unresponsive one fails on the deadline, and a failure is not
+  cached into a permanent outage.
+
+### Documentation
+
+CLAUDE.md §16.1 rewritten with the real setup, the two connections, and the
+endpoint findings above; §16.3 documents the deadline; §16.7 added covering the
+test layout. `.env.example` rewritten with both variables and the tuning knobs.
+
+### Unchanged
+
+No user or admin UI was modified. Authentication stays disabled, no blockchain
+integration, no real withdrawals. `.env.local` remains git-ignored and holds the
+only copy of the credentials.
+
+---
+
+## 2026-08-18 — PostgreSQL, Drizzle ORM and the server layer
+
+Introduced a real database and moved every read behind a server-side service
+layer. Reads come from PostgreSQL; writes deliberately do not exist yet. No UI
+was redesigned or removed — with no database configured the application renders
+exactly what it did before.
+
+### Dependencies
+
+`drizzle-orm`, `postgres` (postgres.js). Dev: `drizzle-kit`, `tsx`, `dotenv`.
+No test framework — the tests run on `node:test` through `tsx --test`.
+
+### Schema (`src/db/schema/`, 29 tables)
+
+Grouped by aggregate, not by application: the two frontends stay isolated from
+each other but describe one platform, so a user's balance is the same row
+whichever screen reads it.
+
+- `users`, `wallet_balances`, `bank_accounts`, `wallet_addresses`,
+  `user_kyc_steps`, `user_device_sessions`, `user_security_events`,
+  `support_tickets`
+- `plans`, `deposit_networks`, `investments`
+- `transactions`, `deposits`, `withdrawals`
+- `kyc_submissions`, `kyc_documents`, `kyc_notes`
+- `vip_levels`, `referrals`, `referral_accounts`, `commission_entries`
+- `notification_categories`, `user_notification_preferences`, `notifications`,
+  `notification_campaigns`
+- `admin_agents`, `admin_agent_permissions`, `audit_logs`, `platform_settings`
+
+Decisions worth recording:
+
+- **Money is `numeric`, never a float** — USDT carries eight decimals on-chain.
+  Shared column builders (`usdt`, `inr`, `percent`, `rate`) map back to `number`
+  so the domain types in `@/types` are unchanged.
+- **`text` primary keys carrying the seed's meaningful ids** (`usr_8c41a2`,
+  `plan_starter`), so links like `/admin/users/usr_8c41a2` stay valid.
+- **Postgres enums** mirroring every union in `@/types` and `@/types/admin`,
+  including the 13-permission catalogue the CRM's authorization contract needs.
+- **One vocabulary where the two apps used two words**: `investment_status`
+  stores `matured`, mapped to the user app's "completed"; `plan_status` carries
+  `disabled`, which the public catalogue filters out rather than renaming.
+- **Both applications read the same plan, VIP and wallet rows** — the CRM cannot
+  show a commission rate the user was not promised.
+- **Only masked account and document numbers are stored**, and there is no
+  password column. There is no payout rail, no document store and no auth; a
+  prototype should not accumulate data it cannot yet protect.
+- `investments` snapshots `planName`, `rewardFrequency` and `risk` so editing a
+  plan does not retroactively rewrite what an existing allocation was sold as.
+- `audit_logs` copies the actor's name and role for the same reason — the record
+  must still read correctly after an agent is renamed or removed.
+
+### Migrations
+
+`drizzle.config.ts` + `drizzle/0000_init.sql` (generated, checked in).
+`npm run db:generate` regenerates after a schema change; `npm run db:migrate`
+applies pending migrations on its own single connection.
+
+### Seed (`src/db/seed/`)
+
+Reads the mock modules in `@/data` rather than inventing a second dataset, so
+seeding produces the application everyone already knows.
+
+The user app's and the CRM's mock data overlapped in three places, and each is
+reconciled explicitly (documented at the top of the module):
+
+- **Investments** — the demo account's allocations come from the user app's
+  dataset, because only that one reconciles against the wallet (2,500 + 1,200 +
+  200 = the 3,900 USDT shown as locked). The CRM's three rows for the same
+  account are dropped. Every other user's come from the CRM.
+- **Security events** — `sec_1…4` and `sev_2001…2004` are the same four events
+  at the same timestamps. Only the CRM's are stored; the user's security screen
+  renders a projection of them.
+- **Commissions** — the CRM ledger and the user's history share two entries;
+  stored once, with the user's remaining four added to the ledger.
+
+The seed is destructive by design (clears every table first, so it can be
+re-run) and refuses to run against `NODE_ENV=production`.
+
+### Server layer (`src/server/`)
+
+```
+page → services/*.service.ts → repositories/*.repository.ts → db/schema
+```
+
+- Every module carries `server-only`; nothing under `src/db/` does, because the
+  scripts run those as plain Node.
+- Repositories query tables and return domain types from `@/types`. All
+  row→domain mapping lives in `repositories/mappers.ts`.
+- Services are the only thing application code imports, and they own the
+  fallback.
+
+`fromDatabase()` in `server/database.ts` is the seam: with `DATABASE_URL` unset
+it returns the seed modules, so a fresh clone still runs. Two properties are
+load-bearing — the fallback is chosen by **configuration, never by failure**
+(a failing query throws rather than silently serving mock data), and
+`unstable_noStore()` is called only on the database path, so with no database
+the build still prerenders every page it did before.
+
+### Reads moved onto the layer
+
+- **User app.** `(app)/layout.tsx` reads the account once via `getUserAppSeed()`
+  and passes it to `PrototypeStoreProvider` as a `seed` prop; the store no
+  longer imports `@/data`. `TopBar` became an async server component. Pages for
+  home, plans, plan detail, wallet, deposit, withdraw, referral, security,
+  wallet settings, support and investment detail now call services.
+- **CRM.** `admin/layout.tsx` reads the whole platform via `getAdminSeed()` and
+  passes it to `AdminStoreProvider`. Four read-only slices were added to the
+  store (`investments`, `referralAccounts`, `commissionLedger`,
+  `securityEvents`) so the screens that used to import their own copy read the
+  same snapshot. `/admin/users/[id]` resolves its static params through the
+  service.
+- Client components that imported records now take them as props
+  (`WalletSettings`, `DepositFlow`, `WithdrawFlow`, `SupportCenter`,
+  `SecuritySettings`, `VipLevels`, `EarningsBreakdown`, `InvestmentDetail`) or
+  read them from the store (`ProfileHeader`, `ProfileForm`,
+  `NotificationSettings`).
+- Presentation vocabulary (`rewardFrequencyLabels`, `depositStatusLabels`,
+  `auditActionLabels`, FAQs, legal copy) still comes from `@/data`. It is
+  wording, not records.
+
+### Deliberately left on seed data
+
+- `earnings.service.ts` — the earnings curve is a daily accrual model; the
+  ledger records rewards as they settle. Deriving one from the other is an
+  accrual model, not a query.
+- The CRM dashboard's metrics and chart series — these describe the whole
+  platform rather than the sample slice in the tables, which was a deliberate
+  decision before the database existed and is still correct.
+
+Both are marked in place and listed in CLAUDE.md §16.5.
+
+### Not implemented, on purpose
+
+Writes. There is no authentication, so no write can be attributed to a user or
+an operator, and persisting money movements without knowing who asked for them
+is worse than persisting nothing. Both stores still mutate in memory. Blockchain
+connectivity and real withdrawals remain out of scope.
+
+### Configuration
+
+`.env.example` added as the tracked template; `.gitignore` now ignores every
+`.env*` except it. No credential appears in source. `DATABASE_URL`,
+`DATABASE_SSL`, `DATABASE_POOL_MAX` and `DEMO_USER_ID` are the recognised
+variables.
+
+Scripts: `db:generate`, `db:migrate`, `db:seed`, `db:check`, `db:studio`,
+`typecheck`, `test`.
+
+### Tests
+
+First tests in the project, on `node:test` via `tsx --test` (no framework
+dependency).
+
+- `db/seed/seed.test.ts` runs the seed against a recorder — no database needed —
+  and asserts every foreign key resolves, primary and unique keys hold, every
+  table declared in the schema is seeded, the overlapping records are stored
+  once, and the demo account's wallet reconciles against its allocations.
+- `db/env.test.ts` covers the configuration switch, including a whitespace-only
+  `DATABASE_URL` not counting as configured.
+
+### Verification
+
+`tsc --noEmit`, `eslint .`, `npm test` (12 passing) and `next build` all clean;
+the build still emits 72 prerendered pages, unchanged. Every route was requested
+against a dev server and returned 200 with the expected content. The database
+path was exercised separately with an unreachable `DATABASE_URL`, confirming it
+issues real SQL against the schema and surfaces a 500 rather than silently
+falling back.
+
+---
+
 ## 2026-08-09 — Master CRM (admin frontend)
 
 Added a complete administrative control panel at `/admin`, architecturally

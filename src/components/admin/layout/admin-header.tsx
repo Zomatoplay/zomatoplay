@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Menu, ShieldCheck, UserCog } from "lucide-react";
+import { useState, useTransition } from "react";
+import { LogOut, Menu, ShieldCheck, UserCog } from "lucide-react";
 
 import {
   AdminBrand,
@@ -13,8 +13,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -25,27 +23,28 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { useAdminStore } from "@/lib/admin-store";
+import { useAdminSession } from "@/lib/admin-store";
+import { signOutOperator } from "@/app/admin/login/actions";
 import { PERMISSION_LEVEL_LABELS } from "@/lib/admin-permissions";
 import { cn } from "@/lib/utils";
 import { initials } from "@/utils/format";
 
 /**
- * Operator switcher.
+ * The signed-in operator.
  *
- * There is no authentication yet, so the "signed-in" operator is chosen here.
- * That is deliberately a *demo control*, not a product feature — labelled as
- * such — but it is what makes the permission model reviewable: switch to a
- * support agent and the navigation, the action menus and the manage-only
- * controls all change accordingly.
+ * This was a dropdown that let anyone "view as" any operator, because there was
+ * no sign-in and the permission model needed *some* way to be exercised. It was
+ * also the CRM's authorization hole: whatever it was set to travelled with
+ * every mutation as the claimed identity.
  *
- * INTEGRATION POINT: replaced by the real session. The switcher disappears; the
- * avatar and name stay, reading from the session principal.
+ * The identity now comes from a verified Supabase session resolved server-side
+ * through `admin_agents.auth_user_id`, so there is nothing to switch — the
+ * avatar, name and role remain, as the integration note always said they would.
+ * Exercising the permission model means signing in as that operator.
  */
-function SessionSwitcher() {
-  const { session, agents, switchSession } = useAdminStore();
-
-  const selectable = agents.filter((agent) => agent.status !== "disabled");
+function OperatorBadge() {
+  const session = useAdminSession();
+  const [pending, startTransition] = useTransition();
 
   return (
     <DropdownMenu>
@@ -69,31 +68,32 @@ function SessionSwitcher() {
       </DropdownMenuTrigger>
 
       <DropdownMenuContent align="end" className="w-72">
-        <DropdownMenuLabel>Demo control · view as</DropdownMenuLabel>
-        <p className="px-2.5 pb-2 text-xs leading-relaxed text-muted-foreground">
-          No sign-in exists yet. Switching operator changes which sections and
-          actions the permission model allows.
+        <DropdownMenuLabel>Signed in</DropdownMenuLabel>
+        <div className="px-2.5 pb-2">
+          <p className="truncate text-sm font-medium">{session.name}</p>
+          <p className="truncate text-xs text-muted-foreground">{session.email}</p>
+          <Badge variant="outline" className="mt-2">
+            {session.role === "master_admin" ? "Master admin" : "Agent"}
+          </Badge>
+        </div>
+        <DropdownMenuSeparator />
+        <p className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
+          Every action you take here is recorded in the audit log against this
+          operator.
         </p>
         <DropdownMenuSeparator />
-        <DropdownMenuRadioGroup
-          value={session.agentId}
-          onValueChange={switchSession}
-        >
-          {selectable.map((agent) => (
-            <DropdownMenuRadioItem key={agent.id} value={agent.id}>
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-medium">
-                  {agent.name}
-                </span>
-                <span className="block truncate text-xs text-muted-foreground">
-                  {agent.role === "master_admin"
-                    ? "Master admin · full access"
-                    : agent.note?.split(".")[0] || "Agent"}
-                </span>
-              </span>
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
+        <div className="p-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start"
+            disabled={pending}
+            onClick={() => startTransition(async () => { await signOutOperator(); })}
+          >
+            <LogOut className="size-4" aria-hidden />
+            {pending ? "Signing out…" : "Sign out"}
+          </Button>
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -149,7 +149,7 @@ export function AdminHeader({
   actions,
   className,
 }: AdminHeaderProps) {
-  const { session } = useAdminStore();
+  const session = useAdminSession();
   const isMaster = session.role === "master_admin";
 
   return (
@@ -190,11 +190,11 @@ export function AdminHeader({
           </div>
         ) : null}
 
-        <SessionSwitcher />
+        <OperatorBadge />
       </div>
 
       {/* Below `md` the header actions move under the title so they never
-          squeeze the operator switcher off-screen. */}
+          squeeze the operator badge off-screen. */}
       {actions ? (
         <div className="flex flex-wrap items-center gap-2 px-3 pb-3 sm:px-5 md:hidden">
           {actions}

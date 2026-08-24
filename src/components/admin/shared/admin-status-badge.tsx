@@ -3,6 +3,7 @@ import {
   Ban,
   CheckCircle2,
   Clock,
+  EyeOff,
   Loader2,
   MinusCircle,
   PauseCircle,
@@ -75,6 +76,7 @@ const depositDescriptors: Record<AdminDepositStatus, Descriptor> = {
   confirmed: { label: "Confirmed", variant: "info", icon: CheckCircle2 },
   credited: { label: "Credited", variant: "positive", icon: CheckCircle2 },
   failed: { label: "Failed", variant: "negative", icon: XCircle },
+  ignored: { label: "Ignored", variant: "outline", icon: EyeOff },
 };
 
 const withdrawalDescriptors: Record<AdminWithdrawalStatus, Descriptor> = {

@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import { CheckCircle2, Clock, Landmark, ShieldAlert } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CheckCircle2, Clock, Landmark, Loader2, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { InfoRow } from "@/components/shared/info-row";
@@ -16,7 +17,6 @@ import {
   WITHDRAWAL_FEE_USDT,
   WITHDRAWAL_PROCESSING_WINDOW,
 } from "@/constants/app";
-import { savedBankAccounts } from "@/data/user";
 import {
   formatInr,
   formatUsdt,
@@ -25,8 +25,9 @@ import {
   usdtToInr,
 } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
+import { requestWithdrawalAction } from "@/app/(app)/wallet/withdraw/actions";
 import { cn } from "@/lib/utils";
-import type { WithdrawalQuote } from "@/types";
+import type { BankAccount, WithdrawalQuote } from "@/types";
 
 type Stage = "amount" | "confirm" | "done";
 
@@ -52,19 +53,40 @@ function buildQuote(amountUsdt: number, rate: number): WithdrawalQuote {
  * The payout rate is quoted explicitly and differs from the indicative display
  * rate, so the user always sees the exact INR figure they will receive rather
  * than an approximation.
+ *
+ * THE QUOTE SHOWN HERE IS NOT THE QUOTE STORED
+ * --------------------------------------------
+ * `buildQuote` exists to show the arithmetic before the person commits. The
+ * figures that are *recorded* are computed again server-side from the same
+ * constants, because the fee and the rate decide what the platform owes and a
+ * request body is not a place to take that from. The two agree because they
+ * apply one fee model; the server's copy is the one that counts.
+ *
+ * Requesting holds the balance immediately, so the same funds cannot back two
+ * requests. Nothing is paid — an operator works the request in the CRM.
  */
-export function WithdrawFlow() {
-  const { balance, isVerified, requestWithdrawal } = usePrototypeStore();
+export function WithdrawFlow({
+  bankAccounts,
+}: {
+  /** Registered INR payout destinations, read server-side. */
+  bankAccounts: BankAccount[];
+}) {
+  const { balance, isVerified } = usePrototypeStore();
+  const router = useRouter();
   const payoutRate = getUsdtInrPayoutRate();
 
   const [stage, setStage] = useState<Stage>("amount");
   const [rawAmount, setRawAmount] = useState("");
+  const [submitted, setSubmitted] = useState<WithdrawalQuote | null>(null);
+  const [pending, startTransition] = useTransition();
   const [accountId, setAccountId] = useState(
-    savedBankAccounts.find((account) => account.isDefault)?.id ??
-      savedBankAccounts[0].id,
+    // Optional chaining, not `[0].id`: a newly registered account has no payout
+    // destination at all, and reading index zero of an empty array threw before
+    // the "add a destination first" notice below could ever render.
+    bankAccounts.find((item) => item.isDefault)?.id ?? bankAccounts[0]?.id ?? "",
   );
 
-  const account = savedBankAccounts.find((item) => item.id === accountId)!;
+  const account = bankAccounts.find((item) => item.id === accountId);
   const amount = Number.parseFloat(rawAmount);
 
   const error = useMemo(() => {
@@ -84,15 +106,25 @@ export function WithdrawFlow() {
   );
 
   function handleConfirm() {
-    requestWithdrawal({
-      amountUsdt: quote.amountUsdt,
-      feeUsdt: quote.totalFeeUsdt,
-      netInr: quote.netInr,
-      destination: `${account.bankName} ${account.accountNumberMasked.slice(-4)}`,
-    });
-    setStage("done");
-    toast.success("Withdrawal requested", {
-      description: `${formatInr(quote.netInr, { approximate: false, precise: true })} on its way to ${account.bankName}.`,
+    if (!account || pending) return;
+    const requested = quote;
+    startTransition(async () => {
+      const result = await requestWithdrawalAction({
+        amount: rawAmount.trim(),
+        bankAccountId: account.id,
+      });
+
+      if (!result.ok) {
+        toast.error(result.message);
+        return;
+      }
+
+      setSubmitted(requested);
+      setStage("done");
+      toast.success("Withdrawal requested", {
+        description: `${formatInr(requested.netInr, { approximate: false, precise: true })} to ${account.bankName}, pending review.`,
+      });
+      router.refresh();
     });
   }
 
@@ -120,9 +152,32 @@ export function WithdrawFlow() {
   }
 
   /* ---------------------------------------------------------------- */
+  /* No payout destination yet                                         */
+  /* ---------------------------------------------------------------- */
+  if (!account) {
+    return (
+      <Card className="space-y-4 p-6 text-center">
+        <span className="mx-auto flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+          <Landmark className="size-6" aria-hidden />
+        </span>
+        <div className="space-y-1.5">
+          <h2 className="text-base font-semibold">No payout destination</h2>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            Withdrawals settle in INR to an Indian bank account. Add one before
+            you request a withdrawal.
+          </p>
+        </div>
+        <Button asChild variant="brand" size="lg" block>
+          <Link href="/settings/wallet">Add a bank account</Link>
+        </Button>
+      </Card>
+    );
+  }
+
+  /* ---------------------------------------------------------------- */
   /* Stage: receipt                                                    */
   /* ---------------------------------------------------------------- */
-  if (stage === "done") {
+  if (stage === "done" && submitted) {
     return (
       <div className="space-y-5">
         <Card className="p-6 text-center">
@@ -131,10 +186,10 @@ export function WithdrawFlow() {
           </span>
           <h2 className="mt-4 text-lg font-semibold">Withdrawal requested</h2>
           <p className="tabular mt-2 text-3xl font-semibold tracking-tight">
-            {formatInr(quote.netInr, { approximate: false, precise: true })}
+            {formatInr(submitted.netInr, { approximate: false, precise: true })}
           </p>
           <p className="tabular text-sm text-muted-foreground">
-            from {formatUsdt(quote.amountUsdt)}
+            from {formatUsdt(submitted.amountUsdt)}
           </p>
         </Card>
 
@@ -150,10 +205,10 @@ export function WithdrawFlow() {
           <InfoRow label="To" value={account.bankName} hint={account.accountNumberMasked} />
           <InfoRow
             label="Payout rate"
-            value={`1 USDT = ₹${quote.rate.toFixed(2)}`}
+            value={`1 USDT = ₹${submitted.rate.toFixed(2)}`}
           />
-          <InfoRow label="Fees" value={formatUsdt(quote.totalFeeUsdt)} />
-          <InfoRow label="Status" value="Processing" />
+          <InfoRow label="Fees" value={formatUsdt(submitted.totalFeeUsdt)} />
+          <InfoRow label="Status" value="Pending review" />
         </div>
 
         <div className="space-y-2">
@@ -225,10 +280,25 @@ export function WithdrawFlow() {
         </div>
 
         <div className="space-y-2">
-          <Button variant="brand" size="lg" block onClick={handleConfirm}>
-            Confirm withdrawal
+          <Button
+            variant="brand"
+            size="lg"
+            block
+            onClick={handleConfirm}
+            disabled={pending}
+          >
+            {pending ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+            ) : null}
+            {pending ? "Requesting…" : "Confirm withdrawal"}
           </Button>
-          <Button variant="ghost" size="lg" block onClick={() => setStage("amount")}>
+          <Button
+            variant="ghost"
+            size="lg"
+            block
+            disabled={pending}
+            onClick={() => setStage("amount")}
+          >
             Back
           </Button>
         </div>
@@ -302,7 +372,7 @@ export function WithdrawFlow() {
       {/* Destination account */}
       <fieldset className="space-y-3">
         <legend className="text-sm font-medium">Pay into</legend>
-        {savedBankAccounts.map((item) => {
+        {bankAccounts.map((item) => {
           const selected = item.id === accountId;
           return (
             <label

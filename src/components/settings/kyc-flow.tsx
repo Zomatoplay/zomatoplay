@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   BadgeCheck,
@@ -22,6 +23,10 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { usePrototypeStore } from "@/lib/prototype-store";
+import {
+  startKycAction,
+  submitKycAction,
+} from "@/app/(app)/settings/kyc/actions";
 import { cn } from "@/lib/utils";
 
 /**
@@ -54,7 +59,11 @@ const STEPS = [
 ] as const;
 
 export function KycFlow() {
-  const { kycStatus, startKyc, submitKyc, approveKyc } = usePrototypeStore();
+  // Status only. The store is a cache of what the database said at render
+  // time; it cannot change a verification state, and nothing here asks it to.
+  const { kycStatus } = usePrototypeStore();
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
   const [step, setStep] = useState(0);
   const [fullName, setFullName] = useState("");
   const [dob, setDob] = useState("");
@@ -120,27 +129,6 @@ export function KycFlow() {
           </div>
         </div>
 
-        {/* Demo control standing in for the provider's approval webhook. */}
-        <Card className="space-y-3 border-dashed p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Demo control
-          </p>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            No verification provider is connected in this build. Approve the
-            submission to see the verified state.
-          </p>
-          <Button
-            variant="outline"
-            size="sm"
-            block
-            onClick={() => {
-              approveKyc();
-              toast.success("Verification approved");
-            }}
-          >
-            Simulate approval
-          </Button>
-        </Card>
       </div>
     );
   }
@@ -156,14 +144,36 @@ export function KycFlow() {
         : selfieCaptured;
 
   function next() {
-    if (kycStatus === "not_started") startKyc();
     if (step < STEPS.length - 1) {
+      if (step === 0 && kycStatus === "not_started") {
+        // Fire-and-forget: it only moves not_started → in_progress, and the
+        // page does not depend on the result to advance.
+        void startKycAction();
+      }
       setStep(step + 1);
       return;
     }
-    submitKyc();
-    toast.success("Verification submitted", {
-      description: "We will let you know once the checks are complete.",
+
+    startTransition(async () => {
+      const result = await submitKycAction({
+        legalName: fullName.trim(),
+        dateOfBirth: dob,
+        documentType: "national_id",
+        documentNumberMasked: "•••• •••• " + Math.floor(1000 + Math.random() * 8999),
+        documentFileName: "identity-document.jpg",
+        livenessCheckPassed: selfieCaptured,
+      });
+
+      if (!result.ok) {
+        toast.error(result.message);
+        return;
+      }
+
+      toast.success("Verification submitted", {
+        description: "We will let you know once the checks are complete.",
+      });
+      // The status now lives in the database; re-read rather than assume.
+      router.refresh();
     });
   }
 
@@ -322,7 +332,7 @@ export function KycFlow() {
       </PrototypeNote>
 
       <div className="space-y-2">
-        <Button variant="brand" size="lg" block disabled={!canContinue} onClick={next}>
+        <Button variant="brand" size="lg" block disabled={!canContinue || pending} onClick={next}>
           {step === STEPS.length - 1 ? "Submit for review" : "Continue"}
         </Button>
         {step > 0 ? (

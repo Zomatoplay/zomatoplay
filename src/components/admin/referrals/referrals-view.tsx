@@ -30,10 +30,6 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ADMIN_PAGE_SIZE } from "@/constants/admin";
-import {
-  adminCommissionLedger,
-  adminReferralAccounts,
-} from "@/data/admin/referrals";
 import { vipLevels } from "@/data/referrals";
 import { useAdminStore } from "@/lib/admin-store";
 import { formatUsdt } from "@/lib/currency";
@@ -72,27 +68,27 @@ export function ReferralsView() {
 }
 
 function ReferralsBrowser() {
-  const { settings } = useAdminStore();
+  const { settings, referralAccounts, commissionLedger } = useAdminStore();
   const [query, setQuery] = useState("");
   const [vip, setVip] = useState<VipFilter>("all");
 
   const vipOptions: FilterOption<VipFilter>[] = useMemo(
     () => [
-      { value: "all", label: "All", count: adminReferralAccounts.length },
+      { value: "all", label: "All", count: referralAccounts.length },
       ...vipLevels.map((level) => ({
         value: level.id as VipFilter,
         label: level.name,
-        count: adminReferralAccounts.filter(
+        count: referralAccounts.filter(
           (account) => account.vipLevel === level.id,
         ).length,
       })),
     ],
-    [],
+    [referralAccounts],
   );
 
   const filteredAccounts = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return adminReferralAccounts
+    return referralAccounts
       .filter((account) => {
         if (vip !== "all" && account.vipLevel !== vip) return false;
         if (!needle) return true;
@@ -102,26 +98,26 @@ function ReferralsBrowser() {
           .includes(needle);
       })
       .sort((a, b) => b.teamVolumeUsdt - a.teamVolumeUsdt);
-  }, [query, vip]);
+  }, [referralAccounts, query, vip]);
 
   const filteredCommissions = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return adminCommissionLedger;
-    return adminCommissionLedger.filter((entry) =>
+    if (!needle) return commissionLedger;
+    return commissionLedger.filter((entry) =>
       [entry.id, entry.beneficiaryName, entry.sourceUserName, entry.sourcePlanName]
         .join(" ")
         .toLowerCase()
         .includes(needle),
     );
-  }, [query]);
+  }, [commissionLedger, query]);
 
-  const totalCommission = adminCommissionLedger
+  const totalCommission = commissionLedger
     .filter((entry) => entry.status === "credited")
     .reduce((sum, entry) => sum + entry.amountUsdt, 0);
-  const pendingCommission = adminCommissionLedger
+  const pendingCommission = commissionLedger
     .filter((entry) => entry.status === "pending")
     .reduce((sum, entry) => sum + entry.amountUsdt, 0);
-  const totalTeamVolume = adminReferralAccounts.reduce(
+  const totalTeamVolume = referralAccounts.reduce(
     (sum, account) => sum + account.teamVolumeUsdt,
     0,
   );
@@ -286,7 +282,7 @@ function ReferralsBrowser() {
       <AdminStatGrid className="md:grid-cols-4 xl:grid-cols-4">
         <AdminStatCard
           label="Referral accounts"
-          value={adminReferralAccounts.length}
+          value={referralAccounts.length}
           icon={Users}
           hint="Users who have referred at least one person"
         />
@@ -325,7 +321,7 @@ function ReferralsBrowser() {
                 <span className="text-sm font-semibold">{level.name}</span>
                 <Badge variant="outline">
                   {
-                    adminReferralAccounts.filter(
+                    referralAccounts.filter(
                       (account) => account.vipLevel === level.id,
                     ).length
                   }{" "}

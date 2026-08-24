@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import { BellRing, Send, Users } from "lucide-react";
-import { toast } from "sonner";
 
 import { AdminHeader } from "@/components/admin/layout/admin-header";
 import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
@@ -33,6 +32,8 @@ import {
 } from "@/data/admin/notifications";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
+import { useAdminAction } from "@/components/admin/shared/use-admin-action";
+import { sendNotificationAction } from "@/app/admin/actions";
 import { cn } from "@/lib/utils";
 import type {
   AdminNotificationAudience,
@@ -71,6 +72,7 @@ const ALL_CHANNELS: AdminNotificationChannel[] = ["in_app", "email", "push"];
 
 function NotificationsWorkspace() {
   const store = useAdminStore();
+  const { run } = useAdminAction();
   const allowed = canManage(store.session, "notifications");
 
   const [templateId, setTemplateId] =
@@ -386,18 +388,24 @@ function NotificationsWorkspace() {
             size="lg"
             disabled={!allowed || !valid}
             onClick={() => {
-              store.sendNotification({
-                title: title.trim(),
-                body: body.trim(),
-                audience,
-                targetUserLabel: matchedUser
-                  ? `${matchedUser.fullName} · ${matchedUser.displayId}`
-                  : null,
-                channels,
-                templateId,
-              });
-              toast.success(
-                `Notification sent to ${reach.toLocaleString("en-IN")} ${reach === 1 ? "recipient" : "recipients"}`,
+              run(
+                () =>
+                  sendNotificationAction({
+                    title: title.trim(),
+                    body: body.trim(),
+                    audience,
+                    targetUserLabel: matchedUser
+                      ? `${matchedUser.fullName} · ${matchedUser.displayId}`
+                      : null,
+                    channels,
+                    templateId,
+                  }),
+                {
+                  onSuccess: () => {
+                    setTitle("");
+                    setBody("");
+                  },
+                },
               );
             }}
           >

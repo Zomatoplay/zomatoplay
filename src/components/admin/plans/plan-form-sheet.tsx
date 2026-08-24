@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/sheet";
 import { planStatusDescriptions } from "@/data/admin/plans";
 import { rewardFrequencyLabels, riskLabels } from "@/data/plans";
-import type { PlanDraft } from "@/lib/admin-store";
+import type { PlanInput as PlanDraft } from "@/app/admin/actions";
 import { cn } from "@/lib/utils";
 import type { AdminPlan, AdminPlanStatus } from "@/types/admin";
 import type { RewardFrequency, RiskLevel } from "@/types";
@@ -111,7 +111,7 @@ export function PlanFormSheet({
   }
 
   function set<K extends keyof PlanDraft>(key: K, value: PlanDraft[K]) {
-    setDraft((current) => ({ ...current, [key]: value }));
+    setDraft((current: PlanDraft) => ({ ...current, [key]: value }));
   }
 
   const errors = validate(draft);
@@ -282,7 +282,9 @@ export function PlanFormSheet({
             label="Status"
             value={draft.status}
             onChange={(value) => set("status", value as AdminPlanStatus)}
-            options={Object.entries(planStatusDescriptions).map(([value]) => ({
+            options={(
+              Object.keys(planStatusDescriptions) as AdminPlanStatus[]
+            ).map((value) => ({
               value,
               label: value.charAt(0).toUpperCase() + value.slice(1),
             }))}

@@ -17,7 +17,6 @@ import {
   Undo2,
   UserRoundCheck,
 } from "lucide-react";
-import { toast } from "sonner";
 
 import { ConfirmActionDialog } from "@/components/admin/shared/confirm-action-dialog";
 import { Button } from "@/components/ui/button";
@@ -31,6 +30,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
+import { useAdminAction } from "@/components/admin/shared/use-admin-action";
+import {
+  resetUserTwoFactorAction,
+  revokeUserSessionAction,
+  sendUserPasswordResetAction,
+  setUserRestrictionAction,
+  setUserStatusAction,
+} from "@/app/admin/actions";
 import type { AdminUser } from "@/types/admin";
 
 /**
@@ -73,6 +80,7 @@ export function UserActionMenu({
   editHref?: string;
 }) {
   const store = useAdminStore();
+  const { run } = useAdminAction();
   const [pending, setPending] = useState<PendingAction | null>(null);
   const allowed = canManage(store.session, "user_details");
 
@@ -261,8 +269,9 @@ export function UserActionMenu({
           ],
         }}
         onConfirm={(reason) => {
-          store.setUserStatus(user.id, "blocked", reason);
-          toast.success(`${user.fullName} has been blocked`);
+          run(() =>
+            setUserStatusAction({ userId: user.id, status: "blocked", reason: reason }),
+          );
         }}
       />
 
@@ -281,8 +290,9 @@ export function UserActionMenu({
         confirmLabel="Unblock user"
         reason={{ label: "Note", placeholder: "Why is the block being lifted?" }}
         onConfirm={(reason) => {
-          store.setUserStatus(user.id, "active", reason);
-          toast.success(`${user.fullName} has been unblocked`);
+          run(() =>
+            setUserStatusAction({ userId: user.id, status: "active", reason: reason }),
+          );
         }}
       />
 
@@ -310,8 +320,9 @@ export function UserActionMenu({
           ],
         }}
         onConfirm={(reason) => {
-          store.setUserStatus(user.id, "suspended", reason);
-          toast.success(`${user.fullName} has been suspended`);
+          run(() =>
+            setUserStatusAction({ userId: user.id, status: "suspended", reason: reason }),
+          );
         }}
       />
 
@@ -330,8 +341,9 @@ export function UserActionMenu({
         confirmLabel="Reactivate"
         reason={{ label: "Note" }}
         onConfirm={(reason) => {
-          store.setUserStatus(user.id, "active", reason);
-          toast.success(`${user.fullName} is active again`);
+          run(() =>
+            setUserStatusAction({ userId: user.id, status: "active", reason: reason }),
+          );
         }}
       />
 
@@ -361,8 +373,9 @@ export function UserActionMenu({
           ],
         }}
         onConfirm={(reason) => {
-          store.setUserStatus(user.id, "deactivated", reason);
-          toast.success(`${user.fullName}'s account has been deactivated`);
+          run(() =>
+            setUserStatusAction({ userId: user.id, status: "deactivated", reason: reason }),
+          );
         }}
       />
 
@@ -377,8 +390,14 @@ export function UserActionMenu({
         destructive
         reason={{ label: "Reason", required: true }}
         onConfirm={(reason) => {
-          store.setUserRestriction(user.id, "accountFrozen", true, reason);
-          toast.success("Account frozen");
+          run(() =>
+            setUserRestrictionAction({
+              userId: user.id,
+              key: "accountFrozen",
+              value: true,
+              reason: reason,
+            }),
+          );
         }}
       />
       <ConfirmActionDialog
@@ -389,8 +408,14 @@ export function UserActionMenu({
         confirmLabel="Lift freeze"
         reason={{ label: "Note" }}
         onConfirm={(reason) => {
-          store.setUserRestriction(user.id, "accountFrozen", false, reason);
-          toast.success("Account freeze lifted");
+          run(() =>
+            setUserRestrictionAction({
+              userId: user.id,
+              key: "accountFrozen",
+              value: false,
+              reason: reason,
+            }),
+          );
         }}
       />
 
@@ -411,8 +436,14 @@ export function UserActionMenu({
           ],
         }}
         onConfirm={(reason) => {
-          store.setUserRestriction(user.id, "withdrawalsFrozen", true, reason);
-          toast.success("Withdrawals frozen");
+          run(() =>
+            setUserRestrictionAction({
+              userId: user.id,
+              key: "withdrawalsFrozen",
+              value: true,
+              reason: reason,
+            }),
+          );
         }}
       />
       <ConfirmActionDialog
@@ -423,8 +454,14 @@ export function UserActionMenu({
         confirmLabel="Lift freeze"
         reason={{ label: "Note" }}
         onConfirm={(reason) => {
-          store.setUserRestriction(user.id, "withdrawalsFrozen", false, reason);
-          toast.success("Withdrawal freeze lifted");
+          run(() =>
+            setUserRestrictionAction({
+              userId: user.id,
+              key: "withdrawalsFrozen",
+              value: false,
+              reason: reason,
+            }),
+          );
         }}
       />
 
@@ -444,8 +481,14 @@ export function UserActionMenu({
           ],
         }}
         onConfirm={(reason) => {
-          store.setUserRestriction(user.id, "investmentsFrozen", true, reason);
-          toast.success("Investments frozen");
+          run(() =>
+            setUserRestrictionAction({
+              userId: user.id,
+              key: "investmentsFrozen",
+              value: true,
+              reason: reason,
+            }),
+          );
         }}
       />
       <ConfirmActionDialog
@@ -456,8 +499,14 @@ export function UserActionMenu({
         confirmLabel="Lift freeze"
         reason={{ label: "Note" }}
         onConfirm={(reason) => {
-          store.setUserRestriction(user.id, "investmentsFrozen", false, reason);
-          toast.success("Investment freeze lifted");
+          run(() =>
+            setUserRestrictionAction({
+              userId: user.id,
+              key: "investmentsFrozen",
+              value: false,
+              reason: reason,
+            }),
+          );
         }}
       />
 
@@ -477,8 +526,7 @@ export function UserActionMenu({
         confirmLabel="Send reset link"
         reason={{ label: "Note" }}
         onConfirm={(reason) => {
-          store.resetUserPassword(user.id, reason);
-          toast.success(`Password reset sent to ${user.email}`);
+          run(() => sendUserPasswordResetAction({ userId: user.id, note: reason }));
         }}
       />
 
@@ -498,8 +546,7 @@ export function UserActionMenu({
           ],
         }}
         onConfirm={(reason) => {
-          store.resetUserTwoFactor(user.id, reason);
-          toast.success("Two-factor authentication reset");
+          run(() => resetUserTwoFactorAction({ userId: user.id, reason }));
         }}
       />
 
@@ -529,8 +576,7 @@ export function UserActionMenu({
           ],
         }}
         onConfirm={(reason) => {
-          store.revokeAllSessions(user.id, reason);
-          toast.success("All sessions revoked");
+          run(() => revokeUserSessionAction({ userId: user.id, reason: reason }));
         }}
       />
     </>

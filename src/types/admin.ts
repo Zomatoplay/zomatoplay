@@ -219,22 +219,52 @@ export type AdminDepositStatus =
   | "confirming"
   | "confirmed"
   | "credited"
-  | "failed";
+  | "failed"
+  /** Seen on-chain, and an operator decided it is not a platform deposit. */
+  | "ignored";
+
+/** Whether the chain data has been checked against the configured policy. */
+export type DepositVerification = "unverified" | "verified" | "rejected";
+
+export type ChainId = "tron";
+export type ChainNetwork = "mainnet" | "shasta" | "nile";
 
 export interface AdminDeposit {
   id: string;
-  userId: string;
+  /**
+   * Null until an operator attributes the transfer to an account.
+   *
+   * One platform address receives every deposit, and a TRC-20 transfer carries
+   * no account identifier — so an incoming transfer belongs to nobody until
+   * somebody says which account it is for. See the note on the `deposits` table.
+   */
+  userId: string | null;
+  /** "Unassigned" when there is no `userId`. */
   userName: string;
   userDisplayId: string;
+  assignedAt: string | null;
+  assignedBy: string | null;
   amountUsdt: number;
   network: DepositNetworkId;
+  chain: ChainId;
+  chainNetwork: ChainNetwork;
+  /** The token contract the transfer was made in. */
+  tokenContract: string | null;
+  tokenSymbol: string | null;
+  /** Where the funds came from. Never treated as an identity. */
+  senderAddress: string | null;
+  /** The platform address that received them. */
   walletAddress: string;
-  /** Mock chain reference. No blockchain connectivity exists. */
   txHash: string;
+  blockNumber: string | null;
+  blockTimestamp: string | null;
   createdAt: string;
+  detectedAt: string | null;
+  confirmedAt: string | null;
   creditedAt: string | null;
   confirmations: { current: number; required: number };
   status: AdminDepositStatus;
+  verification: DepositVerification;
   failureReason?: string;
 }
 
@@ -464,6 +494,63 @@ export type AuditAction =
   | "agent_permissions_changed"
   | "notification_sent"
   | "settings_updated";
+
+/**
+ * A step the system took, with how long it took and how it went.
+ *
+ * Distinct from `AuditLogEntry`, which records *who decided what*. This records
+ * what the machinery did — a Supabase call, a transaction, a TronGrid page —
+ * so a failed click can be traced instead of guessed at. See the table comment
+ * in `db/schema/observability.ts`.
+ */
+export type PipelineId =
+  | "navigation"
+  | "auth"
+  | "kyc"
+  | "deposit"
+  | "chain_scanner"
+  | "investment"
+  | "withdrawal"
+  | "email"
+  | "database"
+  | "admin";
+
+export type PipelineStatus = "started" | "ok" | "failed";
+
+export type PipelineLayer =
+  | "client"
+  | "server"
+  | "database"
+  | "external"
+  | "blockchain";
+
+export type PipelineActorType = "user" | "admin" | "system";
+
+export interface PipelineEvent {
+  id: string;
+  pipeline: PipelineId;
+  layer: PipelineLayer;
+  /** The route the request was for, e.g. `/wallet`. */
+  route: string | null;
+  actorType: PipelineActorType;
+  /** `area.verb`, e.g. `kyc.submit`. */
+  operation: string;
+  status: PipelineStatus;
+  occurredAt: string;
+  durationMs: number | null;
+  /** Ties every step of one request together. */
+  correlationId: string;
+  userId: string | null;
+  /** Resolved for display; the row stores only the id. */
+  userLabel: string | null;
+  actorId: string | null;
+  actorName: string | null;
+  subjectType: string | null;
+  subjectId: string | null;
+  message: string;
+  errorMessage: string | null;
+  metadata: Record<string, string | number | boolean> | null;
+}
 
 export interface AuditLogEntry {
   id: string;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   CheckCircle2,
@@ -24,7 +25,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { kycRejectionReasons } from "@/data/admin/kyc";
 import { canManage } from "@/lib/admin-permissions";
-import { useAdminStore } from "@/lib/admin-store";
+import { useAdminSession } from "@/lib/admin-store";
+import {
+  addKycNoteAction,
+  approveKycAction,
+  rejectKycAction,
+  requestKycResubmissionAction,
+} from "@/app/admin/actions";
 import { cn } from "@/lib/utils";
 import type { KycDocumentType, KycSubmission } from "@/types/admin";
 import { formatDate, formatDateTime } from "@/utils/format";
@@ -56,9 +63,40 @@ export function KycCasePanel({
   showUserLink?: boolean;
   className?: string;
 }) {
-  const store = useAdminStore();
+  const session = useAdminSession();
+  const router = useRouter();
+  const [working, setWorking] = useState(false);
+
+  /**
+   * Runs an operator decision on the server and re-reads.
+   *
+   * These used to dispatch into the in-memory store, so an approval existed
+   * only in the operator's own tab. The decision is now a database write with
+   * an audit entry, and the user's account sees it because it is the same row.
+   */
+  async function run(action: () => Promise<{ ok: boolean; message: string }>) {
+    setWorking(true);
+    try {
+      const result = await action();
+      if (result.ok) {
+        toast.success(result.message);
+        router.refresh();
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "The action did not complete.",
+      );
+    } finally {
+      setWorking(false);
+    }
+  }
+
   const [pending, setPending] = useState<PendingDecision | null>(null);
-  const allowed = canManage(store.session, "kyc");
+  // An affordance: it tells an honest reviewer what they may do. The boundary
+  // is `requirePermission("kyc")` inside each action, on the server.
+  const allowed = canManage(session, "kyc");
 
   const decided =
     submission.status === "approved" || submission.status === "rejected";
@@ -197,7 +235,7 @@ export function KycCasePanel({
           <Button
             variant="outline"
             size="sm"
-            disabled={!allowed}
+            disabled={!allowed || working}
             onClick={() => setPending("note")}
           >
             <MessageSquarePlus className="size-4" />
@@ -279,7 +317,9 @@ export function KycCasePanel({
         confirmLabel="Approve verification"
         reason={{ label: "Note", placeholder: "Anything worth recording?" }}
         onConfirm={(note) => {
-          store.approveKyc(submission.id, note);
+          void run(() =>
+            approveKycAction({ submissionId: submission.id, note }),
+          );
           toast.success(`${submission.userName} is now verified`);
         }}
       >
@@ -322,7 +362,9 @@ export function KycCasePanel({
           presets: kycRejectionReasons,
         }}
         onConfirm={(reason) => {
-          store.rejectKyc(submission.id, reason);
+          void run(() =>
+            rejectKycAction({ submissionId: submission.id, reason }),
+          );
           toast.success("Verification rejected");
         }}
       />
@@ -352,7 +394,12 @@ export function KycCasePanel({
           ],
         }}
         onConfirm={(reason) => {
-          store.requestKycResubmission(submission.id, reason);
+          void run(() =>
+            requestKycResubmissionAction({
+              submissionId: submission.id,
+              reason,
+            }),
+          );
           toast.success("Resubmission requested");
         }}
       />
@@ -369,7 +416,9 @@ export function KycCasePanel({
           placeholder: "What should the next reviewer know?",
         }}
         onConfirm={(body) => {
-          store.addKycNote(submission.id, body);
+          void run(() =>
+            addKycNoteAction({ submissionId: submission.id, body }),
+          );
           toast.success("Note added");
         }}
       />

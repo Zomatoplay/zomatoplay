@@ -2,8 +2,10 @@ import Link from "next/link";
 import { Bell } from "lucide-react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { currentUser } from "@/data/user";
-import { unreadNotificationCount } from "@/data/notifications";
+import {
+  getNotifications,
+  getUserProfile,
+} from "@/server/services/account.service";
 import { initials } from "@/utils/format";
 import { cn } from "@/lib/utils";
 
@@ -19,13 +21,25 @@ interface TopBarProps {
 /**
  * Header for the five primary sections. Sticky so the section name and the
  * notification control stay reachable while the page scrolls.
+ *
+ * A server component, so it reads the account itself rather than making all
+ * five sections thread the same two values through. It renders no interactive
+ * state — only a name, an initial and an unread count.
  */
-export function TopBar({
+export async function TopBar({
   eyebrow,
   title,
   showActions = true,
   className,
 }: TopBarProps) {
+  const [profile, notifications] = await Promise.all([
+    getUserProfile(),
+    getNotifications(),
+  ]);
+  const unreadCount = notifications.filter(
+    (notification) => !notification.read,
+  ).length;
+
   return (
     <header
       className={cn(
@@ -49,14 +63,14 @@ export function TopBar({
             <Link
               href="/settings/notifications"
               aria-label={
-                unreadNotificationCount > 0
-                  ? `Notifications, ${unreadNotificationCount} unread`
+                unreadCount > 0
+                  ? `Notifications, ${unreadCount} unread`
                   : "Notifications"
               }
               className="relative flex size-10 items-center justify-center rounded-full text-foreground transition-colors hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
               <Bell className="size-5" strokeWidth={1.9} />
-              {unreadNotificationCount > 0 ? (
+              {unreadCount > 0 ? (
                 <span className="absolute right-2 top-2 size-2 rounded-full bg-brand ring-2 ring-background" />
               ) : null}
             </Link>
@@ -67,7 +81,7 @@ export function TopBar({
             >
               <Avatar className="size-9">
                 <AvatarFallback className="text-xs">
-                  {initials(currentUser.fullName)}
+                  {initials(profile.fullName)}
                 </AvatarFallback>
               </Avatar>
             </Link>

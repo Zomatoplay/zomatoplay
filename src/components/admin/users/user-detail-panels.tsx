@@ -20,7 +20,6 @@ import {
   Wallet,
   type LucideIcon,
 } from "lucide-react";
-import { toast } from "sonner";
 
 import { KycCasePanel } from "@/components/admin/kyc/kyc-case-panel";
 import {
@@ -60,16 +59,12 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { depositNetworkLabels } from "@/data/admin/deposits";
-import { getInvestmentsForUser } from "@/data/admin/investments";
-import {
-  getCommissionsForUser,
-  getReferralAccount,
-} from "@/data/admin/referrals";
-import { getSecurityEventsForUser } from "@/data/admin/security";
 import { rewardFrequencyLabels } from "@/data/plans";
 import { getVipLevel } from "@/data/referrals";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
+import { useAdminAction } from "@/components/admin/shared/use-admin-action";
+import { revokeUserSessionAction, updateUserAction } from "@/app/admin/actions";
 import { formatInr, formatUsdt, formatUsdtAsInr } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import type { AdminUser, SecurityEventType } from "@/types/admin";
@@ -88,7 +83,10 @@ import { formatDate, formatDateTime, progressPercent } from "@/utils/format";
 /* -------------------------------------------------------------------------- */
 
 export function OverviewPanel({ user }: { user: AdminUser }) {
-  const referral = getReferralAccount(user.id);
+  const { referralAccounts } = useAdminStore();
+  const referral = referralAccounts.find(
+    (account) => account.userId === user.id,
+  );
   const vip = getVipLevel(user.vipLevel);
 
   return (
@@ -253,6 +251,7 @@ function RestrictionRow({
 
 function InternalNoteCard({ user }: { user: AdminUser }) {
   const store = useAdminStore();
+  const { run } = useAdminAction();
   const [open, setOpen] = useState(false);
   const allowed = canManage(store.session, "user_details");
 
@@ -294,8 +293,9 @@ function InternalNoteCard({ user }: { user: AdminUser }) {
           placeholder: user.internalNote ?? "What should the next agent know?",
         }}
         onConfirm={(note) => {
-          store.updateUser(user.id, { internalNote: note });
-          toast.success("Internal note saved");
+          run(() =>
+            updateUserAction({ userId: user.id, changes: { internalNote: note } }),
+          );
         }}
       />
     </>
@@ -315,7 +315,7 @@ export function UserEditDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const store = useAdminStore();
+  const { run } = useAdminAction();
   const [fullName, setFullName] = useState(user.fullName);
   const [email, setEmail] = useState(user.email);
   const [phone, setPhone] = useState(user.phone);
@@ -389,14 +389,22 @@ export function UserEditDialog({
             className="sm:w-auto sm:flex-1"
             disabled={!valid}
             onClick={() => {
-              store.updateUser(user.id, {
-                fullName: fullName.trim(),
-                email: email.trim(),
-                phone: phone.trim(),
-                country: country.trim(),
-              });
-              toast.success("User updated");
-              onOpenChange(false);
+              // `email` is deliberately not sent. It is the Supabase sign-in
+              // identifier, and an operator rewriting it here would leave the
+              // credential and the profile disagreeing about who the account
+              // belongs to.
+              run(
+                () =>
+                  updateUserAction({
+                    userId: user.id,
+                    changes: {
+                      fullName: fullName.trim(),
+                      phone: phone.trim(),
+                      country: country.trim(),
+                    },
+                  }),
+                { onSuccess: () => onOpenChange(false) },
+              );
             }}
           >
             Save changes
@@ -420,7 +428,8 @@ export function UserEditDialog({
 /* -------------------------------------------------------------------------- */
 
 export function InvestmentsPanel({ user }: { user: AdminUser }) {
-  const rows = getInvestmentsForUser(user.id);
+  const { investments } = useAdminStore();
+  const rows = investments.filter((row) => row.userId === user.id);
 
   const columns: DataTableColumn<(typeof rows)[number]>[] = [
     {
@@ -778,8 +787,11 @@ export function WithdrawalsPanel({ user }: { user: AdminUser }) {
 /* -------------------------------------------------------------------------- */
 
 export function RewardsPanel({ user }: { user: AdminUser }) {
-  const investments = getInvestmentsForUser(user.id);
-  const commissions = getCommissionsForUser(user.id);
+  const store = useAdminStore();
+  const investments = store.investments.filter((row) => row.userId === user.id);
+  const commissions = store.commissionLedger.filter(
+    (entry) => entry.beneficiaryUserId === user.id,
+  );
 
   const accrued = investments.reduce((sum, row) => sum + row.profitUsdt, 0);
   const projected = investments
@@ -898,8 +910,13 @@ function SummaryTile({
 /* -------------------------------------------------------------------------- */
 
 export function ReferralsPanel({ user }: { user: AdminUser }) {
-  const account = getReferralAccount(user.id);
-  const commissions = getCommissionsForUser(user.id);
+  const { referralAccounts, commissionLedger } = useAdminStore();
+  const account = referralAccounts.find(
+    (entry) => entry.userId === user.id,
+  );
+  const commissions = commissionLedger.filter(
+    (entry) => entry.beneficiaryUserId === user.id,
+  );
   const vip = getVipLevel(user.vipLevel);
 
   return (
@@ -1017,6 +1034,7 @@ export function KycPanel({ user }: { user: AdminUser }) {
 /* -------------------------------------------------------------------------- */
 
 export function SessionsPanel({ user }: { user: AdminUser }) {
+  const { run } = useAdminAction();
   const store = useAdminStore();
   const [pendingSession, setPendingSession] = useState<string | null>(null);
   const [logoutAll, setLogoutAll] = useState(false);
@@ -1210,10 +1228,14 @@ export function SessionsPanel({ user }: { user: AdminUser }) {
         destructive
         reason={{ label: "Reason", placeholder: "Why is this session being revoked?" }}
         onConfirm={(reason) => {
-          if (pendingSession) {
-            store.revokeSession(pendingSession, user.id, reason);
-            toast.success("Session revoked");
-          }
+          if (!pendingSession) return;
+          run(() =>
+            revokeUserSessionAction({
+              userId: user.id,
+              sessionId: pendingSession,
+              reason,
+            }),
+          );
         }}
       />
 
@@ -1243,8 +1265,7 @@ export function SessionsPanel({ user }: { user: AdminUser }) {
           ],
         }}
         onConfirm={(reason) => {
-          store.revokeAllSessions(user.id, reason);
-          toast.success("All sessions revoked");
+          run(() => revokeUserSessionAction({ userId: user.id, reason }));
         }}
       />
     </div>
@@ -1266,7 +1287,8 @@ const SECURITY_ICONS: Record<SecurityEventType, LucideIcon> = {
 };
 
 export function SecurityPanel({ user }: { user: AdminUser }) {
-  const events = getSecurityEventsForUser(user.id);
+  const { securityEvents } = useAdminStore();
+  const events = securityEvents.filter((event) => event.userId === user.id);
 
   const entries: TimelineEntry[] = events
     .slice()

@@ -24,9 +24,9 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { SUPPORT_EMAIL } from "@/constants/app";
-import { faqs, helpTopics, supportTickets } from "@/data/support";
+import { faqs, helpTopics } from "@/data/support";
 import { formatDate } from "@/utils/format";
-import type { TicketStatus } from "@/types";
+import type { SupportTicket, TicketStatus } from "@/types";
 
 const ticketStatusLabels: Record<
   TicketStatus,
@@ -37,7 +37,12 @@ const ticketStatusLabels: Record<
   resolved: { label: "Resolved", variant: "positive" },
 };
 
-export function SupportCenter() {
+export function SupportCenter({
+  tickets,
+}: {
+  /** The account's own conversations. FAQs and help topics stay static copy. */
+  tickets: SupportTicket[];
+}) {
   const [contactOpen, setContactOpen] = useState(false);
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
@@ -100,7 +105,7 @@ export function SupportCenter() {
           Your support tickets
         </h2>
         <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
-          {supportTickets.map((ticket) => {
+          {tickets.map((ticket) => {
             const status = ticketStatusLabels[ticket.status];
             return (
               <li key={ticket.id} className="flex items-start gap-3 px-4 py-3.5">

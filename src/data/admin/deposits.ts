@@ -43,15 +43,29 @@ function deposit(seed: DepositSeed): AdminDeposit {
     userId: seed.userId,
     userName: seed.userName,
     userDisplayId: seed.userDisplayId,
+    // The sample rows predate the chain integration and are all attributed,
+    // so they stand in for deposits an operator has already assigned.
+    assignedAt: seed.createdAt,
+    assignedBy: null,
     amountUsdt: seed.amountUsdt,
     network: seed.network,
+    chain: "tron",
+    chainNetwork: "shasta",
+    tokenContract: null,
+    tokenSymbol: "USDT",
+    senderAddress: null,
     walletAddress: seed.walletAddress,
     txHash: seed.txHash,
+    blockNumber: null,
+    blockTimestamp: null,
     createdAt: seed.createdAt,
+    detectedAt: seed.createdAt,
+    confirmedAt: settled ? seed.createdAt : null,
     creditedAt: seed.creditedAt ?? null,
     confirmations:
       seed.confirmations ?? { current: settled ? required : 0, required },
     status: seed.status,
+    verification: settled ? "verified" : "unverified",
     failureReason: seed.failureReason,
   };
 }
@@ -360,6 +374,7 @@ export const depositStatusLabels: Record<AdminDepositStatus, string> = {
   confirmed: "Confirmed",
   credited: "Credited",
   failed: "Failed",
+  ignored: "Ignored",
 };
 
 export const depositNetworkLabels: Record<DepositNetworkId, string> = {

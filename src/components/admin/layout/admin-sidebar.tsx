@@ -4,13 +4,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ArrowUpRight } from "lucide-react";
 
+import { ADMIN_APP_NAME, ADMIN_APP_SUBTITLE } from "@/constants/admin";
 import {
-  ADMIN_APP_NAME,
-  ADMIN_APP_SUBTITLE,
   ADMIN_NAV,
   ADMIN_NAV_GROUPS,
   isAdminNavItemActive,
-} from "@/constants/admin";
+} from "@/constants/admin-navigation";
 import { canView } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
 import { cn } from "@/lib/utils";

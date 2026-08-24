@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Nanotron
 
-## Getting Started
+A mobile-first crypto investment platform, plus a Master CRM at `/admin`.
 
-First, run the development server:
+**Read [`CLAUDE.md`](./CLAUDE.md) before changing anything** — it is the single
+source of truth for scope, architecture and conventions.
+[`CHANGELOG.md`](./CHANGELOG.md) records what has actually been built.
+
+## Getting started
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+That works with no database: the service layer falls back to the seed data in
+`src/data`, and the app behaves exactly as it does with one. Nothing is
+persisted.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## With a database
 
-## Learn More
+PostgreSQL 14+, local or managed.
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+cp .env.example .env.local     # then set DATABASE_URL
+npm run db:migrate             # apply drizzle/*.sql
+npm run db:seed                # load the development data
+npm run db:check               # connected? migrated? seeded?
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Reads then come from PostgreSQL. Writes are deliberately not implemented — see
+CLAUDE.md §2 and §16.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`.env.local` is git-ignored. Never put a connection string in source.
 
-## Deploy on Vercel
+## Checks
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm run typecheck
+npx eslint .
+npm test
+npm run build
+```

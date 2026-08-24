@@ -11,16 +11,24 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { getPlanById, rewardFrequencyLabels } from "@/data/plans";
+import { rewardFrequencyLabels } from "@/data/plans";
 import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
+import type { Plan } from "@/types";
 import { formatDate, progressPercent } from "@/utils/format";
 
 /**
  * Detail view for a single investment. Reads from the store rather than the
  * seed data so allocations created during the session resolve too.
  */
-export function InvestmentDetail({ id }: { id: string }) {
+export function InvestmentDetail({
+  id,
+  plans,
+}: {
+  id: string;
+  /** The catalogue, read server-side — the plan's terms are shown alongside. */
+  plans: Plan[];
+}) {
   const { investments } = usePrototypeStore();
   const investment = investments.find((item) => item.id === id);
 
@@ -39,7 +47,7 @@ export function InvestmentDetail({ id }: { id: string }) {
     );
   }
 
-  const plan = getPlanById(investment.planId);
+  const plan = plans.find((item) => item.id === investment.planId);
   const openEnded = investment.durationDays === 0;
   const percent = openEnded
     ? 100

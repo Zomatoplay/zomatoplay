@@ -1,0 +1,1 @@
+ALTER TYPE "public"."pipeline" ADD VALUE 'navigation' BEFORE 'auth';

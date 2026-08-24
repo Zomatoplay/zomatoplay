@@ -1,16 +1,59 @@
 "use client";
 
+import { useOptimistic, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { Bell } from "lucide-react";
+import { toast } from "sonner";
 
 import { EmptyState } from "@/components/shared/empty-state";
 import { Switch } from "@/components/ui/switch";
-import { notificationPreferences, notifications } from "@/data/notifications";
 import { usePrototypeStore } from "@/lib/prototype-store";
+import { setNotificationPreferenceAction } from "@/app/(app)/settings/account-actions";
+import type { NotificationCategory } from "@/types";
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/utils/format";
 
+/**
+ * Notification history and per-category preferences.
+ *
+ * The switches used to flip a boolean in the prototype store — nothing read it
+ * back, and a reload undid it. They now write `user_notification_preferences`
+ * through a server action.
+ *
+ * `useOptimistic` is why the switch still moves instantly. It is a *display*
+ * optimisation and nothing more: if the write fails, React reverts the value to
+ * whatever the server last said, and the toast explains why. A preference is
+ * also the right place for this — being briefly wrong about an email opt-in
+ * costs nothing, which is exactly why the same trick is not used anywhere money
+ * is involved.
+ */
 export function NotificationSettings() {
-  const { notificationPrefs, toggleNotification } = usePrototypeStore();
+  const { notifications, notificationCategories, notificationPrefs } =
+    usePrototypeStore();
+  const router = useRouter();
+  const [, startTransition] = useTransition();
+  const [optimisticPrefs, applyOptimistic] = useOptimistic(
+    notificationPrefs,
+    (
+      current: Record<NotificationCategory, boolean>,
+      change: { id: NotificationCategory; enabled: boolean },
+    ) => ({ ...current, [change.id]: change.enabled }),
+  );
+
+  function toggle(id: NotificationCategory, enabled: boolean) {
+    startTransition(async () => {
+      applyOptimistic({ id, enabled });
+      const result = await setNotificationPreferenceAction({
+        category: id,
+        enabled,
+      });
+      if (!result.ok) {
+        toast.error(result.message);
+        return;
+      }
+      router.refresh();
+    });
+  }
 
   return (
     <div className="space-y-6">
@@ -66,7 +109,7 @@ export function NotificationSettings() {
           What you get notified about
         </h2>
         <div className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
-          {notificationPreferences.map((preference) => (
+          {notificationCategories.map((preference) => (
             <div
               key={preference.id}
               className="flex min-h-14 items-center gap-3 px-4 py-3"
@@ -80,8 +123,8 @@ export function NotificationSettings() {
                 </p>
               </div>
               <Switch
-                checked={notificationPrefs[preference.id]}
-                onCheckedChange={() => toggleNotification(preference.id)}
+                checked={optimisticPrefs[preference.id]}
+                onCheckedChange={(checked) => toggle(preference.id, checked)}
                 aria-label={preference.label}
               />
             </div>

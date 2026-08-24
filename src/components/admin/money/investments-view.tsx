@@ -30,8 +30,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { RiskNote } from "@/components/shared/notices";
 import { Progress } from "@/components/ui/progress";
 import { ADMIN_PAGE_SIZE } from "@/constants/admin";
-import { adminInvestments } from "@/data/admin/investments";
-import { adminPlans } from "@/data/admin/plans";
+import { useAdminStore } from "@/lib/admin-store";
 import { formatUsdt } from "@/lib/currency";
 import type { AdminInvestment, AdminInvestmentStatus } from "@/types/admin";
 import { formatDate, progressPercent } from "@/utils/format";
@@ -64,36 +63,37 @@ export function InvestmentsView() {
 }
 
 function InvestmentsBrowser() {
+  const { investments, plans } = useAdminStore();
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [plan, setPlan] = useState<string>("all");
 
   const statusOptions: FilterOption<StatusFilter>[] = useMemo(() => {
     const count = (value: AdminInvestmentStatus) =>
-      adminInvestments.filter((row) => row.status === value).length;
+      investments.filter((row) => row.status === value).length;
     return [
-      { value: "all", label: "All", count: adminInvestments.length },
+      { value: "all", label: "All", count: investments.length },
       { value: "active", label: "Active", count: count("active") },
       { value: "matured", label: "Matured", count: count("matured") },
       { value: "cancelled", label: "Cancelled", count: count("cancelled") },
     ];
-  }, []);
+  }, [investments]);
 
   const planOptions: FilterOption<string>[] = useMemo(
     () => [
       { value: "all", label: "All plans" },
-      ...adminPlans.map((entry) => ({
+      ...plans.map((entry) => ({
         value: entry.id,
         label: entry.name,
-        count: adminInvestments.filter((row) => row.planId === entry.id).length,
+        count: investments.filter((row) => row.planId === entry.id).length,
       })),
     ],
-    [],
+    [investments, plans],
   );
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return adminInvestments
+    return investments
       .filter((row) => {
         if (status !== "all" && row.status !== status) return false;
         if (plan !== "all" && row.planId !== plan) return false;
@@ -104,11 +104,11 @@ function InvestmentsBrowser() {
           .includes(needle);
       })
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-  }, [query, status, plan]);
+  }, [investments, query, status, plan]);
 
-  const active = adminInvestments.filter((row) => row.status === "active");
+  const active = investments.filter((row) => row.status === "active");
   const allocated = active.reduce((sum, row) => sum + row.amountUsdt, 0);
-  const accrued = adminInvestments.reduce((sum, row) => sum + row.profitUsdt, 0);
+  const accrued = investments.reduce((sum, row) => sum + row.profitUsdt, 0);
 
   const columns: DataTableColumn<AdminInvestment>[] = [
     {
@@ -226,7 +226,7 @@ function InvestmentsBrowser() {
           label="Active allocations"
           value={active.length}
           icon={TrendingUp}
-          hint={`${adminInvestments.length} in total, all time`}
+          hint={`${investments.length} in total, all time`}
         />
         <AdminStatCard
           label="Capital allocated"

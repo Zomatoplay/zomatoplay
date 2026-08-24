@@ -10,15 +10,15 @@ import { RateNote } from "@/components/shared/notices";
 import { SectionHeader } from "@/components/shared/section-header";
 import { StatTile } from "@/components/shared/stat-tile";
 import { REFERRAL_BASE_URL } from "@/constants/app";
-import {
-  commissionHistory,
-  getVipLevel,
-  referralSteps,
-  referralSummary,
-  referrals,
-} from "@/data/referrals";
-import { currentUser } from "@/data/user";
+import { referralSteps } from "@/data/referrals";
 import { generateQrSvg } from "@/lib/qr";
+import { getUserProfile } from "@/server/services/account.service";
+import { getVipLevels } from "@/server/services/catalogue.service";
+import {
+  getCommissionHistory,
+  getReferralSummary,
+  getReferrals,
+} from "@/server/services/referrals.service";
 
 export const metadata: Metadata = {
   title: "Referral",
@@ -27,9 +27,18 @@ export const metadata: Metadata = {
 };
 
 export default async function ReferralPage() {
-  const link = `${REFERRAL_BASE_URL}/${currentUser.referralCode}`;
+  const [profile, summary, referrals, commissions, vipLevels] =
+    await Promise.all([
+      getUserProfile(),
+      getReferralSummary(),
+      getReferrals(),
+      getCommissionHistory(),
+      getVipLevels(),
+    ]);
+
+  const link = `${REFERRAL_BASE_URL}?ref=${profile.referralCode}`;
   const qrSvg = await generateQrSvg(link);
-  const level = getVipLevel(referralSummary.currentLevel);
+  const level = vipLevels.find((vip) => vip.id === summary.currentLevel);
 
   return (
     <>
@@ -40,17 +49,17 @@ export default async function ReferralPage() {
           <div className="grid grid-cols-2 gap-3">
             <StatTile
               label="Total Referrals"
-              value={String(referralSummary.totalReferrals)}
+              value={String(summary.totalReferrals)}
               icon={Users}
             />
             <StatTile
               label="Active Referrals"
-              value={String(referralSummary.activeReferrals)}
+              value={String(summary.activeReferrals)}
               icon={UserCheck}
             />
             <StatTile
               label="Referral Earnings"
-              amount={referralSummary.totalEarnings}
+              amount={summary.totalEarnings}
               icon={TrendingUp}
               tone="positive"
             />
@@ -68,7 +77,7 @@ export default async function ReferralPage() {
 
         <ReferralLinkCard
           link={link}
-          code={currentUser.referralCode}
+          code={profile.referralCode}
           qrSvg={qrSvg}
         />
 
@@ -99,17 +108,15 @@ export default async function ReferralPage() {
             description="Higher levels earn a larger share of your team's allocations."
           />
           <VipLevels
-            currentLevel={referralSummary.currentLevel}
-            summary={referralSummary}
+            levels={vipLevels}
+            currentLevel={summary.currentLevel}
+            summary={summary}
           />
         </section>
 
         <section className="space-y-3">
           <SectionHeader title="Referral activity" />
-          <ReferralActivity
-            referrals={referrals}
-            commissions={commissionHistory}
-          />
+          <ReferralActivity referrals={referrals} commissions={commissions} />
         </section>
       </PageContainer>
     </>

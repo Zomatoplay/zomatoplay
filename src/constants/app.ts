@@ -11,7 +11,21 @@ export const APP_DESCRIPTION =
   "Nanotron is a mobile-first crypto investment platform: fund your account in USDT, invest in managed plans, track rewards and refer friends.";
 
 /** Mock referral base URL. Replace with the real origin at integration time. */
-export const REFERRAL_BASE_URL = "https://nanotron.app/join";
+/**
+ * Where a referral link points.
+ *
+ * `/signup?ref=CODE` rather than a prettier `/join/CODE`: the query form is
+ * what the middleware captures, on any route, into the cookie that survives the
+ * signup and the email confirmation that follows it. A path form would need its
+ * own route whose only job is to set the same cookie and redirect here.
+ *
+ * INTEGRATION POINT: set `NEXT_PUBLIC_SITE_URL` in a real deployment. The
+ * fallback is the production hostname, which is right for a link somebody
+ * copies out of the app and wrong for one they follow on localhost.
+ */
+export const REFERRAL_BASE_URL = `${
+  process.env.NEXT_PUBLIC_SITE_URL ?? "https://nanotron.app"
+}/signup`;
 
 /** Support contact shown in Settings → Support. Placeholder values. */
 export const SUPPORT_EMAIL = "support@nanotron.app";

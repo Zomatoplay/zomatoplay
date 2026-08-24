@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
 import { Toaster } from "@/components/ui/sonner";
+import { NavigationTracer } from "@/components/shared/navigation-tracer";
 import { APP_DESCRIPTION, APP_NAME, APP_TAGLINE } from "@/constants/app";
 
 import "./globals.css";
@@ -74,6 +75,8 @@ export default function RootLayout({
           Skip to content
         </a>
         {children}
+        {/* Times the browser half of every navigation. Renders nothing. */}
+        <NavigationTracer />
         <Toaster />
       </body>
     </html>

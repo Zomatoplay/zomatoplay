@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { RotateCcw, Save } from "lucide-react";
-import { toast } from "sonner";
 
 import { AdminHeader } from "@/components/admin/layout/admin-header";
 import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
@@ -16,6 +15,8 @@ import { Switch } from "@/components/ui/switch";
 import { vipLevels } from "@/data/referrals";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
+import { useAdminAction } from "@/components/admin/shared/use-admin-action";
+import { updateSettingsAction } from "@/app/admin/actions";
 import { formatInr, formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import type { PlatformSettings } from "@/types/admin";
@@ -60,6 +61,7 @@ function summarise(before: PlatformSettings, after: PlatformSettings): string {
 
 export function SettingsForm() {
   const store = useAdminStore();
+  const { run } = useAdminAction();
   const allowed = canManage(store.session, "settings");
   const [draft, setDraft] = useState<PlatformSettings>(store.settings);
 
@@ -415,8 +417,12 @@ export function SettingsForm() {
               size="sm"
               disabled={!allowed || !dirty}
               onClick={() => {
-                store.updateSettings(draft, summarise(store.settings, draft));
-                toast.success("Platform settings saved");
+                run(() =>
+                  updateSettingsAction({
+                    settings: draft,
+                    summary: summarise(store.settings, draft),
+                  }),
+                );
               }}
             >
               <Save className="size-4" />

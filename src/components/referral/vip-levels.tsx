@@ -2,26 +2,27 @@ import { Check, Crown } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { vipLevels } from "@/data/referrals";
 import { formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
-import type { ReferralSummary, VipLevelId } from "@/types";
+import type { ReferralSummary, VipLevel, VipLevelId } from "@/types";
 
 /**
- * VIP tiers. Percentages and thresholds come from `@/data/referrals`, so they
- * can later be driven by a config service without touching this component.
+ * VIP tiers. Percentages and thresholds are read from the catalogue rather
+ * than restated here, so a config change reaches both applications at once.
  */
 export function VipLevels({
+  levels,
   currentLevel,
   summary,
   className,
 }: {
+  levels: VipLevel[];
   currentLevel: VipLevelId;
   summary: ReferralSummary;
   className?: string;
 }) {
-  const currentIndex = vipLevels.findIndex((level) => level.id === currentLevel);
-  const nextLevel = vipLevels[currentIndex + 1] ?? null;
+  const currentIndex = levels.findIndex((level) => level.id === currentLevel);
+  const nextLevel = levels[currentIndex + 1] ?? null;
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -51,7 +52,7 @@ export function VipLevels({
         </div>
       ) : null}
 
-      {vipLevels.map((level, index) => {
+      {levels.map((level, index) => {
         const isCurrent = level.id === currentLevel;
         const isUnlocked = index <= currentIndex;
 

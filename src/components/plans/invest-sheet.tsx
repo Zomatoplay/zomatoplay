@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import { CheckCircle2, ShieldAlert } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CheckCircle2, Loader2, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { InfoRow } from "@/components/shared/info-row";
@@ -23,6 +24,7 @@ import {
 import { rewardFrequencyLabels } from "@/data/plans";
 import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
+import { createInvestmentAction } from "@/app/(app)/plans/actions";
 import { cn } from "@/lib/utils";
 import { formatDate } from "@/utils/format";
 import type { Plan } from "@/types";
@@ -32,11 +34,17 @@ type Stage = "amount" | "confirm" | "done";
 const QUICK_FRACTIONS = [0.25, 0.5, 1] as const;
 
 /**
- * Mock investment flow: amount → confirmation → receipt.
+ * Investment flow: amount → confirmation → receipt.
  *
- * Validates against the plan's limits and the user's available balance, and
- * gates on KYC exactly as the real product will. No funds move; the allocation
- * is recorded in the in-memory prototype store.
+ * The validation here — plan limits, available balance, verification — is an
+ * affordance, so the person is told before they commit rather than after. Every
+ * one of those rules is checked again inside `createInvestment`, against the
+ * plan row and the balance as Postgres holds them, because this component runs
+ * in a browser and the browser does not get to decide what an account can
+ * afford.
+ *
+ * The allocation, the ledger entry, the balance change and the plan's aggregate
+ * all land in one transaction, or none of them do.
  */
 export function InvestSheet({
   plan,
@@ -45,10 +53,13 @@ export function InvestSheet({
   plan: Plan;
   className?: string;
 }) {
-  const { balance, isVerified, createInvestment } = usePrototypeStore();
+  const { balance, isVerified } = usePrototypeStore();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [stage, setStage] = useState<Stage>("amount");
   const [rawAmount, setRawAmount] = useState("");
+  const [confirmedAmount, setConfirmedAmount] = useState(0);
+  const [pending, startTransition] = useTransition();
 
   const amount = Number.parseFloat(rawAmount);
   const maxAllowed = Math.min(plan.maxInvestment, balance.available);
@@ -78,6 +89,7 @@ export function InvestSheet({
   function reset() {
     setStage("amount");
     setRawAmount("");
+    setConfirmedAmount(0);
   }
 
   function handleOpenChange(next: boolean) {
@@ -89,10 +101,27 @@ export function InvestSheet({
   }
 
   function handleConfirm() {
-    createInvestment(plan, amount);
-    setStage("done");
-    toast.success("Investment created", {
-      description: `${formatUsdt(amount)} allocated to ${plan.name}.`,
+    if (pending) return;
+    const requested = amount;
+    startTransition(async () => {
+      const result = await createInvestmentAction({
+        planId: plan.id,
+        amount: rawAmount.trim(),
+      });
+
+      if (!result.ok) {
+        toast.error(result.message);
+        return;
+      }
+
+      // The receipt reads from what was sent, not from the store: the store is
+      // a snapshot from before this write and only catches up on the refresh.
+      setConfirmedAmount(requested);
+      setStage("done");
+      toast.success("Investment created", {
+        description: `${formatUsdt(requested)} allocated to ${plan.name}.`,
+      });
+      router.refresh();
     });
   }
 
@@ -296,13 +325,23 @@ export function InvestSheet({
             </SheetBody>
 
             <SheetFooter>
-              <Button variant="brand" size="lg" block onClick={handleConfirm}>
-                Confirm investment
+              <Button
+                variant="brand"
+                size="lg"
+                block
+                onClick={handleConfirm}
+                disabled={pending}
+              >
+                {pending ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : null}
+                {pending ? "Creating…" : "Confirm investment"}
               </Button>
               <Button
                 variant="ghost"
                 size="lg"
                 block
+                disabled={pending}
                 onClick={() => setStage("amount")}
               >
                 Back
@@ -325,16 +364,16 @@ export function InvestSheet({
               <div className="space-y-1">
                 <p className="text-lg font-semibold">Investment created</p>
                 <p className="text-sm leading-relaxed text-muted-foreground">
-                  {formatUsdt(amount)} has been allocated to {plan.name}. You can
-                  track it from Home or your investment history.
+                  {formatUsdt(confirmedAmount)} has been allocated to {plan.name}.
+                  You can track it from Home or your investment history.
                 </p>
               </div>
               <div className="divide-y divide-border rounded-xl border border-border px-4 text-left">
                 <InfoRow label="Plan" value={plan.name} />
                 <InfoRow
                   label="Amount"
-                  value={formatUsdt(amount)}
-                  hint={formatUsdtAsInr(amount)}
+                  value={formatUsdt(confirmedAmount)}
+                  hint={formatUsdtAsInr(confirmedAmount)}
                 />
                 {maturity ? (
                   <InfoRow label="Matures" value={formatDate(maturity)} />

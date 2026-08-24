@@ -16,7 +16,21 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { AGENT_PRESETS } from "@/constants/admin";
-import type { AgentDraft } from "@/lib/admin-store";
+/**
+ * The shape the operator form collects.
+ *
+ * It used to be exported by the admin store, alongside the reducer that
+ * consumed it. Both the store's mutations and that type are gone: this is now
+ * the input to `createAgentAction` / `updateAgentAction`, minus the agent id
+ * those add themselves.
+ */
+export interface AgentDraft {
+  name: string;
+  email: string;
+  permissions: AdminPermissionSet;
+  note?: string;
+}
+
 import { cn } from "@/lib/utils";
 import type { AdminAgent, AdminPermissionSet } from "@/types/admin";
 
@@ -80,11 +94,11 @@ export function AgentFormSheet({
     const found = AGENT_PRESETS.find((entry) => entry.id === id);
     if (!found) return;
     setPreset(id);
-    setDraft((current) => ({ ...current, permissions: found.permissions }));
+    setDraft((current: AgentDraft) => ({ ...current, permissions: found.permissions }));
   }
 
   function setPermissions(permissions: AdminPermissionSet) {
-    setDraft((current) => ({ ...current, permissions }));
+    setDraft((current: AgentDraft) => ({ ...current, permissions }));
     // Any hand edit means the set no longer matches a named preset.
     setPreset("custom");
   }

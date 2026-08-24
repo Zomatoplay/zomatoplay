@@ -33,7 +33,7 @@ import { recordSignIn } from "@/server/auth/sign-in-record";
  * A RECOVERY LINK IS NOT A SIGN-IN
  * --------------------------------
  * `type=recovery` produces a session whose only purpose is to set a new
- * password, so it is sent to `/reset-password` and no application account is
+ * password, so it is sent to `/update-password` and no application account is
  * created or touched on the way. Treating it as an ordinary sign-in would drop
  * someone into the app mid-recovery with no idea their password is unchanged.
  */
@@ -92,7 +92,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (type === "recovery") {
-    return NextResponse.redirect(new URL("/reset-password", request.url));
+    return NextResponse.redirect(new URL("/update-password", request.url));
   }
 
   // A verified email, and now an application account to go with it.

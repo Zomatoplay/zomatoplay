@@ -7,7 +7,7 @@ import { getDb, isDatabaseConfigured } from "@/db";
 import type { EarningsPoint, EarningsSummary } from "@/types";
 
 import { AccountUnavailableError } from "./account.service";
-import { resolveUserId } from "../current-user";
+import { requireCurrentUserIdForPage } from "../current-user";
 import { readEarnings, type EarningsRollup } from "../repositories/earnings.repository";
 
 /**
@@ -68,7 +68,8 @@ const cachedRollup = cache(async (id: string): Promise<EarningsRollup> => {
 });
 
 async function rollup(userId?: string): Promise<EarningsRollup> {
-  const id = await resolveUserId(userId);
+  // Page-only: Home and Wallet. A missing session redirects, never throws.
+  const id = userId ?? (await requireCurrentUserIdForPage());
   if (!isDatabaseConfigured()) {
     throw new AccountUnavailableError(
       "No DATABASE_URL is configured. Earnings have no source, and the seed " +

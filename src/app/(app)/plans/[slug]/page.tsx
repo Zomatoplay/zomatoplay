@@ -16,7 +16,7 @@ import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { rewardFrequencyLabels, riskDescriptions } from "@/data/plans";
 import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
-import { getPlanBySlug, getPlans } from "@/server/services/catalogue.service";
+import { getPlanBySlug } from "@/server/services/catalogue.service";
 
 /**
  * Pre-render every plan page. The catalogue is content, not account state, so
@@ -24,10 +24,20 @@ import { getPlanBySlug, getPlans } from "@/server/services/catalogue.service";
  * pages render dynamically instead, because an operator's edit should reach the
  * app without a rebuild.
  */
-export async function generateStaticParams() {
-  const plans = await getPlans();
-  return plans.map((plan) => ({ slug: plan.slug }));
-}
+/*
+ * `generateStaticParams` was removed, deliberately.
+ *
+ * This route lives under `(app)`, which is `force-dynamic` — every page below
+ * it renders per request for a signed-in account. Prerendering the slugs
+ * therefore produced nothing that was ever used, while adding a database query
+ * to `next build`.
+ *
+ * That query is not free: it made the build depend on the database being
+ * reachable *at build time*, and it failed exactly that way —
+ * `CONNECT_TIMEOUT` while collecting page data, on a cold pool against a
+ * distant database. A deployment that cannot ship because a query was slow is
+ * a fragility with nothing on the other side of the trade.
+ */
 
 export async function generateMetadata({
   params,

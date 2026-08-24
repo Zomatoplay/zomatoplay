@@ -2,10 +2,7 @@ import Link from "next/link";
 import { Bell } from "lucide-react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import {
-  getNotifications,
-  getUserProfile,
-} from "@/server/services/account.service";
+import { getUserSlices } from "@/server/services/account.service";
 import { initials } from "@/utils/format";
 import { cn } from "@/lib/utils";
 
@@ -32,10 +29,12 @@ export async function TopBar({
   showActions = true,
   className,
 }: TopBarProps) {
-  const [profile, notifications] = await Promise.all([
-    getUserProfile(),
-    getNotifications(),
-  ]);
+  // Through the page funnel, so an absent session redirects rather than
+  // throwing — this renders inside pages, which race the layout's gate.
+  const { profile, notifications } = await getUserSlices([
+    "profile",
+    "notifications",
+  ] as const);
   const unreadCount = notifications.filter(
     (notification) => !notification.read,
   ).length;

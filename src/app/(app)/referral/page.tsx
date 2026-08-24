@@ -12,7 +12,7 @@ import { StatTile } from "@/components/shared/stat-tile";
 import { REFERRAL_BASE_URL } from "@/constants/app";
 import { referralSteps } from "@/data/referrals";
 import { generateQrSvg } from "@/lib/qr";
-import { getUserProfile } from "@/server/services/account.service";
+import { getUserSlices } from "@/server/services/account.service";
 import { getVipLevels } from "@/server/services/catalogue.service";
 import {
   getCommissionHistory,
@@ -27,9 +27,9 @@ export const metadata: Metadata = {
 };
 
 export default async function ReferralPage() {
-  const [profile, summary, referrals, commissions, vipLevels] =
+  const [{ profile }, summary, referrals, commissions, vipLevels] =
     await Promise.all([
-      getUserProfile(),
+      getUserSlices(["profile"] as const),
       getReferralSummary(),
       getReferrals(),
       getCommissionHistory(),

@@ -97,7 +97,21 @@ function createDatabase({ url, max }: ClientOptions) {
      * bundler happy cost more than the one request they would have saved.
      */
     idle_timeout: Number(process.env.DATABASE_IDLE_TIMEOUT ?? 0),
-    connect_timeout: 10,
+    /**
+     * How long a connection may live before it is replaced.
+     *
+     * With `idle_timeout: 0` a connection is never closed for being idle, which
+     * is what keeps navigation fast. The risk that creates is the opposite one:
+     * holding a socket that Supavisor has already reaped on its side, and only
+     * discovering it is dead when a query needs it — surfacing as
+     * `CONNECT_TIMEOUT` at the worst moment.
+     *
+     * Rotating on a schedule replaces it *before* that happens, at a moment of
+     * our choosing. postgres.js defaults to a random 30–60 minutes; this pins
+     * it to 30 so the upper bound is known rather than sampled.
+     */
+    max_lifetime: Number(process.env.DATABASE_MAX_LIFETIME ?? 60 * 30),
+    connect_timeout: Number(process.env.DATABASE_CONNECT_TIMEOUT ?? 10),
     /**
      * Behind a transaction-mode pooler each statement may land on a different
      * backend, so a prepared statement created by one is gone by the next.

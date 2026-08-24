@@ -1,17 +1,13 @@
-import type { Metadata } from "next";
-
-import { ResetPasswordForm } from "@/components/auth/reset-password-form";
-import { getAuthPrincipal } from "@/server/auth/session";
-
-export const metadata: Metadata = { title: "Choose a new password" };
+import { redirect } from "next/navigation";
 
 /**
- * Never prerendered: whether the form is usable depends on the recovery session
- * in the request's cookies.
+ * The old path for the password-update screen.
+ *
+ * Kept because recovery emails already sent point here, and those links are
+ * single-use: letting one 404 would consume the code and strand the person with
+ * no way to retry. The recovery session is already established by the callback
+ * before this runs, so the redirect carries it.
  */
-export const dynamic = "force-dynamic";
-
-export default async function ResetPasswordPage() {
-  const principal = await getAuthPrincipal();
-  return <ResetPasswordForm hasSession={Boolean(principal)} />;
+export default function LegacyResetPasswordPage() {
+  redirect("/update-password");
 }

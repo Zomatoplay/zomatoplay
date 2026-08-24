@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { getDb, isDatabaseConfigured } from "@/db";
 import * as t from "@/db/schema";
 
+import { classifyError, isExpected } from "./errors";
 import { newId, type Actor } from "./write";
 
 /**
@@ -242,12 +243,26 @@ export async function trackPipeline<T>(
     });
     return result;
   } catch (error) {
+    /*
+     * The category is what makes this log readable.
+     *
+     * "failed" alone puts an absent session, a refused permission and a database
+     * outage in one bucket. Sorting by `errorCategory` separates the routine
+     * from the alarming — and `expected` marks the ones nobody should be paged
+     * for.
+     */
+    const category = classifyError(error);
     recordPipelineEvent({
       ...input,
       status: "failed",
       durationMs: performance.now() - started,
       errorMessage:
         error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      metadata: {
+        ...(input.metadata ?? {}),
+        errorCategory: category,
+        expected: isExpected(category),
+      },
     });
     throw error;
   }

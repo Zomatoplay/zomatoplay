@@ -24,7 +24,7 @@ export const APP_DESCRIPTION =
  * copies out of the app and wrong for one they follow on localhost.
  */
 export const REFERRAL_BASE_URL = `${
-  process.env.NEXT_PUBLIC_SITE_URL ?? "https://nanotron.app"
+  process.env.NEXT_PUBLIC_SITE_URL ?? "https://nanotron.vercel.app"
 }/signup`;
 
 /** Support contact shown in Settings → Support. Placeholder values. */

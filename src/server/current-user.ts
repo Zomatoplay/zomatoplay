@@ -49,6 +49,49 @@ export async function requireCurrentUserId(): Promise<string> {
   return userId;
 }
 
+/**
+ * For **page renders only**: no session sends the visitor to sign in.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM `requireCurrentUserId`
+ * ------------------------------------------------------
+ * Next renders a layout and the page beneath it **in parallel**. The gate in
+ * `(app)/layout.tsx` calls `redirect()` when there is no session, but that does
+ * not stop the page: it runs anyway, calls a read, and throws.
+ *
+ * That is the reported `NotAuthenticatedError … at getUserSlices … at HomePage`
+ * — an *expected* authentication outcome surfacing as an application failure.
+ * The visitor still got their redirect, because the layout's won the response,
+ * but the page had already executed authenticated queries and logged a server
+ * error. It was also a race: which of the two wins is not guaranteed.
+ *
+ * `redirect()` throws a signal Next understands, so the page stops cleanly with
+ * no error, no query and no log noise.
+ *
+ * **Server actions must not use this.** An action that redirects instead of
+ * returning `{ ok: false }` gives its caller no way to show a message, and a
+ * `fetch`-invoked action would follow the redirect and look like success.
+ * Actions keep `requireCurrentUserId`, which throws and is caught.
+ */
+export async function requireCurrentUserIdForPage(): Promise<string> {
+  const userId = await getCurrentUserId();
+  if (userId) return userId;
+
+  /*
+   * Imported here rather than at module scope.
+   *
+   * `next/navigation` pulls in React's context machinery, and this module is
+   * imported by the integration tests, which run as plain Node under
+   * `--conditions=react-server`. A top-level import broke two whole test files
+   * with `React.createContext is not a function` — a build-time coupling that
+   * has no business existing for a function most callers never reach.
+   */
+  const { redirect } = await import("next/navigation");
+  // `redirect` never returns — it throws Next's control-flow signal — but its
+  // declared type does not say so once it is behind a dynamic import.
+  redirect("/login");
+  throw new NotAuthenticatedError();
+}
+
 /** Resolves an explicit id, or falls back to the session. Never to a demo. */
 export async function resolveUserId(userId?: string): Promise<string> {
   return userId ?? requireCurrentUserId();

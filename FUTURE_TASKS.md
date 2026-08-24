@@ -14,7 +14,7 @@ unproven, it says so.
 
 ---
 
-# Critical
+# P0 — must fix before real users
 
 Security, financial correctness, data integrity, authorization, production
 blockers.
@@ -97,7 +97,16 @@ blockers.
 - **Production safety.** Yes.
 - **Before launch.** Yes.
 
-### C5 — A Supabase Auth outage silently signs everyone out
+### C5 — A Supabase Auth outage silently signs everyone out *(partially addressed)*
+
+> **Update 2026-08-24.** Errors are now classified server-side
+> (`@/server/errors`), so an auth-provider outage is recorded as
+> `AUTH_PROVIDER_UNAVAILABLE` rather than being indistinguishable from a logout
+> in the log. The *user-facing* behaviour is unchanged — they are still
+> redirected to sign in — because `getAuthPrincipal()` still returns `null` on a
+> transport failure. Making the UI say "authentication is temporarily
+> unavailable" remains outstanding, and is now a small change on top of the
+> taxonomy.
 
 - **Problem.** `getAuthPrincipal()` catches every failure and returns `null`,
   which every caller reads as "not signed in" and redirects to `/login`.
@@ -142,7 +151,7 @@ blockers.
 
 ---
 
-# High Priority
+# P1 — important
 
 Performance, reliability, blockchain robustness, admin workflows, observability.
 
@@ -196,6 +205,64 @@ Performance, reliability, blockchain robustness, admin workflows, observability.
 - **Complexity.** Small (1) / Medium (2) / Medium (3).
 - **Production safety.** No.
 - **Before launch.** (1) yes if the audience is not near ap-northeast-2.
+
+### H-1 — The network link to Supabase is unreliable from this environment
+
+- **Problem.** Connections to both the database and the Auth API intermittently
+  time out. Observed repeatedly on 2026-08-24: `write CONNECT_TIMEOUT` failing a
+  production build, `ConnectTimeoutError … supabase.co:443` in the request path,
+  and 5–7 test failures per run that are **entirely** timeouts — zero assertion
+  failures across two full runs.
+- **Why it matters.** It makes every other measurement noisy and, more
+  seriously, it is what the reported `CONNECT_TIMEOUT` actually is. The
+  application's connection management is not at fault: one `globalThis`
+  singleton pool, no per-request creation, `DIRECT_DATABASE_URL` confined to
+  scripts. The link itself is the problem.
+- **Current state.** Cold connect measured at 2,664ms with warm queries at
+  ~204ms in the same session; earlier the same day, connects exceeded the 10s
+  `connect_timeout` entirely. `max_lifetime` is now pinned to 30 minutes so a
+  socket is replaced on a schedule rather than discovered dead mid-request.
+- **Recommended solution.** Establish whether this is the local network, the
+  route to ap-northeast-2, or the Supabase project's own availability — the
+  three have different fixes. Moving the database closer (H2) would shrink the
+  window in which a connect can time out. Whatever the cause, **do not raise
+  `connect_timeout` to hide it**: a 10s wait already exceeds any reasonable page
+  budget, and a longer one converts a failure into a hang.
+- **Dependencies.** None to diagnose.
+- **Complexity.** Small to diagnose, unknown to fix.
+- **Production safety.** Yes — it fails builds and requests.
+- **Before launch.** Yes.
+
+### H0 — Concurrency collapses past the connection pool
+
+- **Problem.** Concurrent authenticated requests degrade linearly once the
+  five-connection pool is saturated. Measured on the production build, all
+  requests succeeding (no errors, no `CONNECT_TIMEOUT`):
+
+  | concurrent `/wallet` requests | total | slowest |
+  |---|---|---|
+  | 1 | 2,390ms | 2,390ms |
+  | 4 | 6,389ms | 6,387ms |
+  | 8 | 11,816ms | 11,810ms |
+  | 12 | 15,949ms | 15,946ms |
+
+- **Why it matters.** Twelve simultaneous users — a trivial load — already means
+  a sixteen-second page. This is the scalability ceiling, and it is reached long
+  before anything else in the system strains.
+- **Current state.** The connection architecture itself is correct: one
+  `globalThis` singleton pool, no per-request creation, `DIRECT_DATABASE_URL`
+  confined to scripts and tests. The limit is `max: 5`, chosen deliberately for
+  a serverless deployment where many instances share one database.
+- **Recommended solution.** This is the one place where raising the pool is a
+  *fix* rather than a workaround, because connection management is already
+  sound. Size it against the deployment model: a single long-running server can
+  hold far more than five, while a serverless fleet cannot. Reducing per-request
+  round trips (H2) lowers the pressure either way. Measure before and after —
+  raising it blindly moves the bottleneck to Supavisor.
+- **Dependencies.** A decision on the deployment model.
+- **Complexity.** Small to change, Medium to validate.
+- **Production safety.** No, but it is a availability risk under load.
+- **Before launch.** Yes.
 
 ### H2a — Unexplained regression on `/wallet` and `/` after the layout split
 
@@ -285,7 +352,7 @@ Performance, reliability, blockchain robustness, admin workflows, observability.
 
 ---
 
-# Medium Priority
+# P2 — performance / reliability
 
 UX, architecture cleanup, testing, maintainability.
 
@@ -336,6 +403,24 @@ attribution far safer. Medium. **Note:** it reduces mis-attribution risk but doe
 not eliminate it — two users can intend the same amount. Per-user addresses (C6)
 is the real answer.
 
+### M8 — No client-side caching of read-only data
+
+Static plan catalogue, VIP tiers and deposit networks are refetched on every
+navigation even though they are identical for every user and change rarely.
+`unstable_cache`/`revalidate` on the *catalogue* services would be safe — that
+data belongs to nobody. It must never extend to a balance, an allocation, a KYC
+state or anything else user-scoped: those are correct only because they are read
+fresh, per request, under the session. Small.
+
+### M9 — No route prefetching strategy
+
+Next prefetches `<Link>` targets in the viewport by default, which for
+authenticated pages means speculative database traffic for pages the user may
+never open. With five bottom-nav links always visible, that is up to five
+extra authenticated renders per screen. Worth measuring, then setting
+`prefetch={false}` on the expensive ones and keeping it for the cheap ones
+(`/wallet/deposit` renders in ~616ms and reads no user data). Small.
+
 ### M7 — Referral status never advances
 
 New referrals are written with `status = 'registered'` and stay there.
@@ -344,7 +429,7 @@ sets it. Either drive it from a real event or remove the distinction. Small.
 
 ---
 
-# Low Priority
+# P3 — future enhancements
 
 ### L1 — `DATABASE_FORCE_IPV4` is probably unnecessary
 Measured DNS resolution at 1ms with no AAAA stall on this machine; the flag

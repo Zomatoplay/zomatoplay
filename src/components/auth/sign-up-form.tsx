@@ -19,6 +19,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
+import { siteUrl } from "@/lib/site-url";
 import { cn } from "@/lib/utils";
 
 import { completeSignIn } from "@/app/(auth)/login/actions";
@@ -86,7 +87,7 @@ export function SignUpForm({
           // Where the confirmation link lands. Without this Supabase uses the
           // project's Site URL, which has no route able to exchange the code —
           // the cause of the sign-up loop this flow replaced.
-          emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`,
+          emailRedirectTo: siteUrl(`/auth/callback?next=${encodeURIComponent(next)}`),
         },
       });
       if (error) throw error;

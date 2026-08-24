@@ -6,6 +6,7 @@ import { headers } from "next/headers";
 import { getDb } from "@/db";
 import * as t from "@/db/schema";
 import { requireSupabaseConfig } from "@/lib/supabase/env";
+import { getSiteUrl } from "@/lib/site-url";
 import { sendPasswordRecovery } from "@/lib/supabase/auth-rest";
 import { trackPipeline } from "@/server/observability";
 import { traceAction } from "@/server/trace-action";
@@ -71,16 +72,29 @@ import type {
 /**
  * The origin a Supabase email link should point back at.
  *
- * Read from the request rather than hard-coded, so a link generated on a
- * preview deployment returns to that deployment instead of production. Supabase
- * only honours origins on the project's redirect allow-list, so a forged Host
- * header cannot redirect anybody anywhere the project has not approved.
+ * `NEXT_PUBLIC_SITE_URL` first — an explicit deployment decision outranks
+ * anything inferred. Failing that, the request's own host, so a link generated
+ * on a preview deployment returns to that deployment. The Host header is
+ * attacker-supplied in principle, but Supabase honours only origins on the
+ * project's redirect allow-list, so a forged one cannot redirect anybody
+ * anywhere the project has not approved.
+ *
+ * It no longer falls back to `localhost`: that fallback was the one path in
+ * this file that could put a development URL into a production email.
  */
 async function originForEmails(): Promise<string> {
-  const store = await headers();
-  const host = store.get("x-forwarded-host") ?? store.get("host");
-  const proto = store.get("x-forwarded-proto") ?? "http";
-  return host ? `${proto}://${host}` : "http://localhost:3000";
+  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (configured) return configured.replace(/\/+$/, "");
+
+  try {
+    const store = await headers();
+    const host = store.get("x-forwarded-host") ?? store.get("host");
+    const proto = store.get("x-forwarded-proto") ?? "https";
+    if (host) return `${proto}://${host}`;
+  } catch {
+    // No request scope.
+  }
+  return getSiteUrl();
 }
 
 export interface AdminActionResult {
@@ -518,7 +532,7 @@ export async function sendUserPasswordResetAction(input: {
 
     // Deliberately not the request-scoped client: this acts on the *user's*
     // email, not on the operator's own session.
-    const redirectTo = `${await originForEmails()}/auth/callback?next=/reset-password`;
+    const redirectTo = `${await originForEmails()}/auth/callback?next=/update-password`;
     await trackPipeline(
       {
         pipeline: "email",
@@ -1006,7 +1020,7 @@ export async function sendAgentPasswordResetAction(input: {
 
     await sendPasswordRecovery(requireSupabaseConfig(), {
       email: agent.email,
-      redirectTo: `${await originForEmails()}/auth/callback?next=/reset-password`,
+      redirectTo: `${await originForEmails()}/auth/callback?next=/update-password`,
     });
 
     await mutate(operator.actor, async ({ tx, now, audit }) => {

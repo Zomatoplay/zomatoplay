@@ -4,6 +4,150 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-08-24 (later) — Expected auth failures stopped being crashes
+
+### `NotAuthenticatedError` at HomePage — reproduced, root-caused, fixed
+
+Reproduced in dev exactly as reported:
+
+```
+⨯ Error [NotAuthenticatedError]: Not signed in.
+    at requireCurrentUserId (src/server/current-user.ts:48:22)
+    at async getUserSlices (src/server/services/account.service.ts:251:14)
+    at async HomePage (src/app/(app)/page.tsx:19:30)
+```
+
+**Root cause: Next renders a layout and its page in parallel.** The gate in
+`(app)/layout.tsx` calls `redirect()` when there is no session, but that does
+not stop the page — it ran anyway, called a read, and threw. The visitor still
+got their redirect because the layout's response won the race, but the page had
+already executed authenticated queries and logged a server error. Which of the
+two won was never guaranteed.
+
+Fixed with `requireCurrentUserIdForPage()`, which calls `redirect()` instead of
+throwing. `redirect()` raises a signal Next understands, so the page stops
+cleanly — no error, no query, no log noise. The page-only read funnels
+(`getUserSlices`, the earnings rollup, `TopBar`) use it; **server actions keep
+the throwing variant**, because an action that redirects gives its caller no way
+to show a message.
+
+Verified: dev went from **4 occurrences to 0**, production from 0 to 0, and all
+authenticated pages return a clean 307 when signed out.
+
+### `/error` and `/update-password` did not exist
+
+Both 404'd.
+
+- **`/error`** is where Supabase sends a failed link
+  (`?error_code=otp_expired&…`). It now translates the code into readable copy,
+  redirects to `/login?error=…`, and **clears any half-established `sb-*` auth
+  cookies** — a failed exchange could otherwise leave a session that reads as
+  "signed in" just long enough to fail somewhere less obvious. It does not
+  retry: a consumed one-time code cannot be reused, and a retry would fail
+  identically while looking like the app is stuck.
+- **`/update-password`** is the route the brief specifies. The screen existed at
+  `/reset-password`; it moved, and the old path now redirects rather than 404s,
+  because recovery emails already sent point there and those links are
+  single-use.
+
+### Production URLs
+
+Audited every `localhost:3000` in the repository. There were **two**: one in
+`README.md` (documentation — correct, left alone) and one real defect — a
+fallback in `originForEmails()` that could put a development URL into a
+production recovery email.
+
+`@/lib/site-url` is now the single source: `NEXT_PUBLIC_SITE_URL` →
+`window.location.origin` (browser) → `VERCEL_URL` (server) → localhost. The
+localhost fallback is unreachable on a deployed server. Every signup
+confirmation, recovery link and referral link resolves through it, and the
+referral default is now `https://nanotron.vercel.app`.
+
+**Supabase dashboard still needs `https://nanotron.vercel.app/auth/callback` and
+`/update-password` on its redirect allow-list** — that is configuration this
+repository cannot set.
+
+### CONNECT_TIMEOUT — reproduced at build time
+
+`next build` failed collecting page data for `/plans/[slug]`:
+
+```
+Failed query: select … from "plans" where "plans"."status" <> $1
+  [cause]: Error: write CONNECT_TIMEOUT   code: 'CONNECT_TIMEOUT'
+```
+
+That page had `generateStaticParams`, but it lives under `(app)`, which is
+`force-dynamic` — **the prerendering produced nothing that was ever used** while
+making the build depend on the database being reachable. Removed. The build
+passes.
+
+The connection architecture itself was audited and found correct: one
+`globalThis` singleton pool, no per-request creation, `DIRECT_DATABASE_URL`
+confined to scripts and tests. `max_lifetime` is now pinned to 30 minutes so a
+socket is replaced on a schedule rather than discovered dead mid-request.
+
+### An error taxonomy
+
+`@/server/errors` classifies a thrown value into ten categories and records the
+category on every failure the tracer sees, with an `expected` flag. Verified
+against the real errors from these logs — postgres `CONNECT_TIMEOUT` →
+`DATABASE_TIMEOUT`, undici to `supabase.co` → `AUTH_PROVIDER_UNAVAILABLE`,
+`NotAuthenticatedError` → `UNAUTHENTICATED` (expected), an `otp_expired` message
+→ `AUTH_LINK_EXPIRED` (expected), a wrapped cause unwrapped correctly.
+
+It matches on driver `code` before message text, because message text is not a
+stable interface and `CONNECT_TIMEOUT` and the SQLSTATE classes are.
+
+Classification happens on the **server** because Next strips an error's message
+before it reaches a client boundary in production, leaving only a digest. The
+boundary now says what is true — nothing on the account was changed — and shows
+the digest that ties the screen to its log row.
+
+### Measured, production build
+
+| Route | cold | warm (median) | p95 |
+|---|---|---|---|
+| `/` | 2,437 | 2,320 | 2,699 |
+| `/wallet` | 2,334 | 2,465 | 2,775 |
+| `/plans` | 1,895 | 1,998 | 2,311 |
+| `/referral` | 2,405 | 2,480 | 2,822 |
+| `/settings` | 2,241 | 1,862 | 2,658 |
+| `/settings/kyc` | 1,630 | 1,459 | 1,843 |
+| **`/wallet/deposit`** | **594** | **616** | **816** |
+
+`/wallet/deposit` is the control that matters: it is the one page reading no
+per-user data, and it renders in ~616ms. The floor is per-user database round
+trips, not framework overhead.
+
+**Concurrency is the real ceiling**, and it is new information:
+
+| concurrent `/wallet` | total | slowest | failures |
+|---|---|---|---|
+| 1 | 2,390ms | 2,390ms | 0 |
+| 4 | 6,389ms | 6,387ms | 0 |
+| 8 | 11,816ms | 11,810ms | 0 |
+| 12 | 15,949ms | 15,946ms | 0 |
+
+Twelve simultaneous users already means a sixteen-second page. Filed as H0.
+
+### Checks
+
+`typecheck` ✅ `lint` ✅ `build` ✅ (after the `generateStaticParams` removal).
+**9/9 authentication checks** against the running server: password login, wrong
+password refused, session persistence, recovery email accepted, expired code →
+`/login` with a message, Supabase `/error` → `/login` with a message,
+`/update-password` refusing without a recovery session, every authenticated page
+redirecting cleanly, logout.
+
+**The automated suite did not fully pass**, and it is being reported as it is:
+99/107 and 88/107 on two consecutive runs, with **zero assertion failures** —
+every failure was `write CONNECT_TIMEOUT` or a pending-promise timeout. The same
+suite passed 107/107 earlier the same day. The database link is genuinely
+degraded from this environment (cold connect measured at 2,664ms, and the build
+hit the same error). Filed as H-1. No test failed on logic.
+
+---
+
 ## 2026-08-24 — Referral attribution, the deposit mystery, layout fetching
 
 ### The deposits that "were not being detected" were not deposits

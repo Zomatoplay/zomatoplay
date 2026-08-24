@@ -15,6 +15,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
+import { siteUrl } from "@/lib/site-url";
 
 /**
  * Password recovery, step one.
@@ -48,7 +49,7 @@ export function ForgotPasswordForm({ configured }: { configured: boolean }) {
         {
           // `type=recovery` arrives here; the callback sends it on to
           // /reset-password rather than treating it as an ordinary sign-in.
-          redirectTo: `${window.location.origin}/auth/callback?next=/reset-password`,
+          redirectTo: siteUrl("/auth/callback?next=/update-password"),
         },
       );
       if (error) throw error;

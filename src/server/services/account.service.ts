@@ -17,7 +17,7 @@ import type {
   WalletBalance,
 } from "@/types";
 
-import { resolveUserId } from "../current-user";
+import { requireCurrentUserIdForPage, resolveUserId } from "../current-user";
 import {
   listNotificationPreferences,
   listNotificationsForUser,
@@ -248,7 +248,9 @@ export async function getUserSlices<K extends keyof UserSliceData>(
   keys: readonly K[],
   userId?: string,
 ): Promise<LoadedSlices<K>> {
-  const id = await resolveUserId(userId);
+  // Page-only, so a missing session redirects rather than throwing — see
+  // `requireCurrentUserIdForPage`. Every `(app)` page reads through here.
+  const id = userId ?? (await requireCurrentUserIdForPage());
 
   const loaders: { [P in keyof UserSliceData]-?: () => Promise<unknown> } = {
     profile: () => getUserProfile(id),

@@ -4,6 +4,85 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-08-24 (later still) — The Vercel build no longer touches the database
+
+### Root cause
+
+`/admin/users/[id]` exported `generateStaticParams()`, which called
+`getAdminUsers()` — `users LEFT JOIN wallet_balances ORDER BY registered_at`,
+the exact query in the Vercel failure. Next runs that during **Collecting page
+data**, so `next build` opened a connection to production PostgreSQL and failed
+with `CONNECT_TIMEOUT` from `iad1`.
+
+The parent layout is already `force-dynamic`, but that does not stop
+`generateStaticParams` — it runs regardless, to decide what to prerender.
+
+**It was also writing user data into the deployment bundle.** The previous build
+output shows `● /admin/users/[id]` with one prerendered page per real account
+(`/admin/users/usr_bb6207`, `/admin/users/usr_8c41a2`, …). Names, member ids and
+wallet balances were being baked into static HTML for a route that exists behind
+operator authentication. Prerendering an authenticated screen puts its contents
+somewhere the authentication does not reach.
+
+### Fix
+
+`src/app/admin/(console)/users/[id]/page.tsx`, and only that file:
+
+- `generateStaticParams` removed, with a comment explaining why it must not come
+  back.
+- `findUser` wrapped in React `cache()`. `generateMetadata` and the page body
+  both need the record and each was issuing its own full directory scan — the
+  same query that was timing out. Now one per request.
+
+Authentication and authorization are untouched: the operator session is resolved
+and checked in `(console)/layout.tsx` before this page renders.
+
+`/admin/users` needed no change — it was already `ƒ` (dynamic).
+
+### Verified
+
+Built against a **guaranteed-unroutable** database (`192.0.2.1`, RFC 5737, with
+a 5s connect timeout) to reproduce Vercel's condition exactly. **Exit 0**, no
+`CONNECT_TIMEOUT`, no "Failed to collect page data" — the build now has zero
+database dependency and cannot fail this way again regardless of network.
+
+Route table changed from `● /admin/users/[id]` (SSG, per-user files) to `ƒ`.
+
+`npm run build` exits 0. Against `npm run start`: `/login` 200, `/admin`,
+`/admin/users` and `/admin/users/[id]` all 307 → `/admin/login` without a
+session; 200 for an operator; 404 for an unknown id; 307 for a customer session.
+
+### The CONNECT_TIMEOUT itself: one Supabase pooler endpoint is broken
+
+Separate from the build, and diagnosed rather than assumed.
+`aws-0-ap-northeast-2.pooler.supabase.com` resolves to three A records. Pinning
+each and running three fresh connections apiece:
+
+| endpoint | result |
+|---|---|
+| `15.164.120.176` | **CONNECT_TIMEOUT 3/3** (12,010 / 12,007 / 12,005ms) |
+| `15.165.245.138` | ok 3/3 (1,826 / 2,022 / 1,995ms) |
+| `13.124.111.232` | ok 3/3 (1,909 / 1,762 / 2,047ms) |
+
+Raw TCP to the hostname succeeded 5/5 at ~200ms, and DNS resolved in 42ms with
+no AAAA record. So the bad endpoint **accepts the TCP connection and then never
+completes the Postgres startup handshake** — which is why it looks healthy to
+anything that only checks TCP, and why failures are intermittent at roughly one
+in three.
+
+This rules out the usual suspects: the URL is right (two endpoints work with the
+same credentials), the host is reachable, TLS and `sslmode` are unchanged
+between working and failing attempts, pool configuration is not involved (these
+were single fresh connections at `max: 1`), and the timeout value is not the
+problem — a successful handshake takes ~2s, while the failing endpoint does not
+complete in 20s.
+
+No retry or timeout change was made: that is outside this task, and raising a
+timeout would convert a failure into a longer hang. Recorded in
+`FUTURE_TASKS.md` as H-1.
+
+---
+
 ## 2026-08-24 (later) — Expected auth failures stopped being crashes
 
 ### `NotAuthenticatedError` at HomePage — reproduced, root-caused, fixed

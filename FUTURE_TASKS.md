@@ -206,7 +206,22 @@ Performance, reliability, blockchain robustness, admin workflows, observability.
 - **Production safety.** No.
 - **Before launch.** (1) yes if the audience is not near ap-northeast-2.
 
-### H-1 — The network link to Supabase is unreliable from this environment
+### H-1 — One Supabase pooler endpoint is broken *(root cause identified)*
+
+> **Update 2026-08-24.** Diagnosed precisely.
+> `aws-0-ap-northeast-2.pooler.supabase.com` resolves to three A records; one of
+> them (`15.164.120.176`) accepts TCP and then never completes the Postgres
+> startup handshake — CONNECT_TIMEOUT 3/3 at 12s, while the other two succeed
+> 3/3 in ~1.9s. DNS round-robins, so roughly one connection in three hangs.
+>
+> This explains every intermittent symptom across the project: the Vercel build
+> failure, non-deterministic test failures with zero assertion failures, and
+> occasional 500s. **Report it to Supabase**; consider a connection retry that
+> re-resolves DNS, which is legitimate resilience against a partially degraded
+> endpoint set rather than hiding an error. Do not raise `connect_timeout` — a
+> healthy handshake takes ~2s, so a longer timeout only lengthens the hang.
+
+### H-1a — Original entry: the link appeared simply unreliable
 
 - **Problem.** Connections to both the database and the Auth API intermittently
   time out. Observed repeatedly on 2026-08-24: `write CONNECT_TIMEOUT` failing a

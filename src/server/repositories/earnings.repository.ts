@@ -67,39 +67,68 @@ export async function readEarnings(
   monthFloor.setUTCDate(1);
   monthFloor.setUTCMonth(monthFloor.getUTCMonth() - (options.monthWindow - 1));
 
-  const [totals, byDay, byMonth] = await Promise.all([
-    db
-      .select({
-        // `::float8` only at the very end: the sum itself is exact numeric.
-        total: sql<number>`coalesce(sum(${schema.transactions.amount}), 0)::float8`,
-      })
-      .from(schema.transactions)
-      .where(scope),
+  /*
+   * THREE ROLLUPS, ONE ROUND TRIP.
+   *
+   * These were three statements. Issued in parallel they cost one round trip
+   * between them — but only if the pool has three free connections at that
+   * moment, and Home asks for nine reads at once against a pool of eight. Two
+   * of the three were the queries that did not fit, so Home paid a second wave
+   * (~350ms) for them alone.
+   *
+   * Unioning them is not a micro-optimisation of the query plan: all three scan
+   * the same rows of the same table with the same predicate, so this asks
+   * Postgres for the work it was already doing, once, over one connection.
+   *
+   * Every sum is still `numeric` arithmetic on a `numeric` column, cast to
+   * `float8` only at the end — the property the separate queries had, and the
+   * one that matters. `bucket` is null on the total row and a `YYYY-MM-DD` or
+   * `YYYY-MM` label on the others.
+   */
+  const rows = await db.execute<{
+    kind: "total" | "day" | "month";
+    bucket: string | null;
+    value: number;
+  }>(sql`
+    select 'total' as kind, null::text as bucket,
+           coalesce(sum(${schema.transactions.amount}), 0)::float8 as value
+      from ${schema.transactions}
+     where ${scope}
+    union all
+    select 'day',
+           to_char(date_trunc('day', ${schema.transactions.occurredAt} at time zone 'UTC'), 'YYYY-MM-DD'),
+           coalesce(sum(${schema.transactions.amount}), 0)::float8
+      from ${schema.transactions}
+     where ${and(scope, gte(schema.transactions.occurredAt, dayFloor))}
+     group by 2
+    union all
+    select 'month',
+           to_char(date_trunc('month', ${schema.transactions.occurredAt} at time zone 'UTC'), 'YYYY-MM'),
+           coalesce(sum(${schema.transactions.amount}), 0)::float8
+      from ${schema.transactions}
+     where ${and(scope, gte(schema.transactions.occurredAt, monthFloor))}
+     group by 2
+  `);
 
-    db
-      .select({
-        day: sql<string>`to_char(date_trunc('day', ${schema.transactions.occurredAt} at time zone 'UTC'), 'YYYY-MM-DD')`,
-        value: sql<number>`coalesce(sum(${schema.transactions.amount}), 0)::float8`,
-      })
-      .from(schema.transactions)
-      .where(and(scope, gte(schema.transactions.occurredAt, dayFloor)))
-      .groupBy(sql`1`)
-      .orderBy(sql`1`),
+  let total = 0;
+  const byDay: EarningsRollup["byDay"] = [];
+  const byMonth: EarningsRollup["byMonth"] = [];
 
-    db
-      .select({
-        month: sql<string>`to_char(date_trunc('month', ${schema.transactions.occurredAt} at time zone 'UTC'), 'YYYY-MM')`,
-        value: sql<number>`coalesce(sum(${schema.transactions.amount}), 0)::float8`,
-      })
-      .from(schema.transactions)
-      .where(and(scope, gte(schema.transactions.occurredAt, monthFloor)))
-      .groupBy(sql`1`)
-      .orderBy(sql`1`),
-  ]);
+  for (const row of rows) {
+    if (row.kind === "total") {
+      total = row.value;
+    } else if (row.kind === "day" && row.bucket) {
+      byDay.push({ day: row.bucket, value: row.value });
+    } else if (row.kind === "month" && row.bucket) {
+      byMonth.push({ month: row.bucket, value: row.value });
+    }
+  }
 
-  return {
-    total: totals[0]?.total ?? 0,
-    byDay,
-    byMonth,
-  };
+  // Ordered here rather than in SQL: a `UNION ALL` orders the whole result or
+  // nothing, and these are two independent series of at most a few rows each.
+  // The labels are zero-padded, so lexical order is chronological order.
+  byDay.sort((a, b) => a.day.localeCompare(b.day));
+  byMonth.sort((a, b) => a.month.localeCompare(b.month));
+
+  return { total, byDay, byMonth };
 }

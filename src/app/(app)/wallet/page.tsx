@@ -21,10 +21,25 @@ export const metadata: Metadata = {
 };
 
 export default async function WalletPage() {
+  /*
+   * `notifications` and `profile` are read here for `TopBar`, not for this page.
+   *
+   * `TopBar` is an async server component in the tree this page *returns*, so
+   * its own reads cannot begin until this function has already resolved — a
+   * whole extra round trip (~400ms) tacked onto the end of every one of the
+   * five primary sections. Naming the slices here puts them in the same wave as
+   * everything else; the reads are request-memoised, so `TopBar` awaiting them
+   * a moment later costs nothing.
+   */
   const [earnings, monthlyHistory, slices] = await Promise.all([
     getEarningsSummary(),
     getMonthlyEarningsHistory(),
-    getUserSlices(["balance", "transactions"] as const),
+    getUserSlices([
+      "balance",
+      "transactions",
+      "profile",
+      "notifications",
+    ] as const),
   ]);
 
 

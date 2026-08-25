@@ -16,9 +16,25 @@ import { getEarningsSummary } from "@/server/services/earnings.service";
 export default async function HomePage() {
   // One wave, not three: these are independent reads and awaiting them in
   // sequence would add a round trip each.
+  /*
+   * `notifications` and `profile` are read here for `TopBar`, not for this page.
+   *
+   * `TopBar` is an async server component in the tree this page *returns*, so
+   * its own reads cannot begin until this function has already resolved — a
+   * whole extra round trip (~400ms) tacked onto the end of every one of the
+   * five primary sections. Naming the slices here puts them in the same wave as
+   * everything else; the reads are request-memoised, so `TopBar` awaiting them
+   * a moment later costs nothing.
+   */
   const [earnings, slices] = await Promise.all([
     getEarningsSummary(),
-    getUserSlices(["profile", "balance", "investments", "transactions"] as const),
+    getUserSlices([
+      "profile",
+      "balance",
+      "investments",
+      "transactions",
+      "notifications",
+    ] as const),
   ]);
   const firstName = slices.profile.fullName.split(" ")[0];
 

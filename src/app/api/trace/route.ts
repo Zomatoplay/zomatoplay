@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { after, NextResponse, type NextRequest } from "next/server";
 
 import { getAuthenticatedAccount } from "@/server/auth/account";
 import { recordPipelineEvent, withTrace } from "@/server/observability";
@@ -92,56 +92,73 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false }, { status: 400 });
   }
 
-  // The account, if there is one. From the session; the body has no say.
-  let userId: string | null = null;
-  try {
-    const account = await getAuthenticatedAccount();
-    userId = account?.userId ?? null;
-  } catch {
-    // An unauthenticated visitor's navigation is still worth timing.
-  }
-
   const accepted = (events as ClientEvent[])
     .slice(0, MAX_EVENTS)
     .filter((event) => ALLOWED_OPERATIONS.has(event?.operation));
 
   /*
-   * One trace for the whole batch, so it flushes as a single insert.
+   * EVERY DATABASE ROUND TRIP HAPPENS AFTER THE RESPONSE
+   * ----------------------------------------------------
+   * This handler used to resolve the account and write the rows before
+   * answering: two sequential round trips, measured at **720–1,270ms per
+   * beacon** against a production build. A beacon is sent on every navigation,
+   * so those two connections were held from the five-connection pool at exactly
+   * the moment the person's *next* page was trying to read from it.
    *
-   * Each event still carries its *own* correlation id — a batch can span two
-   * navigations if the first flush did not get out in time, and every event
-   * belongs to the navigation it described rather than to this upload. Opening
-   * a trace per event would have cost one round trip per event, which is
-   * exactly the mistake this endpoint exists to help find.
+   * `sendBeacon` never waits for the answer, so nothing about that time was
+   * ever useful to the browser — it was pure contention. `after()` runs the
+   * work once the response is out, which is what the comment above always
+   * claimed and now is true of the server side too.
    */
-  await withTrace({ actorType: "user" }, async () => {
-    for (const event of accepted) {
-      const route = sanitiseRoute(event.route);
-      const label = sanitiseLabel(event.label);
-      const duration =
-        typeof event.durationMs === "number" && Number.isFinite(event.durationMs)
-          ? Math.min(Math.max(event.durationMs, 0), MAX_DURATION_MS)
-          : undefined;
-
-      recordPipelineEvent({
-        pipeline: "navigation",
-        layer: "client",
-        correlationId: sanitiseCorrelationId(event.correlationId),
-        operation: event.operation,
-        status:
-          event.status === "failed"
-            ? "failed"
-            : event.status === "started"
-              ? "started"
-              : "ok",
-        message: label
-          ? `${event.operation} · ${label}`
-          : `Browser reported ${event.operation}`,
-        durationMs: duration,
-        route: route ?? null,
-        userId,
-      });
+  after(async () => {
+    // The account, if there is one. From the session; the body has no say.
+    let userId: string | null = null;
+    try {
+      const account = await getAuthenticatedAccount();
+      userId = account?.userId ?? null;
+    } catch {
+      // An unauthenticated visitor's navigation is still worth timing.
     }
+
+    /*
+     * One trace for the whole batch, so it flushes as a single insert.
+     *
+     * Each event still carries its *own* correlation id — a batch can span two
+     * navigations if the first flush did not get out in time, and every event
+     * belongs to the navigation it described rather than to this upload. Opening
+     * a trace per event would have cost one round trip per event, which is
+     * exactly the mistake this endpoint exists to help find.
+     */
+    await withTrace({ actorType: "user" }, async () => {
+      for (const event of accepted) {
+        const route = sanitiseRoute(event.route);
+        const label = sanitiseLabel(event.label);
+        const duration =
+          typeof event.durationMs === "number" &&
+          Number.isFinite(event.durationMs)
+            ? Math.min(Math.max(event.durationMs, 0), MAX_DURATION_MS)
+            : undefined;
+
+        recordPipelineEvent({
+          pipeline: "navigation",
+          layer: "client",
+          correlationId: sanitiseCorrelationId(event.correlationId),
+          operation: event.operation,
+          status:
+            event.status === "failed"
+              ? "failed"
+              : event.status === "started"
+                ? "started"
+                : "ok",
+          message: label
+            ? `${event.operation} · ${label}`
+            : `Browser reported ${event.operation}`,
+          durationMs: duration,
+          route: route ?? null,
+          userId,
+        });
+      }
+    });
   });
 
   // 204: the browser has nothing to do with the answer, and `sendBeacon`

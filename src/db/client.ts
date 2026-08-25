@@ -209,16 +209,51 @@ export function getDb(): Database {
   if (!globalForDb.nanotronDb) {
     globalForDb.nanotronDb = createDatabase({
       url: requireDatabaseUrl(),
-      // Per instance, not per database: a serverless deployment runs many
-      // instances, each with its own pool, and Supabase's session pooler has a
-      // finite number of server connections to share between them. Small and
-      // reused beats large and contended.
-      //
-      // Re-measured during the reliability pass: `max: 12` made a cold burst of
-      // five queries *slower* (3,270ms vs 2,008ms) and left the warm case
-      // unchanged at ~205ms, because a larger pool only means more simultaneous
-      // handshakes. Five stays.
-      max: Number(process.env.DATABASE_POOL_MAX ?? 5),
+      /*
+       * Sized against the widest page, and capped by the pooler's own limit.
+       *
+       * Home issues **nine** independent reads once its account id is known
+       * (three earnings rollups, the profile row and its KYC steps, the wallet,
+       * allocations, transactions, notifications). Against a pool of five that
+       * is two waves, and the second costs a full round trip — ~400ms from this
+       * deployment — waiting for nothing but a free connection.
+       *
+       * MEASURED, AND IT CONTRADICTS THE EARLIER NOTE HERE
+       * --------------------------------------------------
+       * A previous pass rejected a larger pool: `max: 12` made a *cold* burst
+       * slower with no warm gain, because a bigger pool only means more
+       * simultaneous handshakes. That was measured with the warm-up still
+       * opening four connections, so the extra eight were opened by the first
+       * request that needed them. Raised *together* with the warm-up, three
+       * alternating runs against a production build gave:
+       *
+       *              max 5 / warm 4     max 10 / warm 9
+       *   /          1.10–1.49s         0.75–0.83s
+       *   /wallet    1.10–1.47s         0.75–0.82s
+       *   /referral  1.10–1.58s         0.75–0.83s
+       *   cold /     4.6–5.0s           3.0–3.7s
+       *
+       * Better in both directions, cold included — the handshakes now happen in
+       * the background at pool creation rather than in front of a person.
+       *
+       * WHY EIGHT AND NOT TEN: THE POOLER'S CEILING IS FIFTEEN
+       * ------------------------------------------------------
+       * Supavisor answers a sixteenth session-mode client with
+       * `(EMAXCONNSESSION) max clients reached in session mode - max clients
+       * are limited to pool_size: 15`. That is the whole project's budget,
+       * shared by every application instance, `npm run db:*` (which holds one
+       * on `DIRECT_DATABASE_URL`), the TRON scanner and the test suite — and it
+       * was hit during this work: a server holding ten stalled the integration
+       * tests until it was stopped.
+       *
+       * Eight is what fits: it covers every page's wave but Home's ninth query,
+       * and leaves seven for a second instance and for tooling. **This is a
+       * per-instance number against a fixed global budget**, so a deployment
+       * running several instances must lower `DATABASE_POOL_MAX`, not raise it.
+       * Raising the project's pool size in the Supabase dashboard is the only
+       * thing that makes a bigger number safe.
+       */
+      max: Number(process.env.DATABASE_POOL_MAX ?? 8),
     });
 
     /*

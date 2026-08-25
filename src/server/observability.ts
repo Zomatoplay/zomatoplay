@@ -215,7 +215,62 @@ export function recordPipelineEvent(input: PipelineEventInput): void {
     return;
   }
 
-  void writeRows([row]);
+  enqueueUntraced(row);
+}
+
+/* -------------------------------------------------------------------------- */
+/* The untraced path                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Events recorded where there is no trace to buffer them into.
+ *
+ * WHY THIS EXISTS, AND WHY IT IS NOT ONE INSERT EACH ANY MORE
+ * -----------------------------------------------------------
+ * `AsyncLocalStorage` does not cross from a layout into the page beneath it:
+ * Next renders them as separate work, so `traceRender` in `(app)/layout.tsx`
+ * covers the layout's own body and nothing else. Every event a *page* recorded
+ * — the session resolution, the account lookup, each service read — therefore
+ * found no trace and took the immediate path, which was one `INSERT` per event.
+ *
+ * Measured on this deployment: five to eight single-row inserts per page
+ * render, each a ~400ms round trip. They are fire-and-forget, so they do not
+ * block directly — but they hold connections, and the pool is five. On the
+ * wider pages (`/wallet`, `/referral`) three of them were in flight at exactly
+ * the moment the page fired its parallel reads, so two of those reads waited a
+ * whole round trip for a connection. Removing them was worth 15–25% there.
+ *
+ * Coalescing on a short timer restores rule 1 — one insert, not a dozen —
+ * without needing a trace the render cannot give us. The window is deliberately
+ * shorter than a round trip, so an event is never held longer than the request
+ * that produced it would have taken anyway.
+ */
+const UNTRACED_BATCH_MS = 100;
+/** Flushed early at this size, so a burst cannot grow without bound. */
+const UNTRACED_BATCH_MAX = 50;
+
+const untraced: PendingEvent[] = [];
+let untracedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushUntraced(): void {
+  if (untracedTimer) {
+    clearTimeout(untracedTimer);
+    untracedTimer = null;
+  }
+  const rows = untraced.splice(0, untraced.length);
+  void writeRows(rows);
+}
+
+function enqueueUntraced(row: PendingEvent): void {
+  untraced.push(row);
+  if (untraced.length >= UNTRACED_BATCH_MAX) {
+    flushUntraced();
+    return;
+  }
+  if (untracedTimer) return;
+  untracedTimer = setTimeout(flushUntraced, UNTRACED_BATCH_MS);
+  // Never a reason for a script or a test to stay alive waiting on a log write.
+  untracedTimer.unref?.();
 }
 
 /**

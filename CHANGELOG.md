@@ -4,6 +4,112 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-08-25 (navigation latency forensic)
+
+A measured hunt for the extra seconds in normal page navigation, and the
+smallest set of fixes that removed them. No product behaviour changed and no
+architecture was rewritten; every number below is from a production build
+(`npm run build && npm run start`) against the configured Supabase project,
+five runs per route with a 2s gap, medians reported.
+
+### What was actually measured
+
+`next dev` was **not** the problem. Warm dev requests (1.5–2.6s) and warm
+production requests (1.6–2.4s) were within noise of each other; only the first
+hit of a route in dev carried compilation. The 10–20s outliers were the two
+faults below, not compilation.
+
+A temporary waterfall instrument (removed again) over middleware, auth, every
+SQL statement and every render showed that **middleware (4–13ms) and auth
+(`getClaims`, 6–17ms) cost almost nothing**, and that a page spent essentially
+all of its time in **four strictly sequential database round trips**, each
+~200–500ms:
+
+1. `users` by `auth_user_id` — the session gate. Irreducible.
+2. `users` by `id` — the profile, which cannot start until (1) resolves.
+3. `user_kyc_steps` — awaited *after* (2) inside `findUserProfile`, though it
+   only ever needed the same `userId`.
+4. `notifications` — read by `TopBar`, an async server component in the tree the
+   page *returns*, so it could not begin until the page had already finished.
+
+Three and four were pure waterfall: nothing in them depended on the step before.
+
+### Root causes and fixes
+
+- **`findUserProfile` awaited two independent reads in sequence.** Now one
+  `Promise.all`. Removes a whole round trip from every screen that shows a
+  profile, which is all five primary sections.
+- **`TopBar` read `profile` and `notifications` after its page had resolved.**
+  The five pages that render it now name those slices in their own wave; the
+  reads are request-memoised, so `TopBar` awaiting them a moment later is free.
+- **Every pipeline event recorded by a *page* was its own `INSERT`.**
+  `AsyncLocalStorage` does not cross from a layout into the page beneath it, so
+  `traceRender` in `(app)/layout.tsx` covered the layout and nothing else, and
+  the buffered-then-one-insert design was bypassed for the whole render: five to
+  eight single-row inserts per page, each a ~400ms round trip, holding
+  connections at exactly the moment the page fired its parallel reads. They are
+  now coalesced on a 100ms window into one insert. Nothing is dropped.
+- **`/api/trace` did two round trips before answering.** It resolved the account
+  and wrote the rows *then* returned 204 — 720–1,270ms per beacon, and a beacon
+  is sent on every navigation, so those connections were held while the person's
+  next page was reading. All of it moved into `after()`. **720–1,270ms → 12–26ms**,
+  and every event still lands (verified by reading `pipeline_events` back).
+- **The pool was too small for one wave, and the warm-up too small for the pool.**
+  `DATABASE_POOL_MAX` 5 → **8**, `DATABASE_WARM_CONNECTIONS` 4 → **7**. An earlier
+  pass had rejected a bigger pool, correctly, because it was raised *without* the
+  warm-up: the extra connections were then opened in front of a user. Raised
+  together it is better warm *and* cold.
+- **Home's earnings rollup was three statements** over the same rows of the same
+  table with the same predicate. Now one `UNION ALL` — three round trips become
+  one, and Home's wave drops from nine reads to seven, which is what lets it fit
+  the pool. Output verified identical against the previous implementation for
+  every seeded account, totals and both series.
+
+### The pooler ceiling (found the hard way)
+
+Supavisor answers a sixteenth session-mode client with
+`(EMAXCONNSESSION) max clients reached in session mode - max clients are limited
+to pool_size: 15`. That is the **whole project's** budget, shared by every
+application instance, `npm run db:*`, the TRON scanner and the test suite. A
+server holding ten of them stalled the integration suite until it was stopped.
+
+`DATABASE_POOL_MAX` is therefore a *per-instance* number against a fixed global
+one. Eight was chosen because it covers every page's wave and leaves seven; a
+deployment running several instances must lower it, not raise it.
+
+### Measurements (production build, medians of 5, 2s apart)
+
+| Route | Before | After | Change |
+|---|---|---|---|
+| `/` | 2.150s | 0.757s | **−64.8%** |
+| `/plans` | 1.702s | 0.739s | **−56.6%** |
+| `/wallet` | 2.076s | 0.793s | **−61.8%** |
+| `/settings` | 1.699s | 0.733s | **−56.9%** |
+| `/referral` | 1.845s | 0.870s | **−52.8%** |
+| `/settings/kyc` | 1.295s | 0.734s | **−43.3%** |
+| `/login` (307) | 0.454s | 0.393s | −13.4% |
+| `POST /api/trace` | 0.720–1.270s | 0.012–0.026s | **−98%** |
+| `/` first request after boot | 5.021s | 4.233s | −15.7% |
+
+A page is now two database round trips deep instead of four, which is the floor:
+one to resolve the session's account, one for everything that account needs.
+
+### What was *not* the cause
+
+Duplicate queries within a request (the request-scoped `cache()` was already
+doing its job), unindexed queries, over-wide column lists, React rendering,
+Next's server rendering, middleware, retries, and `next dev` compilation. Each
+was measured and ruled out rather than assumed.
+
+### Still slow, and why
+
+~200ms per round trip to ap-northeast-2, jittering to 600–850ms. At two round
+trips that is most of the remaining 0.75s, and it is geography — out of scope
+here. The first request after a cold start still pays ~3.5–4.2s for the pool's
+first handshakes.
+
+---
+
 ## 2026-08-24 (reliability & performance pass)
 
 Focused pass on reliability, database connectivity and page-load performance.

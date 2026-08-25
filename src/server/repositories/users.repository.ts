@@ -39,18 +39,24 @@ export async function findUserProfile(
   db: Database,
   userId: string,
 ): Promise<UserProfile | null> {
-  const [user] = await db
-    .select()
-    .from(schema.users)
-    .where(eq(schema.users.id, userId))
-    .limit(1);
+  /*
+   * Both reads are keyed on the same `userId`, so the second never needed the
+   * first's result — it was only waiting for it. Awaiting them in sequence cost
+   * a whole extra round trip (~400ms from this deployment) on every screen that
+   * shows a profile, which is all five primary sections: `TopBar` reads it.
+   *
+   * The steps for a user that turns out not to exist are always empty, so the
+   * wasted query in that case costs nothing anybody waits for.
+   */
+  const [[user], steps] = await Promise.all([
+    db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1),
+    db
+      .select()
+      .from(schema.userKycSteps)
+      .where(eq(schema.userKycSteps.userId, userId))
+      .orderBy(asc(schema.userKycSteps.position)),
+  ]);
   if (!user) return null;
-
-  const steps = await db
-    .select()
-    .from(schema.userKycSteps)
-    .where(eq(schema.userKycSteps.userId, userId))
-    .orderBy(asc(schema.userKycSteps.position));
 
   return toUserProfile(user, steps);
 }

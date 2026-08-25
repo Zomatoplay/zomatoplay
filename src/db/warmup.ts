@@ -39,15 +39,24 @@ import type { Database } from "./client";
 /**
  * How many connections to open ahead of time.
  *
- * Four, against a default pool of five: the widest user page issues one account
- * query and then four slice queries. Deliberately not the whole pool, so the
- * warm-up can never be the thing that exhausts it.
+ * Seven, against a default pool of eight: the widest user page issues one
+ * account query and then a wave of independent reads, and this is what lets
+ * that wave find connections already open. Deliberately not the whole pool, so
+ * the warm-up can never be the thing that exhausts it.
  *
- * Raising the pool above five was measured and rejected — `max: 12` made the
- * cold burst *worse* (3,270ms vs 2,008ms) with no warm improvement, because
- * more connections simply means more simultaneous handshakes.
+ * THIS NUMBER AND `DATABASE_POOL_MAX` MOVE TOGETHER
+ * -------------------------------------------------
+ * A larger pool with this left at four is strictly worse — the extra
+ * connections are then opened by the first request that needs them, in front of
+ * a person, which is exactly why an earlier pass measured a bigger pool as a
+ * regression and rejected it. Raised together, both the warm case (~1.2s →
+ * ~0.78s on Home) and the cold one (~4.8s → ~3.3s) improve.
+ *
+ * `./client` explains why the pair stops at eight: the Supabase pooler refuses
+ * a sixteenth session-mode client for the whole project, and this application
+ * is not the only thing spending that budget.
  */
-const WARM_CONNECTIONS = Number(process.env.DATABASE_WARM_CONNECTIONS ?? 4);
+const WARM_CONNECTIONS = Number(process.env.DATABASE_WARM_CONNECTIONS ?? 7);
 
 /** Off by default nowhere — set `DATABASE_WARMUP=false` to skip it entirely. */
 function isEnabled(): boolean {

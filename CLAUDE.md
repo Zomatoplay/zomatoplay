@@ -832,17 +832,42 @@ trips. Everything below follows from that.
    twice. Request-scoped `cache()` on the reads and on the auth resolution is
    what removes that; see §16.2a.
 
-4. **Parallel is only free up to `max`.** Six concurrent reads against a
-   five-connection pool is two waves. An earlier note here recommended raising
-   `DATABASE_POOL_MAX` to 12; **that was re-measured on 2026-08-24 and does not
-   hold** — 12 made a cold five-query burst *worse* (3,270ms vs 2,008ms) with no
-   warm improvement, because a bigger pool only means more simultaneous
-   handshakes. The default stays 5. What actually removes that cost is warming
-   the pool (§16.8), not enlarging it.
+4. **Parallel is only free up to `max`, and `max` has a ceiling above it.**
+   Nine concurrent reads against a five-connection pool is two waves, and the
+   second wave costs a full round trip for nothing but a free connection.
+
+   The pool is **8** and the warm-up **7** (`DATABASE_POOL_MAX`,
+   `DATABASE_WARM_CONNECTIONS`), and the two must move together. An earlier note
+   here rejected a bigger pool after measuring `max: 12` as *worse* cold; that
+   measurement was correct and its conclusion was not, because the warm-up was
+   left at four, so the extra eight connections were opened in front of a user.
+   Raised together (2026-08-25, production build, three alternating runs) both
+   directions improve: Home 1.10–1.49s → 0.75–0.83s warm, 4.6–5.0s → 3.0–3.7s
+   cold.
+
+   **The ceiling is fifteen, and it belongs to the project, not to this app.**
+   Supavisor answers a sixteenth session-mode client with `(EMAXCONNSESSION) max
+   clients reached in session mode - max clients are limited to pool_size: 15`,
+   shared by every instance, `npm run db:*`, the scanner and the test suite — a
+   server holding ten stalled the integration suite until it was stopped. So
+   `DATABASE_POOL_MAX` is a per-instance number against a fixed global one: a
+   multi-instance deployment lowers it. Making a larger number safe means
+   raising the project's pool size in the Supabase dashboard first.
 
 5. **A connection that is never opened costs nothing.** Cold five-query burst:
-   2,008ms. Warm: 203ms. `warmConnectionPool()` opens four in the background
-   when the pool is created, so only the very first request pays.
+   2,008ms. Warm: 203ms. `warmConnectionPool()` opens `DATABASE_WARM_CONNECTIONS`
+   in the background when the pool is created, so only the very first request
+   pays.
+
+6. **A read that starts late is as expensive as a slow one.** Two round trips is
+   the floor for an authenticated page: one to resolve the session's account,
+   one for everything that account needs. Anything that turns that into three is
+   a waterfall, and the two easy ways to build one are (a) awaiting two reads in
+   a repository that only ever needed the same `userId`, and (b) reading in an
+   async server component the page *returns* — `TopBar` did both, and cost every
+   primary section two extra round trips. A component in the returned tree
+   cannot start until the page has finished; hoist its slices into the page's
+   own wave and let the request-scoped memoisation serve it.
 
 Do not "optimise" by adding indexes or trimming columns before checking the
 round-trip count. On this deployment the query plan is almost never the problem.
@@ -1603,9 +1628,22 @@ So:
   trace closes.
 - The browser batches its own events and posts them with `sendBeacon`, once, on
   navigation complete.
+- **`/api/trace` does all of its work in `after()` and nothing before the 204.**
+  It used to resolve the account and write the rows first — 720–1,270ms per
+  beacon, and a beacon rides every navigation, so it held connections while the
+  person's next page was reading from the same pool. `sendBeacon` never waits
+  for the answer, so that time was never useful to anyone.
 - Every write is wrapped in try/catch and swallowed. A logging failure must
   never fail a KYC submission, a deposit, a withdrawal, an investment, a login
   or a navigation.
+
+**`AsyncLocalStorage` does not cross from a layout into the page beneath it**,
+which is the trap here and cost five to eight extra round trips per page view
+before it was found. `traceRender` in `(app)/layout.tsx` covers the layout body
+only; every event a *page* records finds no trace. That path therefore coalesces
+into one insert on a short timer instead of writing a row at a time — see
+`enqueueUntraced` in `observability.ts`. If you add a trace wrapper somewhere
+new, check what it actually covers rather than what it appears to.
 
 ### 22.2 What must never be recorded
 

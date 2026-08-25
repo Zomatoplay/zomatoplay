@@ -29,7 +29,9 @@ export const metadata: Metadata = {
 export default async function ReferralPage() {
   const [{ profile }, summary, referrals, commissions, vipLevels] =
     await Promise.all([
-      getUserSlices(["profile"] as const),
+      // `notifications` is for `TopBar` — see the note in the other sections:
+      // a component in the returned tree reads it a round trip too late.
+      getUserSlices(["profile", "notifications"] as const),
       getReferralSummary(),
       getReferrals(),
       getCommissionHistory(),

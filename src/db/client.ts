@@ -180,6 +180,10 @@ function createDatabase({ url, max }: ClientOptions) {
      * backend, so a prepared statement created by one is gone by the next.
      * postgres.js prepares by default; that has to be off here. It stays on
      * for a session-mode or direct connection, where it is a real saving.
+     *
+     * Nothing currently sets a transaction-pooler URL — see `./env` for the
+     * measured reason this driver cannot use one — but the detection stays so
+     * that pointing `DATABASE_URL` at :6543 is never silently wrong.
      */
     prepare: !pooled,
     ...(shouldForceIpv4() ? { socket: connectOverIpv4 } : {}),
@@ -210,50 +214,45 @@ export function getDb(): Database {
     globalForDb.nanotronDb = createDatabase({
       url: requireDatabaseUrl(),
       /*
-       * Sized against the widest page, and capped by the pooler's own limit.
+       * Maximum session-mode connections held PER SERVER INSTANCE.
        *
-       * Home issues **nine** independent reads once its account id is known
-       * (three earnings rollups, the profile row and its KYC steps, the wallet,
-       * allocations, transactions, notifications). Against a pool of five that
-       * is two waves, and the second costs a full round trip — ~400ms from this
-       * deployment — waiting for nothing but a free connection.
+       * THIS NUMBER IS A SLICE OF A FIXED PROJECT-WIDE BUDGET, NOT A LOCAL
+       * TUNING KNOB
+       * --------------------------------------------------------------------
+       * `DATABASE_URL` is the *session* pooler, where a client connection
+       * reserves a Postgres backend for as long as it is held. Supavisor
+       * refuses a sixteenth one for the whole project:
        *
-       * MEASURED, AND IT CONTRADICTS THE EARLIER NOTE HERE
-       * --------------------------------------------------
-       * A previous pass rejected a larger pool: `max: 12` made a *cold* burst
-       * slower with no warm gain, because a bigger pool only means more
-       * simultaneous handshakes. That was measured with the warm-up still
-       * opening four connections, so the extra eight were opened by the first
-       * request that needed them. Raised *together* with the warm-up, three
-       * alternating runs against a production build gave:
+       *   (EMAXCONNSESSION) max clients reached in session mode
+       *   - max clients are limited to pool_size: 15
        *
-       *              max 5 / warm 4     max 10 / warm 9
-       *   /          1.10–1.49s         0.75–0.83s
-       *   /wallet    1.10–1.47s         0.75–0.82s
-       *   /referral  1.10–1.58s         0.75–0.83s
-       *   cold /     4.6–5.0s           3.0–3.7s
+       * That fifteen is shared by every application instance, `npm run db:*`,
+       * the TRON scanner and the test suite.
        *
-       * Better in both directions, cold included — the handshakes now happen in
-       * the background at pool creation rather than in front of a person.
+       * WHY THIS WAS LOWERED FROM EIGHT
+       * -------------------------------
+       * Eight was measured on a single long-running server and is genuinely
+       * faster there: Home issues nine independent reads once its account id is
+       * known, so a bigger pool turns two waves into one and `warmConnectionPool`
+       * pays for the handshakes off the critical path. Three alternating runs
+       * against a production build gave Home 1.10–1.49s at max 5 to 0.75–0.83s
+       * at max 10.
        *
-       * WHY EIGHT AND NOT TEN: THE POOLER'S CEILING IS FIFTEEN
-       * ------------------------------------------------------
-       * Supavisor answers a sixteenth session-mode client with
-       * `(EMAXCONNSESSION) max clients reached in session mode - max clients
-       * are limited to pool_size: 15`. That is the whole project's budget,
-       * shared by every application instance, `npm run db:*` (which holds one
-       * on `DIRECT_DATABASE_URL`), the TRON scanner and the test suite — and it
-       * was hit during this work: a server holding ten stalled the integration
-       * tests until it was stopped.
+       * But it is the wrong shape for a platform that answers load by adding
+       * instances. At eight-plus-seven-warm, ONE instance holds over half the
+       * project's budget the moment it starts, a second cannot warm fully, and
+       * a third is refused outright — and being refused surfaces as a failed
+       * render, not as a slow one. Three per instance lets four or five
+       * instances coexist and still leaves headroom for the scripts.
        *
-       * Eight is what fits: it covers every page's wave but Home's ninth query,
-       * and leaves seven for a second instance and for tooling. **This is a
-       * per-instance number against a fixed global budget**, so a deployment
-       * running several instances must lower `DATABASE_POOL_MAX`, not raise it.
-       * Raising the project's pool size in the Supabase dashboard is the only
-       * thing that makes a bigger number safe.
+       * So this is deliberately sized for the worst case rather than the
+       * fastest one. `DATABASE_POOL_MAX` raises it for a deployment that really
+       * is a single long-running server, and the honest way to buy the speed
+       * back everywhere is to raise the project's pool size in the Supabase
+       * dashboard first. It moves together with `DATABASE_WARM_CONNECTIONS`;
+       * see `./warmup` for why raising one alone is worse than raising neither.
        */
-      max: Number(process.env.DATABASE_POOL_MAX ?? 8),
+      max: Number(process.env.DATABASE_POOL_MAX ?? 3),
     });
 
     /*

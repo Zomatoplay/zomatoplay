@@ -20,22 +20,68 @@
  *
  * WHICH SUPABASE ENDPOINT
  * -----------------------
- * Both point at the *session* pooler (port 5432 on `pooler.supabase.com`), and
- * that is a measured choice rather than the obvious one:
+ * Both point at the *session* pooler (port 5432 on `pooler.supabase.com`).
+ * That is not the obvious answer for a serverless deployment, and it is not
+ * free — see the note below — but it is the only one this driver stack can
+ * actually run.
  *
  * - The true direct endpoint (`db.<ref>.supabase.co`) publishes AAAA records
  *   only. Vercel's serverless runtime has no IPv6 egress, so it is unusable
  *   there. The pooler is IPv4.
  * - The *transaction* pooler (port 6543) is the usual recommendation for
- *   serverless, and it is what this was built on first. It had to be abandoned:
- *   postgres.js pipelines queries onto a connection, and past roughly two
- *   queued queries the transaction pooler stops answering — reproduced with the
- *   stock driver and no local patches, at every pool size. A page that issues
- *   six queries in parallel hangs. Session mode on the same host handled twenty
- *   queued queries on a single connection without complaint.
+ *   serverless, and it is what this was built on first. It cannot be used
+ *   here, for a reason specific to this repository — below.
  *
- * Transaction-mode support is kept below so switching back is one environment
- * change if that interaction is ever fixed.
+ * WHY THE TRANSACTION POOLER CANNOT BE USED, MEASURED
+ * ---------------------------------------------------
+ * postgres.js *pipelines*: it writes a query and, without waiting for the
+ * reply, writes the next onto the same socket — up to `max_pipeline`, which
+ * defaults to 100. Supavisor in transaction mode cannot demultiplex that. It
+ * stops answering: no error, no timeout, the promises never settle.
+ *
+ * `prepare: false` does not help, and neither does trimming the pipeline.
+ * Measured on :6543 with `prepare: false`, 40 concurrent parameterless queries:
+ *
+ *   max_pipeline 100 (the default)  →  stalls, never settles
+ *   max_pipeline 1                  →  stalls, never settles
+ *   max_pipeline 0                  →  3.5s, all 40 rows
+ *
+ * So `max_pipeline: 0` fixes the reads — and breaks every write. postgres.js
+ * decides whether a connection may take more work with one `&&` chain in
+ * `Connection.execute`, and `sent.length < max_pipeline` sits *before*
+ * `q.options.onexecute(connection)` in it. At 0 that test is false, the
+ * callback never runs, and the callback is what marks a connection reserved
+ * for `sql.begin`. Every transaction then dies on postgres.js's own guard:
+ *
+ *   UNSAFE_TRANSACTION: Only use sql.begin, sql.reserved or max: 1
+ *
+ * **That is fatal here specifically.** Every write in this application goes
+ * through `mutate()` → `db.transaction()` → `client.begin()`, because a money
+ * movement and its ledger row and its audit entry must be one transaction
+ * (CLAUDE.md §17.1). Running the suite this way failed 16 tests, all of them
+ * in the write layer. There is no postgres.js setting that gives concurrent
+ * reads *and* working transactions against a transaction-mode pooler.
+ *
+ * The cost of staying on session mode is that a connection reserves a backend
+ * for its whole life, so the project's `pool_size: 15` caps how many clients
+ * may exist at once rather than how much concurrency they get. `./client`
+ * sizes the pool against that, and it is why `DATABASE_POOL_MAX` is small.
+ *
+ * Getting off it means changing driver, not endpoint: `node-postgres` does not
+ * pipeline, and `drizzle-orm/node-postgres` speaks to it. That is a real
+ * migration — `db.execute()` returns a `QueryResult` there rather than a row
+ * array — so it is a deliberate piece of work, not a config flip.
+ *
+ * A WARNING ABOUT HOW YOU TEST THIS
+ * ---------------------------------
+ * A hand-written `sql\`select ${x}\`` probe passes on :6543 even with the
+ * settings that hang the application, because it carries a bind parameter and
+ * so takes the extended query protocol. Drizzle issues everything through
+ * `client.unsafe(sql, params)`, and postgres.js's `unsafe()` sets
+ * `simple: params.length === 0` — so a query with **no** parameters takes the
+ * *simple* protocol, and that is the shape that jams. Probe with `select 1`,
+ * not with a parameterised query, or you will measure the wrong thing. This
+ * cost one wrong conclusion already.
  */
 
 export const DATABASE_URL_VAR = "DATABASE_URL";
@@ -107,8 +153,9 @@ export function requireAdminDatabaseUrl(): string {
  * worst kind of bug to meet in production. Supabase's transaction pooler is
  * port 6543; `pgbouncer=true` is the marker other providers use.
  *
- * Turning prepared statements off is necessary but, on Supabase, not
- * sufficient — see the note above on why the runtime uses session mode.
+ * Nothing currently sets such a URL — see the note at the top of this file for
+ * the measured reason this driver stack cannot use one — but the detection
+ * stays so that pointing `DATABASE_URL` at :6543 is never *silently* wrong.
  */
 export function usesTransactionPooler(url: string): boolean {
   try {

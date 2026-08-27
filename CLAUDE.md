@@ -754,39 +754,74 @@ Other scripts: `npm run db:generate` after changing the schema, and
 
 #### Two connections
 
-| Variable | Used by | Shape |
-|---|---|---|
-| `DATABASE_URL` | every render | pooled, `max` 5 per instance |
-| `DIRECT_DATABASE_URL` | `db:migrate`, `db:seed`, `db:studio` | one connection, opened and closed |
+| Variable | Used by | Endpoint | Shape |
+|---|---|---|---|
+| `DATABASE_URL` | every render | session pooler, `:5432` | pooled, `max` **3** per instance |
+| `DIRECT_DATABASE_URL` | `db:migrate`, `db:seed`, `db:studio` | session pooler, `:5432` | one connection, opened and closed |
 
 `DIRECT_DATABASE_URL` is optional and falls back to `DATABASE_URL`. It exists
 because a migration takes an advisory lock and issues DDL, which wants a session
 to itself and has no business sharing the pool the application renders from.
 
-#### Which Supabase endpoint — and why not the obvious ones
+#### Which Supabase endpoint — and why not the one everyone recommends
 
-Supabase offers three, and the two that look right are both wrong here. This is
-written down because both failures are invisible until they are not, and
-rediscovering them costs an afternoon.
+Supabase offers three. Both variables use the **session pooler**
+(`…pooler.supabase.com:5432`), which is not the obvious answer for serverless
+and is not free. It is the only one this driver stack can actually run.
 
 - **Direct** (`db.<ref>.supabase.co:5432`) — publishes **AAAA records only**.
   Vercel's serverless runtime has no IPv6 egress, so it cannot reach it at all.
-  Unusable in production regardless of what it does locally.
-- **Transaction pooler** (`…pooler.supabase.com:6543`) — the usual
-  recommendation for serverless, and what this was built on first. It had to be
-  abandoned. postgres.js pipelines queries onto a connection, and past roughly
-  two queued queries the transaction pooler simply stops answering: no error, no
-  timeout, the promise never settles. Reproduced with the stock driver, no local
-  patches, at every pool size from 1 to 10, and *not* fixed by `prepare: false`.
-  A page that issues six queries in parallel hangs.
-- **Session pooler** (`…pooler.supabase.com:5432`) — **what both variables use.**
-  IPv4, so Vercel can reach it; pooled by Supavisor, so a burst of serverless
-  invocations does not exhaust Postgres; and it handled twenty queued queries on
-  a single connection without complaint.
+- **Transaction pooler** (`…pooler.supabase.com:6543`) — the standard serverless
+  recommendation, and what this was built on first. **It cannot be used with
+  postgres.js + Drizzle here.** Re-tested in full; see below.
+- **Session pooler** (`…pooler.supabase.com:5432`) — IPv4, and it handles
+  everything this application does. Its price is the connection ceiling below.
 
-Transaction-mode support stays in the client (`usesTransactionPooler()` turns
-prepared statements off) so switching back is one environment change if that
-interaction is ever fixed.
+**Why the transaction pooler is out, measured rather than remembered.**
+postgres.js *pipelines*: it writes a query and, without waiting for the reply,
+writes the next onto the same socket, up to `max_pipeline` (default 100).
+Supavisor in transaction mode cannot demultiplex that — it stops answering, with
+no error and no timeout. `prepare: false` does not help, and neither does
+trimming the pipeline. On `:6543` with `prepare: false`, 40 concurrent
+parameterless queries:
+
+| `max_pipeline` | result |
+|---|---|
+| 100 (the driver default) | **never settles** |
+| 1 | **never settles** |
+| 0 | 3.5s, all 40 rows |
+
+So `max_pipeline: 0` fixes the reads — **and breaks every write.** postgres.js
+decides whether a connection may accept more work with a single `&&` chain in
+`Connection.execute`, and `sent.length < max_pipeline` sits *before*
+`q.options.onexecute(connection)` in it. At 0 that test is false, so the
+callback never runs — and that callback is what marks a connection reserved for
+`sql.begin`. Every transaction then dies on postgres.js's own guard,
+`UNSAFE_TRANSACTION: Only use sql.begin, sql.reserved or max: 1`.
+
+That is fatal **for this repository specifically**: every write goes through
+`mutate()` → `db.transaction()` → `client.begin()`, because a money movement and
+its ledger row and its audit entry must be one transaction (§17.1). The suite
+run this way failed 16 tests, all in the write layer. There is no postgres.js
+setting that gives concurrent reads *and* working transactions here.
+
+`usesTransactionPooler()` in `db/env.ts` stays, so pointing `DATABASE_URL` at
+`:6543` is never *silently* wrong — but nothing should point it there.
+
+**A warning about how to test this.** A hand-written ``sql`select ${x}` `` probe
+passes on `:6543` even with the settings that hang the application, because it
+carries a bind parameter and so uses the extended query protocol. Drizzle issues
+everything through `client.unsafe(sql, params)`, and postgres.js's `unsafe()`
+sets `simple: params.length === 0` — so a query with **no** parameters takes the
+*simple* protocol, and that is the shape that jams. Probe with `select 1`, not
+with a parameterised query, or you will measure the wrong thing. This cost one
+wrong conclusion during the work that established the above.
+
+**The way off session mode is a different driver, not a different port.**
+`node-postgres` does not pipeline, and `drizzle-orm/node-postgres` speaks to it.
+That is a real migration — `db.execute()` returns a `QueryResult` there rather
+than a row array, so every caller changes — and it is the correct next step if
+this deployment ever needs to scale past a handful of instances.
 
 #### If connections take ~5 seconds each
 
@@ -845,14 +880,25 @@ trips. Everything below follows from that.
    directions improve: Home 1.10–1.49s → 0.75–0.83s warm, 4.6–5.0s → 3.0–3.7s
    cold.
 
-   **The ceiling is fifteen, and it belongs to the project, not to this app.**
-   Supavisor answers a sixteenth session-mode client with `(EMAXCONNSESSION) max
-   clients reached in session mode - max clients are limited to pool_size: 15`,
-   shared by every instance, `npm run db:*`, the scanner and the test suite — a
-   server holding ten stalled the integration suite until it was stopped. So
-   `DATABASE_POOL_MAX` is a per-instance number against a fixed global one: a
-   multi-instance deployment lowers it. Making a larger number safe means
-   raising the project's pool size in the Supabase dashboard first.
+   **The ceiling is fifteen, it belongs to the project, and it is what
+   `EMAXCONNSESSION` was.** Supavisor answers a sixteenth session-mode client
+   with `max clients reached in session mode - max clients are limited to
+   pool_size: 15`, shared by every instance, `npm run db:*`, the scanner and the
+   test suite.
+
+   **The pool is therefore 3 and the warm-up 2, lowered from 8 and 7.** Eight
+   was measured on a single long-running server and is genuinely faster there —
+   the numbers above are real. It is the wrong shape for a platform that answers
+   load by adding instances: at eight-plus-seven-warm one instance holds over
+   half the budget before serving a request, a second cannot warm fully, and a
+   third is refused outright. Being refused is a failed render, not a slow one,
+   which is what the reported errors were. Three per instance lets four or five
+   coexist with headroom for the scripts.
+
+   `DATABASE_POOL_MAX` and `DATABASE_WARM_CONNECTIONS` raise it for a deployment
+   that really is one long-running server. The honest way to buy the speed back
+   everywhere is to raise the project's pool size in the Supabase dashboard
+   first; the alternative is the driver migration in §16.1.
 
 5. **A connection that is never opened costs nothing.** Cold five-query burst:
    2,008ms. Warm: 203ms. `warmConnectionPool()` opens `DATABASE_WARM_CONNECTIONS`

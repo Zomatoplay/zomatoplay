@@ -39,24 +39,24 @@ import type { Database } from "./client";
 /**
  * How many connections to open ahead of time.
  *
- * Seven, against a default pool of eight: the widest user page issues one
- * account query and then a wave of independent reads, and this is what lets
- * that wave find connections already open. Deliberately not the whole pool, so
- * the warm-up can never be the thing that exhausts it.
+ * Two, against a default pool of three. Deliberately not the whole pool, so the
+ * warm-up can never be the thing that exhausts it.
  *
- * THIS NUMBER AND `DATABASE_POOL_MAX` MOVE TOGETHER
- * -------------------------------------------------
- * A larger pool with this left at four is strictly worse — the extra
- * connections are then opened by the first request that needs them, in front of
- * a person, which is exactly why an earlier pass measured a bigger pool as a
- * regression and rejected it. Raised together, both the warm case (~1.2s →
- * ~0.78s on Home) and the cold one (~4.8s → ~3.3s) improve.
+ * IT WAS SEVEN, AND THE PAIR CAME DOWN TOGETHER
+ * ---------------------------------------------
+ * Seven-of-eight is faster on a single long-running server and was measured
+ * that way. It is also how one instance came to hold over half the project's
+ * fifteen session-mode connections before serving a request, which is what
+ * produced `EMAXCONNSESSION` once a second instance started. `./client`
+ * carries the full reasoning; the rule to keep is that this number and
+ * `DATABASE_POOL_MAX` move together.
  *
- * `./client` explains why the pair stops at eight: the Supabase pooler refuses
- * a sixteenth session-mode client for the whole project, and this application
- * is not the only thing spending that budget.
+ * A pool raised without this raised too is strictly worse than raising
+ * neither: the extra connections are then opened by the first request that
+ * needs them, in front of a person. That is why an earlier pass measured a
+ * bigger pool as a regression — the warm-up had been left behind.
  */
-const WARM_CONNECTIONS = Number(process.env.DATABASE_WARM_CONNECTIONS ?? 7);
+const WARM_CONNECTIONS = Number(process.env.DATABASE_WARM_CONNECTIONS ?? 2);
 
 /** Off by default nowhere — set `DATABASE_WARMUP=false` to skip it entirely. */
 function isEnabled(): boolean {

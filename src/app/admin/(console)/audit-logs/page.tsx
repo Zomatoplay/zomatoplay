@@ -1,6 +1,7 @@
 import { AuditLogsView } from "@/components/admin/audit/audit-logs-view";
 import { AdminDataProvider } from "@/lib/admin-store";
 import {
+  getAdminAgents,
   getAuditLog,
 } from "@/server/services/admin.service";
 
@@ -15,10 +16,19 @@ export const metadata = { title: "Audit logs" };
  * nobody else's.
  */
 export default async function Page() {
-  const auditLog = await getAuditLog();
+  const [auditLog, agents] = await Promise.all([
+    getAuditLog(),
+    // The screen resolves each entry's actor against the operator directory and
+    // counts the distinct agents in the log. It used to take that from the
+    // console shell, which every other admin page then paid two round trips
+    // for — and which, because a layout does not re-run on a client
+    // navigation, was frozen at whatever the directory held when the console
+    // was opened.
+    getAdminAgents(),
+  ]);
 
   return (
-    <AdminDataProvider data={{ auditLog }}>
+    <AdminDataProvider data={{ auditLog, agents }}>
       <AuditLogsView />
     </AdminDataProvider>
   );

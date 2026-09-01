@@ -26,6 +26,7 @@ import {
 import { listInvestmentsForUser } from "../repositories/investments.repository";
 import { listTransactionsForUser } from "../repositories/ledger.repository";
 import { toWalletBalance } from "../repositories/mappers";
+import { findOwnKycCase, type OwnKycCase } from "../repositories/kyc.repository";
 import {
   findUserProfile,
   findWalletBalance,
@@ -133,6 +134,9 @@ const cachedNotifications = cache((id: string) =>
 );
 const cachedNotificationPreferences = cache((id: string) =>
   read((db) => listNotificationPreferences(db, id)),
+);
+const cachedOwnKycCase = cache((id: string) =>
+  read((db) => findOwnKycCase(db, id)),
 );
 
 export async function getUserProfile(userId?: string): Promise<UserProfile> {
@@ -285,4 +289,24 @@ export async function getUserSlices<K extends keyof UserSliceData>(
   // which is what lets a page use `slices.profile` without a non-null
   // assertion, while the store's own type keeps every slice optional.
   return Object.fromEntries(entries) as LoadedSlices<K>;
+}
+
+/**
+ * The signed-in account's own verification case, or null before they submit.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * `rejectKyc()` requires a reason and its comment says "the reason is what the
+ * user is shown"; there is a test named "rejection stores the reason the user
+ * is shown". Nothing showed it. The reason was written, reviewed, tested and
+ * invisible — a rejected person saw a red badge and no way to find out what to
+ * fix, which is the one thing a rejection has to communicate.
+ *
+ * Session-scoped like every other read here: the id comes from
+ * `resolveUserId`, never from a caller, so this cannot be pointed at somebody
+ * else's case.
+ */
+export async function getOwnKycCase(userId?: string): Promise<OwnKycCase | null> {
+  const id = await resolveUserId(userId);
+  return cachedOwnKycCase(id);
 }

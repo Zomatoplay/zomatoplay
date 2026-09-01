@@ -11,12 +11,11 @@ import {
   FileCheck2,
   IdCard,
   ShieldCheck,
-  Upload,
+  TriangleAlert,
   User,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { PrototypeNote } from "@/components/shared/notices";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -29,13 +28,61 @@ import {
 } from "@/app/(app)/settings/kyc/actions";
 import { cn } from "@/lib/utils";
 
+import {
+  FilePhotoButton,
+  SelfieCapture,
+  uploadKycFile,
+  UploadError,
+  type CapturedImage,
+} from "./kyc-capture";
+
 /**
- * Mock KYC flow: personal details → document → liveness → review.
+ * Identity verification: personal details → document → selfie → review.
  *
- * The step machine and its states mirror what a real provider integration
- * (Onfido/Sumsub-style) will need. INTEGRATION POINT: replace `submit` with the
- * provider SDK handoff and drive `kycStatus` from their webhook.
+ * WHAT CHANGED, AND WHY IT HAD TO
+ * -------------------------------
+ * The document and selfie steps used to be two buttons that set a boolean.
+ * Nothing opened a file picker, nothing opened a camera, the document type was
+ * hard-coded to `national_id`, the "document number" was
+ * `Math.random()`, and the filename was the string `identity-document.jpg` for
+ * every submission ever made. Then it sent `livenessCheckPassed: true`, which
+ * an operator reads in the CRM as a check that passed.
+ *
+ * The two real submissions in the development database both carry that
+ * fabricated filename and a `liveness_check_passed` of `true`. That is the
+ * defect: not that the flow was incomplete, but that it asserted something
+ * false about a person's identity into a table somebody makes decisions from.
+ *
+ * WHAT IS TRUE NOW
+ * ----------------
+ * - The document step opens the real file picker or the real camera, checks
+ *   the type and the size, and reports the actual filename and byte count.
+ * - The selfie step opens the real camera (`getUserMedia`) with a live preview,
+ *   and falls back to the OS camera app where that API is unavailable — which
+ *   includes every insecure origin. See `kyc-capture`.
+ * - The document number is typed by the person, and **only its last four
+ *   characters ever leave the browser**. The server composes the mask.
+ * - `livenessCheckPassed` is not a value this component can send. Nothing in
+ *   this deployment performs an automated liveness check, so nothing here may
+ *   claim one passed.
+ *
+ * WHAT IS STILL MISSING, STATED TO THE USER RATHER THAN HIDDEN
+ * -----------------------------------------------------------
+ * **No file is transmitted.** There is no document store and no verification
+ * provider, so the captured images stay in the browser and only their metadata
+ * is recorded. The notice at the bottom of the flow says exactly that. Wiring a
+ * provider — or a storage bucket with the access rules identity documents
+ * require — is the remaining integration, and it is a deployment decision
+ * rather than a component change.
  */
+
+const DOCUMENT_TYPES = [
+  { id: "national_id", label: "Aadhaar / National ID" },
+  { id: "passport", label: "Passport" },
+  { id: "driving_licence", label: "Driving licence" },
+] as const;
+
+type DocumentType = (typeof DOCUMENT_TYPES)[number]["id"];
 
 const STEPS = [
   {
@@ -52,13 +99,33 @@ const STEPS = [
   },
   {
     id: "selfie",
-    title: "Liveness check",
-    description: "A short selfie so we can confirm the document belongs to you.",
+    title: "Selfie",
+    description:
+      "A photo of your face, so a reviewer can compare it with your document.",
     icon: Camera,
   },
 ] as const;
 
-export function KycFlow() {
+/** Everything after the last four characters is dropped before anything is sent. */
+function lastFour(documentNumber: string): string {
+  return documentNumber.replace(/[^A-Za-z0-9]/g, "").slice(-4).toUpperCase();
+}
+
+export function KycFlow({
+  /**
+   * What the reviewer said, when they rejected the last submission or asked for
+   * it again.
+   *
+   * `rejectKyc()` requires a reason and its own comment calls it "what the user
+   * is shown"; a test is named after that promise. Nothing showed it. Somebody
+   * rejected saw a red badge and had no way to learn what to fix, which is the
+   * single thing a rejection has to communicate. Read server-side from the
+   * account's own latest case — see `getOwnKycCase`.
+   */
+  reviewerNote = null,
+}: {
+  reviewerNote?: string | null;
+} = {}) {
   // Status only. The store is a cache of what the database said at render
   // time; it cannot change a verification state, and nothing here asks it to.
   const { kycStatus } = usePrototypeStore();
@@ -67,8 +134,12 @@ export function KycFlow() {
   const [step, setStep] = useState(0);
   const [fullName, setFullName] = useState("");
   const [dob, setDob] = useState("");
-  const [documentUploaded, setDocumentUploaded] = useState(false);
-  const [selfieCaptured, setSelfieCaptured] = useState(false);
+  const [documentType, setDocumentType] = useState<DocumentType>("national_id");
+  const [documentNumber, setDocumentNumber] = useState("");
+  const [document, setDocument] = useState<CapturedImage | null>(null);
+  const [selfie, setSelfie] = useState<CapturedImage | null>(null);
+  /** Distinguishes "sending your files" from "recording your submission". */
+  const [uploading, setUploading] = useState(false);
 
   /* ---------------------------------------------------------------- */
   /* Terminal states                                                   */
@@ -107,7 +178,7 @@ export function KycFlow() {
           </span>
           <h2 className="mt-4 text-lg font-semibold">Verification in review</h2>
           <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-            We have received your documents. Checks usually complete within 24
+            We have received your details. Checks usually complete within 24
             hours, and we will notify you as soon as they do.
           </p>
         </Card>
@@ -128,7 +199,6 @@ export function KycFlow() {
             <span className="text-sm text-muted-foreground">Under review</span>
           </div>
         </div>
-
       </div>
     );
   }
@@ -140,8 +210,8 @@ export function KycFlow() {
     step === 0
       ? fullName.trim().length > 2 && dob.trim() !== ""
       : step === 1
-        ? documentUploaded
-        : selfieCaptured;
+        ? document !== null && lastFour(documentNumber).length === 4
+        : selfie !== null;
 
   function next() {
     if (step < STEPS.length - 1) {
@@ -154,14 +224,51 @@ export function KycFlow() {
       return;
     }
 
+    if (!document || !selfie) return;
+
     startTransition(async () => {
+      /*
+       * The files go up first, and the submission only happens if they landed.
+       *
+       * Uploading straight to Storage rather than through a server action is
+       * what keeps a 10 MB scan working in production — see `uploadKycFile`.
+       * Ordering matters: a submission written before the upload succeeded
+       * would be a `pending_review` case pointing at nothing, which a reviewer
+       * cannot progress and the person cannot understand.
+       */
+      let documentPath: string;
+      let selfiePath: string;
+      try {
+        setUploading(true);
+        [documentPath, selfiePath] = await Promise.all([
+          uploadKycFile(document, "document"),
+          uploadKycFile(selfie, "selfie"),
+        ]);
+      } catch (error) {
+        toast.error(
+          error instanceof UploadError
+            ? error.message
+            : "Your documents could not be uploaded. Check your connection and try again.",
+        );
+        return;
+      } finally {
+        setUploading(false);
+      }
+
       const result = await submitKycAction({
         legalName: fullName.trim(),
         dateOfBirth: dob,
-        documentType: "national_id",
-        documentNumberMasked: "•••• •••• " + Math.floor(1000 + Math.random() * 8999),
-        documentFileName: "identity-document.jpg",
-        livenessCheckPassed: selfieCaptured,
+        documentType,
+        // The full number never leaves this component. The server builds the
+        // mask, so there is no complete identity number in a request body, in a
+        // server log, or in the database.
+        documentNumberLast4: lastFour(documentNumber),
+        documentFileName: document.fileName,
+        documentByteSize: document.sizeBytes,
+        documentMimeType: document.mimeType,
+        documentPath,
+        selfieFileName: selfie.fileName,
+        selfiePath,
       });
 
       if (!result.ok) {
@@ -169,7 +276,7 @@ export function KycFlow() {
         return;
       }
 
-      toast.success("Verification submitted", {
+      toast.success("Submitted for review", {
         description: "We will let you know once the checks are complete.",
       });
       // The status now lives in the database; re-read rather than assume.
@@ -187,6 +294,32 @@ export function KycFlow() {
           Step {step + 1} of {STEPS.length}
         </span>
       </div>
+
+      {/*
+        Shown above the form, not below it.
+
+        Somebody arriving here after a rejection is being asked to do the whole
+        thing again; what the reviewer objected to is the first thing they need,
+        not a footnote under the submit button.
+      */}
+      {reviewerNote ? (
+        <div className="flex items-start gap-2.5 rounded-xl border border-destructive/30 bg-destructive/5 p-3.5">
+          <TriangleAlert
+            className="mt-0.5 size-4 shrink-0 text-destructive"
+            aria-hidden
+          />
+          <div className="min-w-0 space-y-1">
+            <p className="text-sm font-medium text-foreground">
+              {kycStatus === "rejected"
+                ? "Your last submission was not accepted"
+                : "We need your documents again"}
+            </p>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {reviewerNote}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {/* Step indicator — position is conveyed by number and label, not colour
           alone. */}
@@ -240,81 +373,36 @@ export function KycFlow() {
             </div>
           </div>
         ) : step === 1 ? (
-          <button
-            type="button"
-            onClick={() => {
-              setDocumentUploaded(true);
-              toast.success("Document attached");
-            }}
-            className={cn(
-              "flex w-full flex-col items-center gap-2 rounded-xl border border-dashed px-4 py-8 transition-colors",
-              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-              documentUploaded
-                ? "border-brand bg-brand-soft"
-                : "border-border hover:bg-secondary/50",
-            )}
-          >
-            <span
-              className={cn(
-                "flex size-10 items-center justify-center rounded-full",
-                documentUploaded
-                  ? "bg-brand text-brand-foreground"
-                  : "bg-secondary text-muted-foreground",
-              )}
-            >
-              {documentUploaded ? (
-                <FileCheck2 className="size-5" aria-hidden />
-              ) : (
-                <Upload className="size-5" aria-hidden />
-              )}
-            </span>
-            <span className="text-sm font-medium">
-              {documentUploaded ? "Document attached" : "Upload your document"}
-            </span>
-            <span className="text-xs text-muted-foreground">
-              {documentUploaded
-                ? "id-document.jpg · tap to replace"
-                : "JPG or PNG, up to 10 MB"}
-            </span>
-          </button>
+          <DocumentStep
+            documentType={documentType}
+            onDocumentType={setDocumentType}
+            documentNumber={documentNumber}
+            onDocumentNumber={setDocumentNumber}
+            document={document}
+            onDocument={setDocument}
+          />
         ) : (
-          <button
-            type="button"
-            onClick={() => {
-              setSelfieCaptured(true);
-              toast.success("Liveness check captured");
-            }}
-            className={cn(
-              "flex w-full flex-col items-center gap-2 rounded-xl border border-dashed px-4 py-8 transition-colors",
-              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-              selfieCaptured
-                ? "border-brand bg-brand-soft"
-                : "border-border hover:bg-secondary/50",
-            )}
-          >
-            <span
-              className={cn(
-                "flex size-10 items-center justify-center rounded-full",
-                selfieCaptured
-                  ? "bg-brand text-brand-foreground"
-                  : "bg-secondary text-muted-foreground",
-              )}
-            >
-              {selfieCaptured ? (
-                <Check className="size-5" aria-hidden />
-              ) : (
-                <Camera className="size-5" aria-hidden />
-              )}
-            </span>
-            <span className="text-sm font-medium">
-              {selfieCaptured ? "Liveness check complete" : "Start liveness check"}
-            </span>
-            <span className="text-xs text-muted-foreground">
-              {selfieCaptured
-                ? "Tap to retake"
-                : "Takes about 10 seconds"}
-            </span>
-          </button>
+          <div className="space-y-3">
+            <SelfieCapture
+              value={selfie}
+              onCapture={setSelfie}
+              onClear={() => setSelfie(null)}
+            />
+            {/*
+              Said here, at the moment the claim would otherwise be implied.
+
+              A person who has just taken a selfie for a finance app reasonably
+              assumes something checked it. Nothing did, and the difference
+              matters to them: their account is waiting on a human, not on a
+              few seconds of processing.
+            */}
+            <p className="rounded-xl border border-border bg-secondary/60 p-3 text-xs leading-relaxed text-muted-foreground">
+              This photo is <strong className="font-medium text-foreground">not</strong>{" "}
+              checked automatically. Automated liveness verification is not
+              connected on this deployment, so a reviewer compares your selfie
+              with your document by hand.
+            </p>
+          </div>
         )}
       </Card>
 
@@ -326,14 +414,35 @@ export function KycFlow() {
         </p>
       </div>
 
-      <PrototypeNote>
-        Demo build — no documents are uploaded, stored or sent to a verification
-        provider. Anything you type here stays in your browser.
-      </PrototypeNote>
+      {/*
+        Replaces the old `PrototypeNote`, which said the same thing less
+        precisely. This is the state of the integration, and it is what makes
+        the difference between an honest flow and a convincing one.
+      */}
+      <p className="rounded-xl border border-border bg-secondary/60 p-3.5 text-xs leading-relaxed text-muted-foreground">
+        <strong className="font-medium text-foreground">
+          Your documents are uploaded to private storage.
+        </strong>{" "}
+        Only you and our verification team can open them — they have no public
+        address and are reached through a short-lived link that expires. Your
+        full document number is never sent; only its last four characters are.
+      </p>
 
       <div className="space-y-2">
-        <Button variant="brand" size="lg" block disabled={!canContinue || pending} onClick={next}>
-          {step === STEPS.length - 1 ? "Submit for review" : "Continue"}
+        <Button
+          variant="brand"
+          size="lg"
+          block
+          disabled={!canContinue || pending || uploading}
+          onClick={next}
+        >
+          {step === STEPS.length - 1
+            ? uploading
+              ? "Uploading your documents…"
+              : pending
+                ? "Submitting…"
+                : "Submit for review"
+            : "Continue"}
         </Button>
         {step > 0 ? (
           <Button variant="ghost" size="lg" block onClick={() => setStep(step - 1)}>
@@ -341,6 +450,140 @@ export function KycFlow() {
           </Button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+function DocumentStep({
+  documentType,
+  onDocumentType,
+  documentNumber,
+  onDocumentNumber,
+  document,
+  onDocument,
+}: {
+  documentType: DocumentType;
+  onDocumentType: (value: DocumentType) => void;
+  documentNumber: string;
+  onDocumentNumber: (value: string) => void;
+  document: CapturedImage | null;
+  onDocument: (value: CapturedImage | null) => void;
+}) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const masked = lastFour(documentNumber);
+
+  return (
+    <div className="space-y-4">
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium text-foreground">Document type</legend>
+        {/* Radios rather than a select: three options, and a native select on
+            Android renders a modal that hides the rest of the step. */}
+        <div className="space-y-2">
+          {DOCUMENT_TYPES.map((option) => (
+            <label
+              key={option.id}
+              className={cn(
+                "flex min-h-12 cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm transition-colors",
+                documentType === option.id
+                  ? "border-brand bg-brand-soft text-foreground"
+                  : "border-border hover:bg-secondary/50",
+              )}
+            >
+              <input
+                type="radio"
+                name="kyc-document-type"
+                value={option.id}
+                checked={documentType === option.id}
+                onChange={() => onDocumentType(option.id)}
+                className="size-4 accent-[var(--brand)]"
+              />
+              <span className="min-w-0">{option.label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="kyc-document-number">Document number</Label>
+        <Input
+          id="kyc-document-number"
+          inputMode="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="As printed on the document"
+          value={documentNumber}
+          onChange={(event) => onDocumentNumber(event.target.value)}
+          aria-describedby="kyc-document-number-help"
+        />
+        <p id="kyc-document-number-help" className="text-xs leading-relaxed text-muted-foreground">
+          {masked.length === 4
+            ? `Only the last four characters are sent: •••• ${masked}`
+            : "Only the last four characters are sent — the rest stays on this device."}
+        </p>
+      </div>
+
+      {document ? (
+        <div className="space-y-3">
+          <div className="flex items-start gap-3 rounded-xl border border-brand bg-brand-soft p-4">
+            <FileCheck2 className="mt-0.5 size-5 shrink-0 text-brand" aria-hidden />
+            <div className="min-w-0">
+              {/* `break-all`: a camera filename can be long and unbroken, and a
+                  layout that overflows at 360px is a broken layout. */}
+              <p className="break-all text-sm font-medium text-foreground">
+                {document.fileName}
+              </p>
+              <p className="tabular mt-0.5 text-xs text-muted-foreground">
+                {(document.sizeBytes / 1024).toFixed(0)} KB ·{" "}
+                {document.mimeType || "unknown type"}
+              </p>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            block
+            onClick={() => {
+              URL.revokeObjectURL(document.previewUrl);
+              onDocument(null);
+            }}
+          >
+            Choose a different file
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <FilePhotoButton
+            label="Photograph the document"
+            capture="environment"
+            onFile={(image) => {
+              setProblem(null);
+              onDocument(image);
+            }}
+            onProblem={setProblem}
+          />
+          <FilePhotoButton
+            label="Choose from this device"
+            accept="image/*,application/pdf"
+            onFile={(image) => {
+              setProblem(null);
+              onDocument(image);
+            }}
+            onProblem={setProblem}
+          />
+          <p className="text-center text-xs text-muted-foreground">
+            JPG, PNG, HEIC or PDF, up to 10 MB.
+          </p>
+        </div>
+      )}
+
+      {problem ? (
+        <p className="text-xs leading-relaxed text-destructive" role="alert">
+          {problem}
+        </p>
+      ) : null}
     </div>
   );
 }

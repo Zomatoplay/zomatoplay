@@ -99,11 +99,20 @@ scoped reads and every write refuse instead, which is deliberate — see §16.3.
   the service-role key this project deliberately does not hold (§19.6). The UI
   and the audit line both say so rather than implying otherwise.
 - Per-user deposit addresses, which is what would make attribution automatic.
-- A real KYC provider, and no document storage. Only masked document numbers
-  and filename metadata are kept.
+- A real KYC provider, **and no document storage**. The flow now opens the real
+  file picker and the real camera, but nothing is transmitted: only the document
+  type, the real filename, its size and the last four characters of the document
+  number are recorded. `liveness_check_passed` is therefore always `false` and
+  carries a `liveness_not_verified` risk flag — see §23.
 - A real investment engine. Accrual exists as `recordInvestmentEarning()` with
   its idempotency key; no scheduler calls it (§16.5).
-- Referral payout automation, and real notification delivery beyond in-app.
+- Referral payout **automation**. The programme itself is complete and works
+  end to end: an allocation accrues commission at the beneficiary's VIP rate,
+  moves their standing, promotes their level, and an operator releases the
+  pending entry into their wallet from `/admin/referrals` (§10). What is absent
+  is anything that releases it *without* an operator, which needs the investment
+  engine above to define when an allocation has settled.
+- Real notification delivery beyond in-app.
 - Phone/SMS one-time codes. Email only; the `phone` field is preserved on the
   profile so it can be added without a migration.
 
@@ -187,6 +196,12 @@ not run again — anything read there is frozen at the moment the console was
 opened. A page segment does re-render. Putting the reads in the layout is what
 made a KYC case submitted after the console opened invisible until a hard
 reload, and it is the single most important thing to preserve here.
+
+**The shell is one row — platform settings — and nothing else.** It carried the
+operator directory too, which meant two extra statements on *every* admin page
+to serve the two screens that read it. Both now read it themselves. If you find
+yourself adding a slice to `AdminShellData`, that is the fourteen-slice mistake
+starting again: put it on the page.
 
 ### 4.3 Data layer
 
@@ -399,10 +414,105 @@ Rules:
 - **Reward** — profit credited to the available balance on the plan's schedule.
 - **KYC** — required before investing or withdrawing. Both flows gate on it.
 - **Referral / VIP** — three levels (VIP 1–3) with two commission tiers.
-  Percentages and thresholds live in `src/data/referrals.ts` as data so a config
-  service can drive them later. Never hard-code them in components.
+  Percentages and thresholds live in `src/data/referrals.ts` as data (and in
+  `vip_levels` once seeded) so a config service can drive them later. Never
+  hard-code them in components — and never restate a rate in a service either:
+  `referrals-write.service` reads it from `vip_levels`, joined on the
+  *beneficiary's* level, so the CRM and the user app can never quote different
+  numbers.
+
+  **What an allocation does.** `createInvestment` calls
+  `accrueReferralCommission` inside its own transaction: a `commission_entries`
+  row for the direct referrer at their tier-1 rate, one for that person's
+  referrer at their tier-2 rate, the direct `referrals` row moved
+  `registered → active` with its invested and earned totals, and both
+  beneficiaries' `referral_accounts` aggregates advanced. Two tiers, never a
+  walk up a chain. `activeReferrals` is counted on the *transition* only, under
+  a `for update` on the edge, so two allocations arriving together cannot both
+  count it.
+
+  **Accrual credits nobody.** Entries are written `pending` and land in
+  `commission_pending_usdt`. Nothing automatic pays them: "once their allocation
+  settles" has no settlement process (§16.5), and a scheduler releasing on
+  `payoutDelayDays` would have to invent what "settles" means on the one table
+  where inventing a rule pays real money to the wrong person. There is a test
+  asserting that accrual reaches no wallet and writes no ledger row; do not make
+  it pass by deleting it.
+
+  **Release is an operator decision**, like every other movement of money in the
+  console. `releaseCommission()` → `/admin/referrals` → *Release*, gated on
+  `manage` over `referrals`, one transaction containing the ledger row, the
+  balance, the aggregate move and the audit entry. The status transition is
+  asserted in the `UPDATE`'s own `WHERE`, so two operators clicking together pay
+  once. When an investment engine arrives it calls this same function — only the
+  trigger changes.
+
+  **The programme's switches are read, not decorative.**
+  `platform_settings.referrals.programmeEnabled` and `maxTiers` are honoured by
+  `accrueReferralCommission`; they were editable in the CRM and ignored for as
+  long as they existed. `maxTiers` is clamped to 2 because the VIP table defines
+  exactly two commission columns.
+
+  **VIP level advances on its own, and only upward.** The highest level whose
+  `required_active_referrals` *and* `required_team_volume_usdt` are both met,
+  applied after the commission so an allocation pays at the rate held when it
+  was made. There is deliberately no demotion: a level is a rate somebody has
+  been earning at, nothing defines when it should be taken away, and doing it as
+  a side effect of somebody else's allocation would be the wrong way to find
+  out.
 - **Deposit lifecycle** — select network → show address → await transfer →
   detected → confirmations accumulate → credited.
+
+### 10a The allocation lifecycle, and the one rule that is missing
+
+    deposit → available → allocation (principal locked)
+            → schedule maintained → maturity → principal returned
+
+`createInvestment` debits `available`, raises `total_invested` and
+`locked_in_investments`, writes the ledger entry and stamps the reward schedule.
+`/api/cron/settle-investments` — hourly, `CRON_SECRET`, same shape as the
+deposit scan — recomputes `elapsed_days` and the schedule from `started_at`
+(recomputed, never incremented, so a missed run cannot drift) and hands
+everything past its `matures_at` to `matureInvestment()`, which returns the
+principal through the ledger. Both halves were implemented before and **neither
+had a caller**: an allocation took the money and then froze, sitting `active`
+past its own maturity with the principal still locked.
+
+**`duration_days: 0` means open-ended, not "already matured".** Flexible Reserve
+is sold as "no fixed term — funds stay allocated until you withdraw them", and
+`matures_at` is computed as `started_at + 0 days`. Any arithmetic that trusts
+that column alone concludes such a row matured the instant it was created, and
+a settler without the `duration_days > 0` filter would force the principal back
+out of a product whose entire point is that the customer chooses when. There is
+a test named for it; do not remove the filter.
+
+**Nothing credits a reward, deliberately.** `recordInvestmentEarning()` exists,
+is idempotent on `(investment_id, period_key)`, and is called by nothing —
+because the amount is the one financial rule this codebase does not define. See
+§13 item 7. `next_reward_amount` is a *forecast* the schema asks for, computed
+as `projected_profit ÷ (duration_days ÷ period_days)` — the arithmetic every
+seeded allocation already carries — and it is displayed under the language rules
+above. It is not a promise to pay it.
+
+**An open-ended allocation is ended by the customer, and only by them.**
+`endOpenEndedInvestment()` → `endAllocationAction` → the *Return funds* control
+on the allocation detail screen. It verifies ownership against the row, refuses
+anything with a fixed term, honours `platform_settings.investments.allowEarlyExit`,
+and then delegates to `matureInvestment()` rather than reimplementing the money —
+so the principal comes back through the same guarded, audited transaction the
+settler uses, and two clicks return it once.
+
+The product defines this unambiguously and in four places (tagline "Withdraw any
+time"; `howItWorks`, `conditions` and `earlyExit` all say funds return at any
+time), with **no fee and no forfeiture** — unlike the fixed-term plans, which
+name theirs. So the rule applied is the one the copy promises: the whole
+principal, immediately.
+
+**The fixed-term plans' early exit is still not implemented**, and refusing it
+is deliberate. Starter says "after day 7 with forfeiture of accrued rewards",
+Balanced says "after day 30 with a 2% exit fee on principal". Both are rules,
+neither is built, and returning the principal in full would be inventing terms
+more generous than the ones sold.
 
 ### Language discipline (important)
 
@@ -431,6 +541,13 @@ real regulatory exposure, so the wording is deliberate — keep it.
   equivalents for charts.
 - Dates are formatted UTC-pinned in `@/utils/format` to avoid hydration
   mismatches. Never call `new Date()` during render for displayed values.
+  **Where a timestamp is read forensically — the system log, the audit trail —
+  use `formatDateTimeUtc()`, which appends "UTC".** The pinning is correct and
+  must stay, but it silently shows a clock that is not the reader's: an operator
+  in India testing at 23:00 IST read 17:30 in the system log and reported the
+  log as wrong. Nothing was wrong except that the zone was not written down.
+  Product screens keep `formatDateTime` — a bare date is what a person wants
+  there and the suffix is noise.
 
 ### Component rules
 
@@ -487,16 +604,27 @@ Ordered roughly by dependency.
    and keep consumers unchanged. Money movements must be one transaction with
    the ledger row they produce — and, in the CRM, with their audit entry
    (§15.4).
-3. **KYC provider** — swap the mock step machine for the provider SDK; drive
-   `kycStatus` from their webhook.
+3. **KYC provider** — documents are now captured, uploaded to a private bucket
+   and reviewed by an operator (§16.1c). What remains is *automated* checking:
+   swap the manual review for the provider SDK and drive `kycStatus` from their
+   webhook. `liveness_check_passed` stays `false` until something can actually
+   set it (§23).
 4. **Deposit service** — per-user addresses, a real chain watcher feeding the
    `DepositFlowStage` states, removal of the demo simulation control.
 5. **Withdrawal / payout rails** — real INR payouts and status transitions.
 6. **Rates API** — replace `getUsdtInrRate()`.
-7. **Investment engine** — real accrual, maturity and reward scheduling. This
-   is also what replaces `earnings.service.ts`, the one read still served from
-   seed data (§16.5).
-8. **Referral payouts** — real commission calculation and crediting.
+7. **Investment engine** — the *reward amount*, and only that. Maturity and the
+   reward schedule now run: `/api/cron/settle-investments` returns principal at
+   term end and keeps `elapsed_days` / `next_reward_at` / `next_reward_amount`
+   current (§10a). What no data in this repository defines is what an
+   allocation **actually earns** — a plan sells an `estimated_return_range` and
+   `estimated_return_percent` is a point inside it, so paying
+   `projected_profit ÷ periods` would turn a projection into a guarantee. When
+   there is a source of truth for real performance, it calls
+   `recordInvestmentEarning()` from that job and nothing else changes.
+8. **Referral payouts** — the *calculation* is done (§10); what remains is
+   releasing `pending` commission into a wallet, which needs the settlement in
+   (7) to exist first.
 9. **Reporting** — the CRM dashboard's aggregates and chart series, still on
    seed data for the reason given in §16.5.
 10. **Localisation** — `settings/language` lists the intended locales.
@@ -831,6 +959,79 @@ times out. Set `DATABASE_FORCE_IPV4=true` in `.env.local`; the Supabase pooler
 publishes no AAAA record, so nothing is lost. It is off by default because the
 stall is a property of the machine, not of the application.
 
+### 16.1b `npm run db:secure` — RLS and the document bucket
+
+Two pieces of Supabase configuration that a Drizzle migration cannot express.
+**Run it after `db:migrate`, and after any migration that adds a table.**
+
+**Row level security was off on every table, and that was a live data leak.**
+Supabase publishes the `public` schema over PostgREST at `/rest/v1/...` and
+grants `anon` SELECT on it. Drizzle creates tables with RLS disabled, because
+RLS is not part of a table definition. Verified against the live project:
+`GET /rest/v1/users` with the **anon key — which is public by design and inlined
+into the browser bundle** — returned full names, emails, phone numbers, KYC
+status and wallet addresses. `wallet_balances`, `transactions`, `deposits`,
+`kyc_submissions` and `admin_agents` were equally open. No application code was
+involved; the API is a property of the database.
+
+The script enables RLS on every table with **no policies**, which closes
+PostgREST completely. The application is unaffected because it does not go
+through PostgREST — it connects as `postgres`, which has `rolbypassrls`
+(verified, not assumed). `ENABLE`, never `FORCE`: `FORCE` applies RLS to the
+table owner too and would lock the application out of its own data.
+
+> A new table is exposed until this runs. That is the one operational rule to
+> remember: **migrate, then secure.** There is a regression test
+> (`kyc-storage.integration.test.ts`) that reads every table as `anon` and as a
+> signed-in customer and requires both to come back empty.
+
+It also provisions the private `kyc-documents` bucket and its policies — see
+§16.1c. Neither half needs a service-role key: Supabase keeps buckets and
+storage policies in Postgres, so the credential that runs migrations can
+provision them, and §19.6's refusal of the service-role key stands.
+
+### 16.1c KYC document storage
+
+A **private** Supabase Storage bucket, `kyc-documents`, with
+`file_size_limit` 10 MB and an `allowed_mime_types` allow-list. Object keys are
+`{auth_user_id}/{kind}-{timestamp}-{random}.{ext}`; the leading folder is what
+every policy keys on. The bytes are never in Postgres —
+`kyc_documents.storage_path` holds the key, and `content_type` / `byte_size`
+hold what Storage recorded rather than what the browser claimed.
+
+**The browser uploads straight to Storage.** Not a shortcut: a Vercel
+serverless function has a ~4.5 MB request body limit and the flow accepts 10 MB,
+so routing a passport scan through a server action would work in development
+and fail in production. That makes the *storage service* the enforcement point,
+which is stronger than application validation rather than weaker — a client
+that lies about a file's type or size, or aims at another person's folder, is
+refused by Postgres and Storage before an object exists.
+
+Four policies, and the shape of each matters:
+
+| | |
+|---|---|
+| INSERT | only into `auth.uid()`'s own folder |
+| SELECT (owner) | only their own folder |
+| SELECT (operator) | the whole bucket, while `public.is_kyc_operator()` |
+| DELETE | own folder **and** `public.is_unsubmitted_kyc_object(name)` |
+
+There is deliberately **no UPDATE policy**, so an object is never overwritten
+and a resubmission writes a new key. DELETE stops at the submission boundary:
+an abandoned upload can be withdrawn, and a document already attached to a
+`kyc_documents` row cannot be deleted by the person it describes — it is
+evidence a reviewer may act on.
+
+Both helper functions are `SECURITY DEFINER` with a pinned `search_path`,
+because §16.1b turned RLS on for the tables they read; a policy body evaluating
+as `authenticated` would see nothing and deny every operator.
+
+Reviewers open a document through `signKycDocumentAction`, which checks
+`requirePermission("kyc", "view")`, looks the key up from the row id (the caller
+never names a path), and mints a **120-second signed URL** using the operator's
+own session. The storage policy then asks the same question again in Postgres.
+No service-role key anywhere.
+
 ### 16.1a Latency — the number that governs every design choice here
 
 Measured against the configured Supabase project (session pooler,
@@ -871,34 +1072,41 @@ trips. Everything below follows from that.
    Nine concurrent reads against a five-connection pool is two waves, and the
    second wave costs a full round trip for nothing but a free connection.
 
-   The pool is **8** and the warm-up **7** (`DATABASE_POOL_MAX`,
-   `DATABASE_WARM_CONNECTIONS`), and the two must move together. An earlier note
-   here rejected a bigger pool after measuring `max: 12` as *worse* cold; that
-   measurement was correct and its conclusion was not, because the warm-up was
-   left at four, so the extra eight connections were opened in front of a user.
-   Raised together (2026-08-25, production build, three alternating runs) both
-   directions improve: Home 1.10–1.49s → 0.75–0.83s warm, 4.6–5.0s → 3.0–3.7s
-   cold.
+   **The pool is 5 and the warm-up 3** (`DATABASE_POOL_MAX`,
+   `DATABASE_WARM_CONNECTIONS`), and the two must always move together. The
+   history is worth keeping, because both wrong answers were reached honestly:
+
+   - **8 / 7.** Genuinely fastest on one long-running server, and measured that
+     way (Home 1.10–1.49s → 0.75–0.83s warm). Wrong shape for a platform that
+     answers load by adding instances: one instance holds over half the
+     project's budget before serving a request, a second cannot warm fully, and
+     a third is refused outright. That refusal is `EMAXCONNSESSION`.
+   - **3 / 2.** The overcorrection. Safe for many instances and badly
+     contended for one. Measured 2026-09-01 against a production build with a
+     real session, eighteen concurrent authenticated requests, same build, same
+     machine, alternating runs:
+
+     | | wall | p50 |
+     |---|---|---|
+     | `max 3`, warm 2 | 14.0s, 21.9s | 8.3s, 16.5s |
+     | `max 5`, warm 3 | 8.2s, 8.4s, 8.8s | 5.3–5.5s |
+
+     Serially five is no worse and mostly better: Home 1,834 → 1,192ms median,
+     Plans 1,171 → 754ms. At three, individual requests reached 14.3s against
+     the 15s read deadline — one round trip from failing rather than queuing.
 
    **The ceiling is fifteen, it belongs to the project, and it is what
    `EMAXCONNSESSION` was.** Supavisor answers a sixteenth session-mode client
    with `max clients reached in session mode - max clients are limited to
    pool_size: 15`, shared by every instance, `npm run db:*`, the scanner and the
-   test suite.
+   test suite. Five per instance leaves room for two instances plus the scripts,
+   which is the shape this deployment has.
 
-   **The pool is therefore 3 and the warm-up 2, lowered from 8 and 7.** Eight
-   was measured on a single long-running server and is genuinely faster there —
-   the numbers above are real. It is the wrong shape for a platform that answers
-   load by adding instances: at eight-plus-seven-warm one instance holds over
-   half the budget before serving a request, a second cannot warm fully, and a
-   third is refused outright. Being refused is a failed render, not a slow one,
-   which is what the reported errors were. Three per instance lets four or five
-   coexist with headroom for the scripts.
-
-   `DATABASE_POOL_MAX` and `DATABASE_WARM_CONNECTIONS` raise it for a deployment
-   that really is one long-running server. The honest way to buy the speed back
-   everywhere is to raise the project's pool size in the Supabase dashboard
-   first; the alternative is the driver migration in §16.1.
+   **Do not raise it per instance to buy speed.** The honest ways to buy more
+   are, in order: raise the project's pool size in the Supabase dashboard, or
+   make the driver migration in §16.1. `DATABASE_POOL_MAX` and
+   `DATABASE_WARM_CONNECTIONS` exist for a deployment that really is one
+   long-running server, and nothing else.
 
 5. **A connection that is never opened costs nothing.** Cold five-query burst:
    2,008ms. Warm: 203ms. `warmConnectionPool()` opens `DATABASE_WARM_CONNECTIONS`
@@ -914,6 +1122,30 @@ trips. Everything below follows from that.
    primary section two extra round trips. A component in the returned tree
    cannot start until the page has finished; hoist its slices into the page's
    own wave and let the request-scoped memoisation serve it.
+
+   The console layout was a third variant: `getCurrentOperator()` awaited, then
+   `getAdminShell()` awaited, though the shell takes no argument from the
+   operator. Two waves for an ordering nothing needed. They now start together,
+   after the (free, local) principal check — see `admin/(console)/layout.tsx`
+   for why running the shell read alongside an unresolved operator is safe.
+
+7. **An abandoned navigation is not a cancelled one.** Measured: abort the
+   client's fetch after 60ms and the server still issues every query the render
+   asked for. Next does not stop rendering when the browser stops listening, and
+   nothing in this stack threads an abort signal into postgres.js. So *N* rapid
+   clicks are *N* complete renders competing for the same pool, and the only
+   lever available is making each render cheaper rather than stopping it. That
+   is what the admin work below did; do not go looking for a cancellation hook,
+   there isn't one.
+
+8. **Instrumentation was holding connections during the render it measured.**
+   The console layout had no `traceRender`, so every event it recorded found no
+   trace and took the immediate path in `recordPipelineEvent` — which coalesces
+   on a 100ms timer. Its two events land ~360ms apart, so that was **two
+   `INSERT`s per admin page load, issued while the page was still rendering**,
+   from the same five-connection pool. §22.1a says recording must never be
+   measurable; it was. Wrapping the layout in `traceRender` buffers them into one
+   insert behind `after()`.
 
 Do not "optimise" by adding indexes or trimming columns before checking the
 round-trip count. On this deployment the query plan is almost never the problem.
@@ -1057,7 +1289,7 @@ the seeded rows.
 `npm test` runs `node:test` through `tsx`, with `--conditions=react-server` so
 `server-only` modules resolve the way Next resolves them. Tests that need a
 database skip themselves when `DATABASE_URL` is unset, so the suite stays green
-on a fresh clone. **127 tests with a database configured.**
+on a fresh clone. **136 tests with a database configured.**
 
 **Do not assert exact row counts against the live database.** Four assertions
 did, and all four broke the first time a real person registered and submitted
@@ -1077,6 +1309,7 @@ appears twice, that there are *at least* `SEED_USER_COUNT` accounts.
 | `server/data-access.integration.test.ts` | yes | repositories and services |
 | `server/auth-and-kyc.integration.test.ts` | yes | auth boundary, operator gate, KYC lifecycle |
 | `server/writes.integration.test.ts` | yes | ledger, idempotency, overdrafts, audit |
+| `server/referrals.integration.test.ts` | yes | commission accrual, tiers, and that it credits nobody |
 | `server/pipeline.integration.test.ts` | partly | redaction and correlation with no database; recording with one |
 
 Two are worth knowing about:
@@ -1334,6 +1567,29 @@ So:
 `deposit_addresses` table, resolve `to_address` through it at detection, and
 `user_id` becomes derivable. Every other column stays as it is.
 
+**A tx-hash claim flow is the obvious shortcut and it is not safe on its own.**
+The idea — the user pastes their transaction hash, the server verifies it
+on-chain and credits them — reads like the answer and has a front-running
+attack at its centre: the chain is public, so anyone can watch the deposit
+address, see a stranger's transfer land, and submit that hash first. The server
+has no way to tell the two claimants apart, because on a shared address the
+transfer carries nothing that identifies the payer. Verifying the hash proves
+the *transfer* happened; it proves nothing about *who is asking*.
+
+Two things do make a claim safe, and both are decisions rather than code:
+
+- **Per-user addresses**, as above. Attribution stops being a claim at all.
+- **Binding the sender address to the account first.** A claim is accepted only
+  when the transfer's `from` matches an address the account proved it controls
+  (a signed message, or a small verification transfer). An attacker cannot
+  forge `from`, so the race disappears — at the cost of a whole address
+  ownership flow, and of refusing anybody who paid from an exchange, which is
+  most people.
+
+Until one of those exists, attribution stays an operator decision in
+`/admin/deposits`. That is slow and it is correct; crediting the wrong account
+is a loss, not a display bug.
+
 ### 18.5 The scanner
 
 Polling, not events: restartable, nothing to lose, and its failure mode is
@@ -1342,6 +1598,33 @@ losing or resetting it is harmless, because the unique index on
 `deposits(chain, tx_hash)` is what prevents double-crediting. A failed pass does
 not advance the cursor and is recorded, so "no deposits" and "no successful scan
 since Tuesday" look different.
+
+**Something has to run it, and for a long time nothing did.** The scanner was
+complete and correct; the only trigger was `npm run tron:scan`, a command a
+person types. On the development project the last successful pass was
+2026-08-23 and nothing ran for the following week — which is what "the
+application is not detecting my transfer" turned out to mean. The transfer was
+detected the day it arrived (`dep_mt2nnxzu1jdf0`, 1,000 USDT, `confirmed`,
+unassigned); the silence afterwards was the gap.
+
+`GET /api/cron/scan-deposits` is that trigger. Authorised by `CRON_SECRET` —
+the header Vercel Cron sends — and **refusing everybody when it is unset**,
+because the route spends TronGrid quota and database connections. `vercel.json`
+holds the schedule. A `setInterval` in the server process is the wrong shape
+here: serverless instances are frozen between requests, so the timer either
+never fires or fires once per instance, which with several instances is several
+concurrent scanners.
+
+> Vercel's Hobby plan allows one cron invocation per day and rejects a finer
+> schedule at deploy time. `*/5 * * * *` assumes Pro. Lower it, or drive the
+> same URL from any external scheduler — nothing about the route is
+> Vercel-specific.
+
+**A deposit older than the first-ever scan is invisible until you widen the
+window.** With no cursor, a pass looks back `TRON_LOOKBACK_MS` (default 24h).
+The cursor is only advanced when transfers were actually seen, so nothing is
+lost permanently — but a deployment whose first scan runs after a test transfer
+will report nothing until `TRON_LOOKBACK_MS` covers it.
 
 ### 18.6 Environment
 
@@ -1362,8 +1645,8 @@ the application is affected.
 ### 18.7 Shasta workflow
 
 ```bash
-npm run tron:inspect          # read the chain, change nothing
-npm run tron:inspect -- 72    # …looking back 72 hours
+npm run tron:inspect          # read the chain, last 24h
+npm run tron:inspect -- 336   # …looking back two weeks
 npm run tron:scan             # one pass, records unassigned deposits
 npm run tron:scan -- --watch  # poll continuously
 npm run tron:scan -- --dry    # read and report, write nothing
@@ -1380,8 +1663,17 @@ End-to-end:
 6. The wallet balance rises, a ledger entry cites the transaction hash, and the
    audit log records who assigned it.
 
-`tron:inspect` is read-only by construction, not by promise: it never imports
-the deposits service and never opens a transaction.
+**Check the lookback before concluding anything.** `tron:inspect` defaults to
+24 hours and passes it to TronGrid as `min_timestamp`, so an older transfer is
+simply not in the response and the output reads exactly like "nothing arrived".
+A real test transfer was chased on the strength of that: eleven days old,
+present on-chain, and already in the `deposits` table.
+
+`tron:inspect` records no deposit — it never imports the deposits service and
+never opens a transaction. It is not silent, though: every TronGrid call is
+instrumented, so it writes `pipeline_events` and therefore opens the runtime
+pool. It closes it explicitly on exit; before that it held session-mode
+connections out of the project's fifteen and never terminated.
 
 ---
 
@@ -1721,11 +2013,34 @@ is the detail.
   works. Nothing pays out; `payoutReference` is whatever the operator types
   (§17.4).
 - **Outbound blockchain.** No signing, no key custody, no sending (§18.1).
-- **A KYC provider.** Submissions carry masked document numbers and filename
-  metadata; no file is uploaded anywhere, because there is nowhere to put it.
+- **An automated KYC provider.** Documents themselves are now real: captured,
+  uploaded to a private bucket, and opened by a reviewer through a signed URL
+  (§16.1c). What is missing is a service that *checks* them.
+
+  What is real: the document step opens the OS file picker or the camera and
+  validates type and size; the selfie step opens the device camera through
+  `getUserMedia`, with an `<input capture>` fallback because `mediaDevices` does
+  not exist on an insecure origin — which is every phone testing a LAN address.
+  The person chooses their document type and types their document number, and
+  **only its last four characters leave the browser**; the server composes the
+  mask.
+
+  What is not: nothing *verifies* the document. A human compares the selfie with
+  the ID; no provider reads either.
+
+  `liveness_check_passed` is **not a value the client can send**. It used to be,
+  and the flow sent `true` whenever a button had been pressed — a claim an
+  operator reads as a check that ran and passed, about a check that did not
+  exist. `submitKyc` writes `false` and a `liveness_not_verified` risk flag, and
+  the CRM renders that as *"Not checked — compare by hand"* rather than as a
+  failure. **Do not reintroduce a path that lets a click set it.**
 - **Investment automation.** `recordInvestmentEarning()` exists with its
   `(investment_id, period_key)` idempotency key; nothing schedules it, so
   earnings report what has settled and there is no settling process yet (§16.5).
+  This is also what `platform_settings.referrals.payoutDelayDays` is waiting on:
+  the setting is stored and shown, and nothing reads it, because "N days after
+  the allocation settles" needs a settlement to count from. Commission release
+  is an operator action until then (§10).
 - **Per-user deposit addresses**, which is what would make attribution automatic
   (§18.4).
 - **Operator credential provisioning from the CRM** (§20.3).

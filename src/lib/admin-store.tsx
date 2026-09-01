@@ -153,9 +153,10 @@ export function useAdminStore(): AdminStoreValue {
   return useMemo(
     () => ({
       ...EMPTY,
-      // The shell's copies are the defaults; a page that reads a fresher one
-      // (the agents screen, the settings screen) overrides them below.
-      agents: shell.shell.agents,
+      // The shell carries only what the *frame* needs. Everything else — the
+      // operator directory included — is the page's own slice, so a screen that
+      // needs it reads a fresh copy rather than one frozen when the console was
+      // opened. See `getAdminShell`.
       settings: data.settings ?? shell.shell.settings,
       session: shell.session,
       ...stripUndefined(data),

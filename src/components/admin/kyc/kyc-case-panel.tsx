@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   CheckCircle2,
+  ExternalLink,
   FileText,
   MessageSquarePlus,
   RotateCcw,
@@ -24,13 +25,14 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { kycRejectionReasons } from "@/data/admin/kyc";
-import { canManage } from "@/lib/admin-permissions";
+import { canManage, canView } from "@/lib/admin-permissions";
 import { useAdminSession } from "@/lib/admin-store";
 import {
   addKycNoteAction,
   approveKycAction,
   rejectKycAction,
   requestKycResubmissionAction,
+  signKycDocumentAction,
 } from "@/app/admin/actions";
 import { cn } from "@/lib/utils";
 import type { KycDocumentType, KycSubmission } from "@/types/admin";
@@ -51,6 +53,20 @@ const DOCUMENT_TYPE_LABELS: Record<KycDocumentType, string> = {
   driving_licence: "Driving licence",
 };
 
+/**
+ * Readable names for the automated signals a case can carry.
+ *
+ * Raw enum-ish strings are fine in a debugging tool and wrong in a screen
+ * somebody approves an identity from. Unknown flags fall through unchanged, so
+ * a provider integration adding its own does not need this map edited first.
+ */
+const RISK_FLAG_LABELS: Record<string, string> = {
+  liveness_not_verified: "No automated liveness check",
+};
+
+/** The flag `submitKyc` sets when no provider was there to run a check. */
+const LIVENESS_NOT_VERIFIED = "liveness_not_verified";
+
 type PendingDecision = "approve" | "reject" | "resubmit" | "note";
 
 export function KycCasePanel({
@@ -66,6 +82,42 @@ export function KycCasePanel({
   const session = useAdminSession();
   const router = useRouter();
   const [working, setWorking] = useState(false);
+
+  /**
+   * "Nothing checked this" rather than "this failed".
+   *
+   * See the liveness row below for why the distinction is not cosmetic.
+   */
+  const livenessNotChecked =
+    !submission.livenessCheckPassed &&
+    submission.riskFlags.includes(LIVENESS_NOT_VERIFIED);
+
+  const [opening, setOpening] = useState<string | null>(null);
+  const canOpenDocuments = canView(session, "kyc");
+
+  /**
+   * Opens one document in a new tab.
+   *
+   * The link is minted per click and expires in two minutes, so it is never
+   * held in the page, never in the DOM, and never in the browser's history in a
+   * form that still works. `noopener` because the target is a storage origin
+   * that has no business reaching back into the console.
+   */
+  async function openDocument(documentId: string) {
+    setOpening(documentId);
+    try {
+      const result = await signKycDocumentAction({ documentId });
+      if (!result.ok || !result.url) {
+        toast.error(result.message);
+        return;
+      }
+      window.open(result.url, "_blank", "noopener,noreferrer");
+    } catch {
+      toast.error("The document could not be opened.");
+    } finally {
+      setOpening(null);
+    }
+  }
 
   /**
    * Runs an operator decision on the server and re-reads.
@@ -142,16 +194,35 @@ export function KycCasePanel({
             </span>
           </DetailRow>
           <DetailRow label="Liveness check">
+            {/*
+              Three states, not two.
+
+              "Not passed" in red says a check ran and the person failed it.
+              For every submission made through the current flow that is wrong:
+              no automated liveness check exists on this deployment, so nothing
+              ran. Colouring that as a failure would put a reviewer off
+              approving a perfectly good case — and the reviewer is the only
+              liveness check there is, so misleading them is the whole cost.
+
+              The `liveness_not_verified` flag is what separates the two, and
+              `submitKyc` is what sets it.
+            */}
             <span
               className={cn(
                 "inline-flex items-center gap-1.5",
                 submission.livenessCheckPassed
                   ? "text-positive"
-                  : "text-destructive",
+                  : livenessNotChecked
+                    ? "text-muted-foreground"
+                    : "text-destructive",
               )}
             >
               <ScanFace className="size-3.5" aria-hidden />
-              {submission.livenessCheckPassed ? "Passed" : "Not passed"}
+              {submission.livenessCheckPassed
+                ? "Passed"
+                : livenessNotChecked
+                  ? "Not checked — compare by hand"
+                  : "Not passed"}
             </span>
           </DetailRow>
           <DetailRow label="Residential address" wide>
@@ -191,7 +262,7 @@ export function KycCasePanel({
             </span>
             {submission.riskFlags.map((flag) => (
               <Badge key={flag} variant="warning">
-                {flag}
+                {RISK_FLAG_LABELS[flag] ?? flag}
               </Badge>
             ))}
           </div>
@@ -200,7 +271,7 @@ export function KycCasePanel({
 
       <DetailCard
         title="Documents"
-        description="Prototype build — document files are references only and cannot be opened."
+        description="Held in private storage. Opening one mints a link that expires in two minutes."
       >
         <ul className="grid gap-2 sm:grid-cols-2">
           {submission.documents.map((document) => (
@@ -211,7 +282,7 @@ export function KycCasePanel({
               <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
                 <FileText className="size-4" aria-hidden />
               </span>
-              <span className="min-w-0">
+              <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">
                   {document.label}
                 </span>
@@ -222,6 +293,27 @@ export function KycCasePanel({
                   {document.pages} {document.pages === 1 ? "page" : "pages"} ·{" "}
                   {formatDate(document.uploadedAt)}
                 </span>
+                {document.hasFile ? (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="mt-2"
+                    disabled={opening === document.id || !canOpenDocuments}
+                    onClick={() => openDocument(document.id)}
+                  >
+                    <ExternalLink className="size-3" aria-hidden />
+                    {opening === document.id ? "Opening…" : "Open"}
+                  </Button>
+                ) : (
+                  /*
+                   * A row from before storage existed. Saying so plainly beats a
+                   * button that fails, and beats hiding the row — the reviewer
+                   * needs to know a document was declared and cannot be seen.
+                   */
+                  <span className="mt-2 block text-xs text-muted-foreground">
+                    No stored file — predates document storage.
+                  </span>
+                )}
               </span>
             </li>
           ))}
@@ -330,11 +422,21 @@ export function KycCasePanel({
               aria-hidden
             />
             <p className="text-xs leading-relaxed text-muted-foreground">
-              This case has unresolved automated flags
-              {submission.livenessCheckPassed
-                ? ""
-                : ", and the liveness check did not pass"}
-              . Approving it overrides those checks.
+              {livenessNotChecked ? (
+                <>
+                  No automated liveness check ran on this case — none is
+                  connected — so approving it means you have compared the selfie
+                  with the document yourself.
+                </>
+              ) : (
+                <>
+                  This case has unresolved automated flags
+                  {submission.livenessCheckPassed
+                    ? ""
+                    : ", and the liveness check did not pass"}
+                  . Approving it overrides those checks.
+                </>
+              )}
             </p>
           </div>
         ) : null}

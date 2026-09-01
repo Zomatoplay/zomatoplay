@@ -34,18 +34,41 @@ export class KycError extends Error {
  * `rejected` → `pending_review`. `verified` is not reachable from here at any
  * input, which is the whole point — it used to be a button in the browser.
  */
+export interface KycSubmissionRequest {
+  userId: string;
+  legalName: string;
+  dateOfBirth: string;
+  nationality?: string;
+  address?: string;
+  documentType: (typeof t.kycDocumentTypeEnum.enumValues)[number];
+  /** Already masked by the caller — the full number never reaches this layer. */
+  documentNumberMasked: string;
+  documentFileName: string;
+  documentByteSize: number;
+  documentMimeType: string;
+  /** Object key in the private bucket, already verified against the session. */
+  documentPath: string;
+  /** The selfie the reviewer compares against the document. */
+  selfieFileName: string;
+  selfiePath: string;
+  selfieByteSize: number;
+  selfieMimeType: string;
+}
+
+/**
+ * The risk flag a real provider's absence produces.
+ *
+ * `riskFlags` is described in the schema as "automated signals a provider would
+ * return", and the CRM already renders them and refuses to recommend approval
+ * while any is present. "No automated check ran" is exactly such a signal, and
+ * putting it here means the case panel tells the reviewer why the liveness row
+ * reads *Not passed* — rather than leaving them to guess whether the person
+ * failed a check or no check exists.
+ */
+const LIVENESS_NOT_VERIFIED = "liveness_not_verified";
+
 export async function submitKyc(
-  request: {
-    userId: string;
-    legalName: string;
-    dateOfBirth: string;
-    nationality?: string;
-    address?: string;
-    documentType: (typeof t.kycDocumentTypeEnum.enumValues)[number];
-    documentNumberMasked: string;
-    documentFileName: string;
-    livenessCheckPassed: boolean;
-  },
+  request: KycSubmissionRequest,
   actor: Actor,
 ): Promise<{ submissionId: string }> {
   return mutate(actor, async ({ tx, now, audit }) => {
@@ -90,20 +113,55 @@ export async function submitKyc(
       // Only the masked form is stored — there is no document store and no
       // provider, and a prototype should not accumulate identity numbers.
       documentNumberMasked: request.documentNumberMasked.trim().slice(-32),
-      livenessCheckPassed: request.livenessCheckPassed,
-      riskFlags: [],
+      /*
+       * Always false, and not a parameter.
+       *
+       * This column means "an automated liveness check ran and passed". No
+       * provider is connected, so nothing can have. It used to be whatever the
+       * browser sent, which was `true` whenever a button had been pressed —
+       * a claim about somebody's identity, written into the table an operator
+       * approves from, that nothing had established.
+       */
+      livenessCheckPassed: false,
+      riskFlags: [LIVENESS_NOT_VERIFIED],
     });
 
-    // Metadata only. No file is uploaded anywhere; there is nowhere to put it.
-    await tx.insert(t.kycDocuments).values({
-      id: newId("kyd", now),
-      submissionId,
-      label: "Identity document",
-      type: request.documentType,
-      fileName: request.documentFileName.slice(0, 120),
-      uploadedAt: now,
-      pages: 1,
-    });
+    /*
+     * Two rows, because a reviewer compares two things: the document and the
+     * face. The seeded cases already carry a separate "Liveness capture" row
+     * for exactly that reason, and the CRM's case panel lists documents rather
+     * than assuming one.
+     *
+     * `storagePath` points at an object in the private bucket that
+     * `describeOwnUpload` has already confirmed exists and belongs to this
+     * account. The bytes are not here; see the note on the table.
+     */
+    await tx.insert(t.kycDocuments).values([
+      {
+        id: newId("kyd", now),
+        submissionId,
+        label: "Identity document",
+        type: request.documentType,
+        fileName: request.documentFileName.slice(0, 120),
+        storagePath: request.documentPath,
+        contentType: request.documentMimeType,
+        byteSize: request.documentByteSize,
+        uploadedAt: now,
+        pages: 1,
+      },
+      {
+        id: newId("kyd", new Date(now.getTime() + 1)),
+        submissionId,
+        label: "Selfie capture",
+        type: request.documentType,
+        fileName: request.selfieFileName.slice(0, 120),
+        storagePath: request.selfiePath,
+        contentType: request.selfieMimeType,
+        byteSize: request.selfieByteSize,
+        uploadedAt: now,
+        pages: 1,
+      },
+    ]);
 
     await tx
       .update(t.users)
@@ -113,7 +171,10 @@ export async function submitKyc(
     audit({
       action: "kyc_note_added",
       target: { type: "kyc", id: submissionId, label: request.userId },
-      details: "User submitted identity verification. Awaiting review.",
+      details:
+        "User submitted identity verification. Awaiting review. No automated " +
+        "liveness check ran — none is connected — so the selfie must be " +
+        "compared with the document by hand.",
     });
 
     return { submissionId };

@@ -13,6 +13,11 @@ import { REFERRAL_BASE_URL } from "@/constants/app";
 import { referralSteps } from "@/data/referrals";
 import { generateQrSvg } from "@/lib/qr";
 import { getUserSlices } from "@/server/services/account.service";
+import {
+  SectionBoundary,
+  deferred,
+} from "@/components/shared/section-boundary";
+import { ListSkeleton } from "@/components/shared/page-skeleton";
 import { getVipLevels } from "@/server/services/catalogue.service";
 import {
   getCommissionHistory,
@@ -27,16 +32,28 @@ export const metadata: Metadata = {
 };
 
 export default async function ReferralPage() {
-  const [{ profile }, summary, referrals, commissions, vipLevels] =
-    await Promise.all([
-      // `notifications` is for `TopBar` — see the note in the other sections:
-      // a component in the returned tree reads it a round trip too late.
-      getUserSlices(["profile", "notifications"] as const),
-      getReferralSummary(),
-      getReferrals(),
-      getCommissionHistory(),
-      getVipLevels(),
-    ]);
+  /*
+   * The activity lists are started here and awaited inside their own boundary.
+   *
+   * Started here so they ride the same wave as the rest (CLAUDE.md §16.1a item
+   * 6); awaited there so a failed commission ledger costs the reader the
+   * activity panel rather than the whole referral screen — including the link
+   * and QR code they most likely came for.
+   *
+   * The summary, profile and VIP levels stay on the critical path: the stat
+   * tiles and the level card are the primary reading here, and a referral page
+   * that silently drops its earnings figure is worse than one that errors.
+   */
+  const referrals = deferred(getReferrals());
+  const commissions = deferred(getCommissionHistory());
+
+  const [{ profile }, summary, vipLevels] = await Promise.all([
+    // `notifications` is for `TopBar` — see the note in the other sections:
+    // a component in the returned tree reads it a round trip too late.
+    getUserSlices(["profile", "notifications"] as const),
+    getReferralSummary(),
+    getVipLevels(),
+  ]);
 
   const link = `${REFERRAL_BASE_URL}?ref=${profile.referralCode}`;
   const qrSvg = await generateQrSvg(link);
@@ -118,9 +135,32 @@ export default async function ReferralPage() {
 
         <section className="space-y-3">
           <SectionHeader title="Referral activity" />
-          <ReferralActivity referrals={referrals} commissions={commissions} />
+          <SectionBoundary
+            title="Referral activity"
+            fallback={<ListSkeleton rows={4} />}
+          >
+            <ReferralActivitySection
+              referrals={referrals}
+              commissions={commissions}
+            />
+          </SectionBoundary>
         </section>
       </PageContainer>
     </>
   );
+}
+
+/**
+ * Awaits the activity reads inside the boundary above. Takes promises rather
+ * than data so they start in the page's own wave.
+ */
+async function ReferralActivitySection({
+  referrals,
+  commissions,
+}: {
+  referrals: ReturnType<typeof getReferrals>;
+  commissions: ReturnType<typeof getCommissionHistory>;
+}) {
+  const [list, ledger] = await Promise.all([referrals, commissions]);
+  return <ReferralActivity referrals={list} commissions={ledger} />;
 }

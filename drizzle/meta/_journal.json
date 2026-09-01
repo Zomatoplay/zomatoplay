@@ -50,6 +50,13 @@
       "when": 1787437050624,
       "tag": "0006_pipeline_navigation",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788297705714,
+      "tag": "0007_gifted_jean_grey",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,10 @@
 "use client";
 
+import { useState, useTransition } from "react";
 import Link from "next/link";
-import { Layers } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Layers, Undo2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { RiskIndicator } from "@/components/plans/risk-indicator";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -16,6 +19,7 @@ import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
 import type { Plan } from "@/types";
 import { formatDate, progressPercent } from "@/utils/format";
+import { endAllocationAction } from "@/app/(app)/plans/actions";
 
 /**
  * Detail view for a single investment. Reads from the store rather than the
@@ -31,6 +35,9 @@ export function InvestmentDetail({
 }) {
   const { investments } = usePrototypeStore();
   const investment = investments.find((item) => item.id === id);
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [confirming, setConfirming] = useState(false);
 
   if (!investment) {
     return (
@@ -128,6 +135,73 @@ export function InvestmentDetail({
 
       <RiskNote />
       <RateNote />
+
+      {/*
+        Returning an open-ended allocation.
+        
+        Shown only for a plan with no lock-in and only while the allocation is
+        running. A fixed-term plan's early exit carries a fee or a forfeiture
+        that nothing implements, so offering the button there would promise
+        something the server would refuse.
+      */}
+      {openEnded && investment.status === "active" ? (
+        <div className="space-y-2 rounded-2xl border border-border bg-card p-5">
+          <p className="text-sm font-medium text-foreground">
+            Return funds to your balance
+          </p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {formatUsdt(investment.amount)} moves back to your available balance
+            immediately. There is no lock-in on this plan and no exit fee.
+          </p>
+          {confirming ? (
+            <div className="flex gap-2 pt-1">
+              <Button
+                variant="brand"
+                size="lg"
+                className="flex-1"
+                disabled={pending}
+                onClick={() => {
+                  startTransition(async () => {
+                    const result = await endAllocationAction({
+                      investmentId: investment.id,
+                    });
+                    if (!result.ok) {
+                      toast.error(result.message);
+                      return;
+                    }
+                    toast.success(result.message);
+                    setConfirming(false);
+                    // The balance now lives in the database; re-read rather
+                    // than assume what it became.
+                    router.refresh();
+                  });
+                }}
+              >
+                {pending ? "Returning…" : "Yes, return the funds"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="lg"
+                disabled={pending}
+                onClick={() => setConfirming(false)}
+              >
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button
+              variant="outline"
+              size="lg"
+              block
+              className="mt-1"
+              onClick={() => setConfirming(true)}
+            >
+              <Undo2 className="size-4" aria-hidden />
+              Return {formatUsdt(investment.amount)}
+            </Button>
+          )}
+        </div>
+      ) : null}
 
       {plan ? (
         <Button asChild variant="outline" size="lg" block>

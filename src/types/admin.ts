@@ -168,10 +168,19 @@ export interface KycDocument {
   id: string;
   label: string;
   type: KycDocumentType;
-  /** Mock file reference — no real document store is connected. */
   fileName: string;
+  /**
+   * Whether an actual object exists in the private bucket for this row.
+   *
+   * The key itself is deliberately **not** carried to the browser. It is not a
+   * secret — the storage policies, not obscurity, are what stop somebody
+   * reading another account's folder — but there is no reason for it to be in a
+   * page, and an operator opens a document through a server action that mints a
+   * short-lived signed URL instead. Rows written before storage existed have
+   * `false` here, and the CRM says "no file" rather than offering a dead link.
+   */
+  hasFile: boolean;
   uploadedAt: string;
-  /** Placeholder for a real preview; the prototype renders a document tile. */
   pages: number;
 }
 

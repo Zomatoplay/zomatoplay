@@ -110,14 +110,37 @@ export async function POST(request: NextRequest) {
    * work once the response is out, which is what the comment above always
    * claimed and now is true of the server side too.
    */
+  /*
+   * The console's navigations do not carry a customer account, so do not look
+   * for one.
+   *
+   * Resolving the account is a `users` round trip, and a beacon rides **every**
+   * navigation — so this ran once per click, holding a pooled connection at the
+   * moment the person's next page was reading through the same pool. On an
+   * `/admin/*` route it can only ever return null: operators are resolved
+   * through `admin_agents.auth_user_id`, and an operator is usually not a
+   * `public.users` row at all (CLAUDE.md §20 — the two lookups are deliberately
+   * independent). Paying a round trip for a guaranteed null is the definition of
+   * instrumentation that costs more than it reports.
+   *
+   * Decided from the events' own `route`, which is already sanitised to a path
+   * shape below and is a label rather than an authority — the worst a forged
+   * value achieves is declining to stamp a user id on its own rows.
+   */
+  const consoleOnly = accepted.every((event) =>
+    (sanitiseRoute(event.route) ?? "").startsWith("/admin"),
+  );
+
   after(async () => {
     // The account, if there is one. From the session; the body has no say.
     let userId: string | null = null;
-    try {
-      const account = await getAuthenticatedAccount();
-      userId = account?.userId ?? null;
-    } catch {
-      // An unauthenticated visitor's navigation is still worth timing.
+    if (!consoleOnly) {
+      try {
+        const account = await getAuthenticatedAccount();
+        userId = account?.userId ?? null;
+      } catch {
+        // An unauthenticated visitor's navigation is still worth timing.
+      }
     }
 
     /*

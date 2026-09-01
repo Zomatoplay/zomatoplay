@@ -1,6 +1,6 @@
 import "server-only";
 
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
 import type { CommissionEntry, Referral, ReferralSummary, VipLevel } from "@/types";
@@ -137,6 +137,35 @@ export async function listAdminCommissionLedger(
   return rows.map(({ entry, beneficiary }) =>
     toAdminCommissionEntry(entry, beneficiary.fullName),
   );
+}
+
+/**
+ * Whether an invite code names a real account that may refer people.
+ *
+ * Returns only a boolean-ish shape — the owner's id and nothing else. A signup
+ * form must be able to tell somebody their code was mistyped, and it must not
+ * become a way to read who owns it: no name, no email, no display id crosses
+ * this boundary.
+ *
+ * `status` is checked as well as existence. A blocked or deactivated account
+ * should not be accruing a team while it is shut out of the product, and an
+ * attribution made to one is a commission relationship nobody can act on.
+ */
+export async function findReferrerByCode(
+  db: Database,
+  code: string,
+): Promise<{ userId: string } | null> {
+  const [row] = await db
+    .select({ userId: schema.users.id })
+    .from(schema.users)
+    .where(
+      and(
+        eq(schema.users.referralCode, code),
+        eq(schema.users.status, "active"),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
 }
 
 /** Ordered by the catalogue's own sequence, not by name. */

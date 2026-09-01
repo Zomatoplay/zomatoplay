@@ -8,6 +8,7 @@ import type { CommissionEntry, Referral, ReferralSummary } from "@/types";
 import { resolveUserId } from "../current-user";
 import {
   findReferralSummary,
+  findReferrerByCode,
   listCommissionsForUser,
   listReferralsForUser,
 } from "../repositories/referrals.repository";
@@ -69,4 +70,29 @@ export async function getCommissionHistory(
 ): Promise<CommissionEntry[]> {
   const id = await resolveUserId(userId);
   return read((db) => listCommissionsForUser(db, id));
+}
+
+/**
+ * Whether an invite code can actually be redeemed.
+ *
+ * Used by the signup form so a mistyped code is refused while the person is
+ * still looking at the field, rather than silently dropped at account creation
+ * — which is what happened before, and which produced an unattributed account
+ * and a referrer who never found out why.
+ *
+ * **This is a courtesy check, not the decision.** The attribution that counts is
+ * made inside the account-creation transaction by `resolveReferrer`, which
+ * re-resolves the code against a real row and applies the self-referral rule
+ * there. This one can be stale by the time signup completes — minutes later,
+ * after an email confirmation — and that is fine: it exists to give feedback,
+ * not to grant anything.
+ *
+ * No fallback and no `AccountUnavailableError`: a database outage here should
+ * not block a registration. The caller treats "unknown" as "let it through" and
+ * lets creation-time resolution be the judge.
+ */
+export async function isRedeemableReferralCode(code: string): Promise<boolean> {
+  if (!isDatabaseConfigured()) return false;
+  noStore();
+  return (await findReferrerByCode(getDb(), code)) !== null;
 }

@@ -41,6 +41,33 @@ export function formatDateTime(iso: string) {
   return dateTimeFormatter.format(new Date(iso));
 }
 
+/**
+ * `09 Aug 2026, 14:30 UTC` — the same instant, and it says which clock.
+ *
+ * WHY THE SUFFIX EXISTS
+ * ---------------------
+ * Every timestamp in this application is stored as `timestamptz`, serialised
+ * with `toISOString()` and rendered through the UTC-pinned formatter above.
+ * That pinning is deliberate and must not change: an `Intl` call without an
+ * explicit `timeZone` uses the *runtime's* zone, which is the server's during
+ * SSR and the viewer's after hydration, and the two disagreeing is a
+ * hydration mismatch on every screen that shows a date.
+ *
+ * The cost of pinning is that the reader is silently shown a clock that is not
+ * theirs. An operator in India testing at 23:00 read 17:30 in the system log
+ * and reasonably concluded the log was wrong; nothing was wrong except that
+ * "UTC" was not written anywhere. IST is UTC+5:30, and 23:00 − 5:30 = 17:30.
+ *
+ * So this is a labelling function, not a conversion: same instant, same
+ * formatter, one word of context. Use it on the operations screens where a
+ * timestamp is correlated against the real world — the system log and the audit
+ * trail. Ordinary product screens keep `formatDateTime`, where a bare date is
+ * what a person wants and the extra token is noise.
+ */
+export function formatDateTimeUtc(iso: string) {
+  return `${dateTimeFormatter.format(new Date(iso))} UTC`;
+}
+
 /** Truncate a long identifier: `TX9f2c…8a41`. */
 export function truncateMiddle(value: string, head = 6, tail = 4) {
   if (value.length <= head + tail + 1) return value;

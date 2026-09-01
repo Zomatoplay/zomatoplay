@@ -5,7 +5,10 @@ import { getAuthenticatedAccount } from "@/server/auth/account";
 import { trackPipeline } from "@/server/observability";
 import { traceAction } from "@/server/trace-action";
 import { revalidate } from "@/server/revalidate";
-import { createInvestment } from "@/server/services/investments-write.service";
+import {
+  createInvestment,
+  endOpenEndedInvestment,
+} from "@/server/services/investments-write.service";
 import type { Actor } from "@/server/write";
 
 /**
@@ -89,6 +92,86 @@ export async function createInvestmentAction(input: {
         ok: false,
         message:
           error instanceof Error ? error.message : "The allocation was not created.",
+        };
+      }
+    },
+  );
+}
+
+/**
+ * Returning an open-ended allocation to the available balance.
+ *
+ * Flexible Reserve is sold as "no lock-in — funds can be returned to your
+ * available balance at any time", and until now nothing did it: the settlement
+ * job deliberately will not touch an open-ended allocation, and there was no
+ * customer path either, so the money stayed locked for ever in the one product
+ * whose selling point is that it is not.
+ *
+ * The account comes from the session, so there is no `userId` to tamper with,
+ * and ownership is re-checked in the service against the row itself. The
+ * `investmentId` is the only thing the caller supplies and the only thing it
+ * could lie about — which the ownership check is there for.
+ */
+export interface EndAllocationResult {
+  ok: boolean;
+  message: string;
+}
+
+export async function endAllocationAction(input: {
+  investmentId: string;
+}): Promise<EndAllocationResult> {
+  const account = await getAuthenticatedAccount();
+  if (!account) return { ok: false, message: "Not signed in." };
+
+  const actor: Actor = {
+    kind: "user",
+    id: account.userId,
+    name: account.fullName || account.email,
+    role: "agent",
+  };
+
+  return traceAction(
+    { name: "investment.end", actorType: "user", pipeline: "investment" },
+    async () => {
+      try {
+        const { ended, amount } = await trackPipeline(
+          {
+            pipeline: "investment",
+            operation: "investment.end",
+            message: "User returned an open-ended allocation",
+            userId: account.userId,
+            actor,
+            subject: { type: "investment", id: input.investmentId },
+          },
+          () =>
+            endOpenEndedInvestment(
+              { investmentId: input.investmentId, userId: account.userId },
+              actor,
+            ),
+        );
+
+        revalidate(
+          "/settings/investments",
+          "/wallet",
+          "/wallet/transactions",
+          "/",
+          "/admin/investments",
+          "/admin",
+        );
+
+        return {
+          ok: true,
+          message: ended
+            ? `${amount} USDT returned to your available balance.`
+            : "That allocation had already ended.",
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          message:
+            error instanceof Error
+              ? error.message
+              : "The allocation could not be returned.",
         };
       }
     },

@@ -3,6 +3,10 @@
 import { revalidate } from "@/server/revalidate";
 
 import { getAuthenticatedAccount } from "@/server/auth/account";
+import {
+  describeOwnUpload,
+  KycStorageError,
+} from "@/server/storage/kyc-storage";
 import { currentCorrelationId, trackPipeline } from "@/server/observability";
 import { traceAction } from "@/server/trace-action";
 import { startKyc, submitKyc } from "@/server/services/kyc-write.service";
@@ -24,6 +28,23 @@ import type { Actor } from "@/server/write";
  *
  * The account comes from the session. There is no `userId` parameter, so there
  * is nothing to tamper with.
+ *
+ * NEITHER IS `livenessCheckPassed`
+ * --------------------------------
+ * It used to be a parameter, and the flow sent `true` because a button had been
+ * pressed. An operator reads that column in the CRM as "an automated check ran
+ * and passed", and no check had run. Nothing in this deployment performs
+ * liveness verification, so this action records `false` and adds a risk flag
+ * naming the reason — which is how the CRM already surfaces "a provider would
+ * have told you something here and did not".
+ *
+ * THE DOCUMENT NUMBER ARRIVES ALREADY REDUCED
+ * -------------------------------------------
+ * The client sends four characters, not a number to be masked here. The
+ * difference matters: a full identity number in a request body exists in a
+ * process, possibly in an error, and possibly in a log, whatever the database
+ * eventually stores. Four characters cannot leak a document number because
+ * they are not one.
  */
 export interface KycActionResult {
   ok: boolean;
@@ -33,16 +54,58 @@ export interface KycActionResult {
   correlationId?: string;
 }
 
-export async function submitKycAction(input: {
+export interface KycSubmissionInput {
   legalName: string;
   dateOfBirth: string;
   nationality?: string;
   address?: string;
   documentType: "passport" | "national_id" | "driving_licence";
-  documentNumberMasked: string;
+  /** The last four characters of the document number. Never the whole thing. */
+  documentNumberLast4: string;
   documentFileName: string;
-  livenessCheckPassed: boolean;
-}): Promise<KycActionResult> {
+  documentByteSize: number;
+  documentMimeType: string;
+  selfieFileName: string;
+  /**
+   * Object keys in the private `kyc-documents` bucket, written by the browser
+   * straight to Supabase Storage.
+   *
+   * Treated as claims, never as facts: `describeOwnUpload` checks each one
+   * against this session's own `auth.uid()` and reads the size and content type
+   * back from Storage. See `@/server/storage/kyc-storage`.
+   */
+  documentPath: string;
+  selfiePath: string;
+}
+
+/** The document types the schema's enum accepts. Anything else is refused. */
+const DOCUMENT_TYPES = new Set(["passport", "national_id", "driving_licence"]);
+
+/** 10 MB, the limit the flow shows the person. Re-checked because the client's check is a courtesy. */
+const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+
+/**
+ * A filename safe to store and to show an operator.
+ *
+ * Path separators and control characters are stripped rather than escaped: the
+ * value is display metadata, it names no file this system will ever open, and
+ * `../` in a column an operator's browser renders is a trap waiting for the day
+ * a document store *is* connected and something concatenates it into a path.
+ */
+function safeFileName(raw: string, fallback: string): string {
+  const cleaned = raw
+    // Control characters, stripped rather than escaped: see above.
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/[\\/]/g, "-")
+    .replace(/\.{2,}/g, ".")
+    .trim()
+    .slice(0, 120);
+  return cleaned.length > 0 ? cleaned : fallback;
+}
+
+export async function submitKycAction(
+  input: KycSubmissionInput,
+): Promise<KycActionResult> {
   const account = await getAuthenticatedAccount();
   if (!account) return { ok: false, message: "Not signed in." };
 
@@ -53,8 +116,60 @@ export async function submitKycAction(input: {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.dateOfBirth)) {
     return { ok: false, message: "Enter your date of birth." };
   }
-  if (!input.livenessCheckPassed) {
-    return { ok: false, message: "Complete the liveness step first." };
+  if (!DOCUMENT_TYPES.has(input.documentType)) {
+    return { ok: false, message: "Choose a document type." };
+  }
+
+  const last4 = input.documentNumberLast4.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  if (last4.length !== 4) {
+    return { ok: false, message: "Enter your document number." };
+  }
+
+  const documentFileName = safeFileName(input.documentFileName, "");
+  if (!documentFileName) {
+    return { ok: false, message: "Attach a photo of your document." };
+  }
+  if (!Number.isFinite(input.documentByteSize) || input.documentByteSize <= 0) {
+    return { ok: false, message: "Attach a photo of your document." };
+  }
+  if (input.documentByteSize > MAX_DOCUMENT_BYTES) {
+    return { ok: false, message: "That document is larger than 10 MB." };
+  }
+
+  const selfieFileName = safeFileName(input.selfieFileName, "");
+  if (!selfieFileName) {
+    return { ok: false, message: "Take a selfie before submitting." };
+  }
+
+  /*
+   * THE UPLOADS ARE VERIFIED BEFORE ANYTHING IS WRITTEN.
+   *
+   * Both objects must exist, belong to *this* account's folder, and be a type
+   * and size the bucket accepts. The client's `documentByteSize` and
+   * `documentMimeType` above are UX values from the file picker; these are the
+   * numbers Storage recorded, and they are what the row keeps.
+   *
+   * A failure here means no submission is written at all. That is the right
+   * outcome: a `pending_review` case pointing at a document nobody can open
+   * wastes a reviewer's time and leaves the person waiting for an answer to a
+   * question that was never asked.
+   */
+  const account_ = account;
+  let documentObject;
+  let selfieObject;
+  try {
+    [documentObject, selfieObject] = await Promise.all([
+      describeOwnUpload(account_.authUserId, input.documentPath),
+      describeOwnUpload(account_.authUserId, input.selfiePath),
+    ]);
+  } catch (error) {
+    return {
+      ok: false,
+      message:
+        error instanceof KycStorageError
+          ? error.message
+          : "Your documents could not be verified. Try uploading them again.",
+    };
   }
 
   const actor: Actor = {
@@ -79,6 +194,8 @@ export async function submitKycAction(input: {
           message: "User submitted identity verification",
           userId: account.userId,
           actor,
+          // Named scalars only. Never the filename, never the number: this
+          // metadata is free-form jsonb an operator browses (CLAUDE.md §22.2).
           metadata: { documentType: input.documentType },
         },
         () =>
@@ -90,9 +207,18 @@ export async function submitKycAction(input: {
               nationality: input.nationality,
               address: input.address,
               documentType: input.documentType,
-              documentNumberMasked: input.documentNumberMasked,
-              documentFileName: input.documentFileName,
-              livenessCheckPassed: input.livenessCheckPassed,
+              // Composed here, from four characters. The full number was never
+              // sent and does not exist in this process.
+              documentNumberMasked: `•••• •••• ${last4}`,
+              documentFileName,
+              // From Storage, not from the browser.
+              documentByteSize: documentObject.byteSize,
+              documentMimeType: documentObject.contentType,
+              documentPath: documentObject.path,
+              selfieFileName,
+              selfiePath: selfieObject.path,
+              selfieByteSize: selfieObject.byteSize,
+              selfieMimeType: selfieObject.contentType,
             },
             actor,
           ),

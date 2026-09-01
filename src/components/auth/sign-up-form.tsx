@@ -23,6 +23,7 @@ import { siteUrl } from "@/lib/site-url";
 import { cn } from "@/lib/utils";
 
 import { completeSignIn } from "@/app/(auth)/login/actions";
+import { applyReferralCode } from "@/app/(auth)/signup/actions";
 
 /**
  * Registration.
@@ -49,15 +50,24 @@ import { completeSignIn } from "@/app/(auth)/login/actions";
 export function SignUpForm({
   configured,
   next,
+  /**
+   * The code from the invite link, when they arrived by one.
+   *
+   * Prefilled rather than hidden so the person can see which invite they are
+   * signing up under — and correct it if they meant to use a different one.
+   */
+  referralCode = "",
 }: {
   configured: boolean;
   next: string;
+  referralCode?: string;
 }) {
   const router = useRouter();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
+  const [inviteCode, setInviteCode] = useState(referralCode);
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
 
@@ -78,6 +88,34 @@ export function SignUpForm({
     if (!canSubmit) return;
     setBusy(true);
     try {
+      /*
+       * The invite code is stored *before* the credential is created.
+       *
+       * Attribution is resolved once, at account creation, from a cookie — and
+       * with email confirmation on, account creation happens in a later request
+       * after the person clicks the link in their inbox. Writing the cookie
+       * first is what makes the code survive that gap.
+       *
+       * A rejected code does not stop the signup. It is optional, and refusing
+       * to create somebody's account because they mistyped an invite would be a
+       * strange thing to do to them.
+       */
+      /*
+       * Called unconditionally, including when the field is empty.
+       *
+       * Guarding on a non-empty field looks like a saving and is a bug: the
+       * middleware has already stored any `?ref=` from the URL, so somebody who
+       * follows an invite link and then *clears* the box would still be
+       * attributed to it. The action deletes the cookie for an empty code,
+       * which is what makes manual entry actually take precedence.
+       */
+      const applied = await applyReferralCode({ code: inviteCode });
+      if (!applied.ok) {
+        toast.error(applied.message);
+        setBusy(false);
+        return;
+      }
+
       const supabase = getSupabaseBrowserClient();
       const { data, error } = await supabase.auth.signUp({
         email: email.trim().toLowerCase(),
@@ -214,6 +252,29 @@ export function SignUpForm({
             aria-invalid={confirmation.length > 0 && confirmation !== password}
             required
           />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="signup-invite">
+            Invite code{" "}
+            <span className="font-normal text-muted-foreground">(optional)</span>
+          </Label>
+          <Input
+            id="signup-invite"
+            autoComplete="off"
+            spellCheck={false}
+            inputMode="text"
+            placeholder="e.g. 5LP9V4UP"
+            value={inviteCode}
+            // Uppercased as they type: the codes are generated uppercase and
+            // matched uppercase, so lowercasing one would silently fail to find
+            // a referrer that exists.
+            onChange={(event) => setInviteCode(event.target.value.toUpperCase())}
+            aria-describedby="signup-invite-help"
+          />
+          <p id="signup-invite-help" className="text-xs leading-relaxed text-muted-foreground">
+            If someone invited you, enter their code so they get credit.
+          </p>
         </div>
 
         <Button

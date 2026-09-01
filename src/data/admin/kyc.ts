@@ -33,6 +33,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Passport — photo page",
         type: "passport",
         fileName: "passport_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-09T06:22:00.000Z",
         pages: 1,
       },
@@ -41,6 +43,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Liveness capture",
         type: "passport",
         fileName: "liveness_frame.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-09T06:24:00.000Z",
         pages: 1,
       },
@@ -73,6 +77,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "National ID — front",
         type: "national_id",
         fileName: "id_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-08T15:06:00.000Z",
         pages: 1,
       },
@@ -81,6 +87,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "National ID — back",
         type: "national_id",
         fileName: "id_back.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-08T15:07:00.000Z",
         pages: 1,
       },
@@ -89,6 +97,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Liveness capture",
         type: "national_id",
         fileName: "liveness_frame.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-08T15:10:00.000Z",
         pages: 1,
       },
@@ -128,6 +138,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Driving licence — front",
         type: "driving_licence",
         fileName: "licence_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-07T11:45:00.000Z",
         pages: 1,
       },
@@ -136,6 +148,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Liveness capture",
         type: "driving_licence",
         fileName: "liveness_frame.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-07T11:48:00.000Z",
         pages: 1,
       },
@@ -168,6 +182,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Passport — photo page",
         type: "passport",
         fileName: "passport_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-06T09:28:00.000Z",
         pages: 1,
       },
@@ -176,6 +192,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Liveness capture",
         type: "passport",
         fileName: "liveness_frame.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-06T09:32:00.000Z",
         pages: 1,
       },
@@ -208,6 +226,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "National ID — front",
         type: "national_id",
         fileName: "id_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-07T20:01:00.000Z",
         pages: 1,
       },
@@ -247,6 +267,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "National ID — front",
         type: "national_id",
         fileName: "id_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-05-30T13:17:00.000Z",
         pages: 1,
       },
@@ -255,6 +277,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "National ID — back",
         type: "national_id",
         fileName: "id_back.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-05-30T13:18:00.000Z",
         pages: 1,
       },
@@ -295,6 +319,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Passport — photo page",
         type: "passport",
         fileName: "passport_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-02-14T10:41:00.000Z",
         pages: 1,
       },
@@ -334,6 +360,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Passport — photo page",
         type: "passport",
         fileName: "passport_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-07-29T08:09:00.000Z",
         pages: 1,
       },
@@ -342,6 +370,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Liveness capture",
         type: "passport",
         fileName: "liveness_frame.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-07-29T08:12:00.000Z",
         pages: 1,
       },
@@ -374,6 +404,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "National ID — front",
         type: "national_id",
         fileName: "id_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-08T12:36:00.000Z",
         pages: 1,
       },
@@ -382,6 +414,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "National ID — back",
         type: "national_id",
         fileName: "id_back.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-08T12:37:00.000Z",
         pages: 1,
       },
@@ -390,6 +424,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Liveness capture",
         type: "national_id",
         fileName: "liveness_frame.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-08-08T12:40:00.000Z",
         pages: 1,
       },
@@ -422,6 +458,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Driving licence — front",
         type: "driving_licence",
         fileName: "licence_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-07-01T08:58:00.000Z",
         pages: 1,
       },
@@ -430,6 +468,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Liveness capture",
         type: "driving_licence",
         fileName: "liveness_frame.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-07-01T09:02:00.000Z",
         pages: 1,
       },
@@ -462,6 +502,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Passport — photo page",
         type: "passport",
         fileName: "passport_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-05-30T11:12:00.000Z",
         pages: 1,
       },
@@ -470,6 +512,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Proof of address",
         type: "passport",
         fileName: "utility_bill.pdf",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-05-30T11:14:00.000Z",
         pages: 2,
       },
@@ -509,6 +553,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Passport — photo page",
         type: "passport",
         fileName: "passport_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-01-26T14:46:00.000Z",
         pages: 1,
       },
@@ -517,6 +563,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Proof of address",
         type: "passport",
         fileName: "bank_statement.pdf",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-01-26T14:49:00.000Z",
         pages: 3,
       },
@@ -549,6 +597,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "National ID — front",
         type: "national_id",
         fileName: "id_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-03-10T07:29:00.000Z",
         pages: 1,
       },
@@ -557,6 +607,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "National ID — back",
         type: "national_id",
         fileName: "id_back.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-03-10T07:30:00.000Z",
         pages: 1,
       },
@@ -589,6 +641,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Driving licence — front",
         type: "driving_licence",
         fileName: "licence_front.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-03-28T16:17:00.000Z",
         pages: 1,
       },
@@ -597,6 +651,8 @@ export const kycSubmissions: KycSubmission[] = [
         label: "Liveness capture",
         type: "driving_licence",
         fileName: "liveness_frame.jpg",
+        // Fixture rows predate storage — there is no object to open.
+        hasFile: false,
         uploadedAt: "2026-03-28T16:20:00.000Z",
         pages: 1,
       },

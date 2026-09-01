@@ -4,15 +4,27 @@ loadEnv({ path: ".env.local", quiet: true });
 loadEnv({ path: ".env", quiet: true });
 
 /**
- * Reads Shasta and reports what the scanner would make of it. Changes nothing.
+ * Reads Shasta and reports what the scanner would make of it.
  *
- *   npm run tron:inspect
+ *   npm run tron:inspect          the last 24 hours
+ *   npm run tron:inspect -- 336   …looking back two weeks
  *
- * Read-only by construction, not by promise: it never imports the deposits
- * service and never opens a database transaction. That matters because the
- * question it answers — "why has my test transfer not shown up?" — is one you
- * want to ask repeatedly against a live configuration without wondering whether
- * asking it changed anything.
+ * THE LOOKBACK IS THE FIRST THING TO CHECK
+ * ----------------------------------------
+ * The window defaults to 24 hours and is passed to TronGrid as `min_timestamp`,
+ * so a transfer older than it is not reported and the output reads exactly like
+ * "nothing arrived". A real test transfer was chased for a while on the
+ * strength of that: it was eleven days old, present on-chain, and already
+ * recorded in the database. Widen the window before concluding anything.
+ *
+ * IT RECORDS NO DEPOSIT — BUT IT IS NOT SILENT
+ * --------------------------------------------
+ * It never imports the deposits service and never opens a transaction, so no
+ * deposit, ledger entry or balance can change. It does write `pipeline_events`
+ * rows, because every TronGrid call is instrumented; that opens the runtime
+ * connection pool, which is why the script now closes it explicitly. Without
+ * that it held session-mode connections — a slice of a project-wide budget of
+ * fifteen — and never exited.
  */
 async function main() {
   const { describeTronConfig, getTronConfig, isTronConfigured } = await import(
@@ -110,7 +122,25 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error("Inspect failed:", error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+main()
+  .catch((error) => {
+    console.error("Inspect failed:", error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    /*
+     * Close the pool the instrumentation opened.
+     *
+     * `idle_timeout` is 0 — connections are never closed for being idle, which
+     * is what keeps navigation fast in the server and what kept this script
+     * alive forever. A CLI must hand its connections back: they come out of the
+     * same project-wide allowance of fifteen as the application, the scanner
+     * and the test suite.
+     */
+    const { flushPipelineEvents } = await import("../../server/observability");
+    const { closeDb } = await import("../client");
+    // Drain first: the flush itself needs the pool, and it runs on an unref'd
+    // timer that would otherwise fire after the close and reopen it.
+    await flushPipelineEvents().catch(() => {});
+    await closeDb().catch(() => {});
+  });

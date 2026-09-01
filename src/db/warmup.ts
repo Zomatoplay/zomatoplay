@@ -39,24 +39,25 @@ import type { Database } from "./client";
 /**
  * How many connections to open ahead of time.
  *
- * Two, against a default pool of three. Deliberately not the whole pool, so the
- * warm-up can never be the thing that exhausts it.
+ * Three, against a default pool of five. Deliberately not the whole pool, so
+ * the warm-up can never be the thing that exhausts it, and so a second
+ * instance starting can still warm fully inside the project's fifteen.
  *
- * IT WAS SEVEN, AND THE PAIR CAME DOWN TOGETHER
- * ---------------------------------------------
- * Seven-of-eight is faster on a single long-running server and was measured
- * that way. It is also how one instance came to hold over half the project's
- * fifteen session-mode connections before serving a request, which is what
- * produced `EMAXCONNSESSION` once a second instance started. `./client`
- * carries the full reasoning; the rule to keep is that this number and
- * `DATABASE_POOL_MAX` move together.
+ * IT MOVES WITH `DATABASE_POOL_MAX`, ALWAYS
+ * -----------------------------------------
+ * It was seven-of-eight, which is faster on a single long-running server and
+ * was measured that way — and is also how one instance came to hold over half
+ * the project's session-mode budget before serving a request, which is what
+ * produced `EMAXCONNSESSION` once a second instance started. It then came down
+ * to two-of-three with the pool, and back up to three-of-five when three was
+ * measured as too tight under concurrency. `./client` carries those numbers.
  *
  * A pool raised without this raised too is strictly worse than raising
  * neither: the extra connections are then opened by the first request that
  * needs them, in front of a person. That is why an earlier pass measured a
  * bigger pool as a regression — the warm-up had been left behind.
  */
-const WARM_CONNECTIONS = Number(process.env.DATABASE_WARM_CONNECTIONS ?? 2);
+const WARM_CONNECTIONS = Number(process.env.DATABASE_WARM_CONNECTIONS ?? 3);
 
 /** Off by default nowhere — set `DATABASE_WARMUP=false` to skip it entirely. */
 function isEnabled(): boolean {

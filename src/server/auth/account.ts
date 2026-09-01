@@ -260,6 +260,41 @@ export async function ensureAccountForCurrentPrincipal(): Promise<AuthenticatedA
           target: t.referralAccounts.userId,
           set: { directReferrals: sql`${t.referralAccounts.directReferrals} + 1` },
         });
+
+      /*
+       * The second tier, counted at the moment it comes into existence.
+       *
+       * `total_referrals` on the referral screen is direct + indirect, and
+       * `indirect_referrals` had no writer at all — so a VIP 2 referrer whose
+       * own referral brought somebody in saw a total that silently understated
+       * their team. Counted here rather than when that person invests, because
+       * the relationship exists from signup; what invests later is the volume,
+       * not the headcount.
+       *
+       * One level only. The VIP table defines two commission tiers and there is
+       * no third, so there is no chain to walk and no cycle to guard against.
+       */
+      const [grandparent] = await tx
+        .select({ referrerUserId: t.referrals.referrerUserId })
+        .from(t.referrals)
+        .where(eq(t.referrals.referredUserId, referrer.id))
+        .limit(1);
+
+      if (grandparent) {
+        await tx
+          .insert(t.referralAccounts)
+          .values({
+            userId: grandparent.referrerUserId,
+            indirectReferrals: 1,
+            joinedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: t.referralAccounts.userId,
+            set: {
+              indirectReferrals: sql`${t.referralAccounts.indirectReferrals} + 1`,
+            },
+          });
+      }
     }
 
     audit({

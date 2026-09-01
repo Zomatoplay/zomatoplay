@@ -15,7 +15,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { auditActionLabels } from "@/data/admin/audit-logs";
 import { cn } from "@/lib/utils";
 import type { AuditLogEntry } from "@/types/admin";
-import { formatDateTime } from "@/utils/format";
+import { formatDateTimeUtc } from "@/utils/format";
 
 /**
  * Renders the administrative audit trail.
@@ -130,7 +130,7 @@ export function AuditLogTable({
       hideBelow: "lg",
       cell: (entry) => (
         <time dateTime={entry.createdAt} className="text-xs text-muted-foreground">
-          {formatDateTime(entry.createdAt)}
+          {formatDateTimeUtc(entry.createdAt)}
         </time>
       ),
     },
@@ -176,7 +176,7 @@ export function AuditLogTable({
           </DataCardRow>
           <DataCardRow label="When">
             <time dateTime={entry.createdAt} className="tabular">
-              {formatDateTime(entry.createdAt)}
+              {formatDateTimeUtc(entry.createdAt)}
             </time>
           </DataCardRow>
           <p className="border-t border-border pt-2.5 text-xs leading-relaxed text-muted-foreground">

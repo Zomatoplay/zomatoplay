@@ -527,6 +527,8 @@ export function toKycSubmission(
       label: document.label,
       type: document.type,
       fileName: document.fileName,
+      // Presence only; the key stays server-side. See `KycDocument`.
+      hasFile: document.storagePath !== null,
       uploadedAt: iso(document.uploadedAt),
       pages: document.pages,
     })),

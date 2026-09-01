@@ -36,6 +36,8 @@ import {
   markWithdrawalPaid,
   rejectWithdrawal,
 } from "@/server/services/withdrawals-write.service";
+import { releaseCommission } from "@/server/services/referrals-write.service";
+import { signKycDocument, KycStorageError } from "@/server/storage/kyc-storage";
 import { mutate, newId, withReason } from "@/server/write";
 import type {
   AdminPermissionSet,
@@ -192,6 +194,62 @@ export async function requestKycResubmissionAction(input: {
     return { ok: true, message: "Resubmission requested." };
   } catch (error) {
     return failed(error, "The request was not recorded.");
+  }
+}
+
+/**
+ * A short-lived link to one identity document, for a reviewer.
+ *
+ * TWO INDEPENDENT GATES, AND BOTH ARE REAL
+ * ----------------------------------------
+ * `requirePermission("kyc")` resolves the operator from their Supabase session
+ * and asserts the grant stored in the database — the same gate every other
+ * decision here passes. Then the storage policy asks the same question again in
+ * Postgres, through `public.is_kyc_operator()`, because the signed URL is
+ * minted with the operator's *own* session rather than a service-role key. An
+ * operator who lost their grant between the two checks is refused by the
+ * second.
+ *
+ * The document id is looked up rather than trusted: the caller sends a row id,
+ * and the object key comes from that row. A caller cannot name an arbitrary
+ * storage path.
+ *
+ * The URL expires in two minutes. Long enough to open a scan, short enough that
+ * a link pasted into a chat is dead by the time anyone reads it.
+ */
+export async function signKycDocumentAction(input: {
+  documentId: string;
+}): Promise<AdminActionResult & { url?: string }> {
+  try {
+    await requirePermission("kyc", "view");
+
+    const [document] = await getDb()
+      .select({ path: t.kycDocuments.storagePath })
+      .from(t.kycDocuments)
+      .where(eq(t.kycDocuments.id, input.documentId))
+      .limit(1);
+
+    if (!document) {
+      return { ok: false, message: "That document no longer exists." };
+    }
+    if (!document.path) {
+      // A row from before storage existed. Saying so is better than a link that
+      // 404s and leaves a reviewer wondering whether the file was deleted.
+      return {
+        ok: false,
+        message: "This submission predates document storage — there is no file to open.",
+      };
+    }
+
+    const url = await signKycDocument(document.path, 120);
+    return { ok: true, message: "Opening the document.", url };
+  } catch (error) {
+    return failed(
+      error,
+      error instanceof KycStorageError
+        ? error.message
+        : "The document could not be opened.",
+    );
   }
 }
 
@@ -1142,7 +1200,22 @@ export async function sendNotificationAction(input: {
       return matches.length;
     });
 
-    revalidate("/admin/notifications", "/admin", "/settings/notifications");
+    /*
+     * `/` and `/settings` as well as the notifications screen.
+     *
+     * A campaign lands in the recipient's notification list, and that list is
+     * read by `TopBar` — the unread badge on *every* user page — and by Home.
+     * Revalidating only `/settings/notifications` meant an operator sent a
+     * notification, the row existed, and the person's bell stayed silent until
+     * they happened to open the one screen that had been invalidated.
+     */
+    revalidate(
+      "/admin/notifications",
+      "/admin",
+      "/settings/notifications",
+      "/settings",
+      "/",
+    );
     return {
       ok: true,
       // In-app only. There is no email or push delivery, and saying "sent" for
@@ -1206,4 +1279,70 @@ export async function updateSettingsAction(input: {
   } catch (error) {
     return failed(error, "The settings were not saved.");
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Referrals                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Pays a pending referral commission into the beneficiary's wallet.
+ *
+ * `/admin/referrals` had no actions at all: it listed referral accounts and a
+ * commission ledger and offered no way to do anything about either. Commission
+ * therefore accrued `pending` and stayed there for ever, which meant the
+ * referral programme the product describes to users — "you earn commission,
+ * credited to your available balance" — had no path to its own last step.
+ *
+ * This is the same shape as every other movement of money in this console: a
+ * permission check, one transaction, a ledger row, an audit entry. It moves
+ * real money, so it is gated on `manage` over `referrals`.
+ */
+export async function releaseCommissionAction(input: {
+  commissionEntryId: string;
+  note?: string;
+}): Promise<AdminActionResult> {
+  return traceAction(
+    // `admin` rather than a new `referral` pipeline value: `pipeline_enum` is a
+    // Postgres enum, and adding a label to it is a migration. A log category is
+    // not worth one, and this genuinely is an operator action in the console.
+    { name: "admin.referral.release", actorType: "admin", pipeline: "admin" },
+    async () => {
+      try {
+        const operator = await requirePermission("referrals");
+        const { amount, beneficiaryUserId } = await trackPipeline(
+          {
+            pipeline: "admin",
+            operation: "referral.commission.release",
+            message: "Operator released a pending referral commission",
+            actor: operator.actor,
+            subject: { type: "commission", id: input.commissionEntryId },
+          },
+          () =>
+            releaseCommission(
+              {
+                commissionEntryId: input.commissionEntryId,
+                note: input.note,
+              },
+              operator.actor,
+            ),
+        );
+
+        // The beneficiary's own screens are the other half of this write: their
+        // balance, their ledger and their referral standing all changed.
+        revalidate(
+          "/admin/referrals",
+          "/admin",
+          "/referral",
+          "/wallet",
+          "/wallet/transactions",
+          "/",
+        );
+        void beneficiaryUserId;
+        return { ok: true, message: `Released ${amount} USDT.` };
+      } catch (error) {
+        return failed(error, "The commission was not released.");
+      }
+    },
+  );
 }

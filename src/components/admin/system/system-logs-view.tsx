@@ -37,7 +37,7 @@ import type {
   PipelineLayer,
   PipelineStatus,
 } from "@/types/admin";
-import { formatDateTime } from "@/utils/format";
+import { formatDateTimeUtc } from "@/utils/format";
 
 /**
  * Integration and pipeline observability.
@@ -215,7 +215,7 @@ function SystemLogsBrowser() {
       cell: (event) => (
         <div className="flex min-w-0 flex-col">
           <span className="tabular truncate font-medium text-foreground">
-            {formatDateTime(event.occurredAt)}
+            {formatDateTimeUtc(event.occurredAt)}
           </span>
           <button
             type="button"
@@ -436,7 +436,7 @@ function SystemLogsBrowser() {
                       {event.operation}
                     </p>
                     <p className="tabular mt-0.5 text-xs text-muted-foreground">
-                      {formatDateTime(event.occurredAt)}
+                      {formatDateTimeUtc(event.occurredAt)}
                     </p>
                   </div>
                   <StatusPill status={event.status} />

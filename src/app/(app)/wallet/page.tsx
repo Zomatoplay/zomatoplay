@@ -4,6 +4,11 @@ import { UserDataProvider } from "@/lib/prototype-store";
 import { getUserSlices } from "@/server/services/account.service";
 
 import { PageContainer } from "@/components/navigation/app-shell";
+import {
+  SectionBoundary,
+  deferred,
+} from "@/components/shared/section-boundary";
+import { CardSkeleton } from "@/components/shared/page-skeleton";
 import { TopBar } from "@/components/navigation/top-bar";
 import { SectionHeader } from "@/components/shared/section-header";
 import { EarningsBreakdown } from "@/components/wallet/earnings-breakdown";
@@ -31,16 +36,32 @@ export default async function WalletPage() {
    * everything else; the reads are request-memoised, so `TopBar` awaiting them
    * a moment later costs nothing.
    */
-  const [earnings, monthlyHistory, slices] = await Promise.all([
-    getEarningsSummary(),
-    getMonthlyEarningsHistory(),
-    getUserSlices([
-      "balance",
-      "transactions",
-      "profile",
-      "notifications",
-    ] as const),
-  ]);
+  /*
+   * The earnings rollup is started here and awaited inside its own boundary.
+   *
+   * Started here so it rides the same wave as everything else — moving the call
+   * into the section component would delay it until React rendered that
+   * component, costing an extra round trip (CLAUDE.md §16.1a item 6).
+   *
+   * Awaited there so it can fail alone. It used to sit in this `Promise.all`,
+   * which meant a rejected earnings read discarded the balance and the
+   * transaction list too and rendered the route's error page. A wallet whose
+   * earnings panel is unavailable is still a wallet; a wallet replaced by
+   * "Something went wrong" is not.
+   *
+   * The balance, transactions and profile stay on the critical path
+   * deliberately: they are the reading a person came for, and a wallet that
+   * quietly omits its balance misinforms rather than degrades.
+   */
+  const earnings = deferred(getEarningsSummary());
+  const monthlyHistory = deferred(getMonthlyEarningsHistory());
+
+  const slices = await getUserSlices([
+    "balance",
+    "transactions",
+    "profile",
+    "notifications",
+  ] as const);
 
 
   return (
@@ -53,7 +74,12 @@ export default async function WalletPage() {
 
           <section className="space-y-3">
             <SectionHeader title="Earnings" />
-            <EarningsBreakdown earnings={earnings} monthlyHistory={monthlyHistory} />
+            <SectionBoundary title="Earnings" fallback={<CardSkeleton lines={3} />}>
+              <EarningsSection
+                earnings={earnings}
+                monthlyHistory={monthlyHistory}
+              />
+            </SectionBoundary>
           </section>
 
           <section className="space-y-3">
@@ -67,4 +93,21 @@ export default async function WalletPage() {
       </>
   </UserDataProvider>
   );
+}
+
+/**
+ * Awaits the earnings reads inside the boundary above.
+ *
+ * Takes promises rather than data so the reads start in the page's own wave;
+ * see `SectionBoundary` for why that distinction matters here.
+ */
+async function EarningsSection({
+  earnings,
+  monthlyHistory,
+}: {
+  earnings: ReturnType<typeof getEarningsSummary>;
+  monthlyHistory: ReturnType<typeof getMonthlyEarningsHistory>;
+}) {
+  const [summary, history] = await Promise.all([earnings, monthlyHistory]);
+  return <EarningsBreakdown earnings={summary} monthlyHistory={history} />;
 }

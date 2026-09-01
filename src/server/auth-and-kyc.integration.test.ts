@@ -227,7 +227,15 @@ describe("verification lifecycle", { skip }, () => {
         documentType: "national_id",
         documentNumberMasked: "•••• 1234",
         documentFileName: "identity-document.jpg",
-        livenessCheckPassed: true,
+        documentByteSize: 128_000,
+        documentMimeType: "image/jpeg",
+        // Object keys the action verifies against the session before it gets
+        // here; this calls the service directly, so it supplies them.
+        documentPath: `${userId}/document-${Date.now()}.jpg`,
+        selfieFileName: "selfie.jpg",
+        selfiePath: `${userId}/selfie-${Date.now()}.jpg`,
+        selfieByteSize: 64_000,
+        selfieMimeType: "image/jpeg",
       },
       MASTER,
     );
@@ -256,6 +264,40 @@ describe("verification lifecycle", { skip }, () => {
     assert.equal(row.status, "pending");
     // The same row the CRM reads — one database, not two datasets.
     assert.equal(row.userId, userId);
+  });
+
+  test("a submission never claims a liveness check that did not happen", async () => {
+    const userId = await makeUser();
+    const submissionId = await submit(userId);
+
+    const [row] = await db
+      .select()
+      .from(t.kycSubmissions)
+      .where(eq(t.kycSubmissions.id, submissionId));
+
+    /*
+     * The whole reason this file has a KYC section.
+     *
+     * `liveness_check_passed` used to be whatever the browser sent, and the
+     * browser sent `true` because a button had been pressed. An operator reads
+     * that column as an automated check that ran and passed. Nothing in this
+     * deployment can run one, so nothing may write one — and the flag says why,
+     * rather than leaving a reviewer to read `false` as "this person failed".
+     */
+    assert.equal(row.livenessCheckPassed, false);
+    assert.ok(
+      row.riskFlags.includes("liveness_not_verified"),
+      "the reason the check did not pass is recorded, not just the result",
+    );
+
+    const documents = await db
+      .select()
+      .from(t.kycDocuments)
+      .where(eq(t.kycDocuments.submissionId, submissionId));
+    assert.ok(
+      documents.some((document) => document.label === "Selfie capture"),
+      "the selfie a reviewer compares against the document is listed",
+    );
   });
 
   test("approval is an operator decision, and the user sees it", async () => {

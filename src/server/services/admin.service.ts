@@ -172,22 +172,34 @@ export async function getPlatformSettings(): Promise<PlatformSettings> {
 /**
  * What the console's frame needs, and nothing else.
  *
- * Read by the layout on a full page load. Two queries rather than fourteen:
- * platform settings (currency and fee display, read across several screens)
- * and the operator directory the agents screen and the audit log resolve names
- * against.
+ * **One query.** Platform settings is a single row and it is genuinely shell
+ * data: currency, fee and display configuration that several screens format
+ * against, cheap enough that reading it per request is not worth a cache.
+ *
+ * THE OPERATOR DIRECTORY USED TO BE HERE, AND IT WAS THE SAME MISTAKE TWICE
+ * -------------------------------------------------------------------------
+ * `agents` was the fourteenth slice, left behind when the other thirteen moved
+ * out. Reading it cost **two statements on every admin page load** — the agents
+ * table and then its permission grants — to serve exactly two screens:
+ * `/admin/agents`, which already reads its own fresher copy, and
+ * `/admin/audit-logs`, which resolves actor names against it.
+ *
+ * Measured: eight rapid admin navigations issued 63 SQL statements against a
+ * pool of five, of which sixteen were this. Both screens now read it
+ * themselves, in parallel with their own slice, so it costs one round trip on
+ * two routes instead of two round trips on thirteen.
+ *
+ * It also fixes a staleness bug of exactly the kind this split exists to
+ * prevent: a layout does not re-run on a client navigation, so the audit log
+ * was resolving names against whatever the directory looked like when the
+ * console was opened.
  */
 export interface AdminShellData {
   settings: PlatformSettings;
-  agents: AdminAgent[];
 }
 
 export async function getAdminShell(): Promise<AdminShellData> {
-  const [settings, agents] = await Promise.all([
-    getPlatformSettings(),
-    getAdminAgents(),
-  ]);
-  return { settings, agents };
+  return { settings: await getPlatformSettings() };
 }
 
 /**

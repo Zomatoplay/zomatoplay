@@ -25,13 +25,18 @@ import {
   SearchField,
   type FilterOption,
 } from "@/components/admin/shared/filter-bar";
+import { ConfirmActionDialog } from "@/components/admin/shared/confirm-action-dialog";
 import { PermissionGate } from "@/components/admin/shared/permission-gate";
+import { useAdminAction } from "@/components/admin/shared/use-admin-action";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ADMIN_PAGE_SIZE } from "@/constants/admin";
 import { vipLevels } from "@/data/referrals";
-import { useAdminStore } from "@/lib/admin-store";
+import { Button } from "@/components/ui/button";
+import { releaseCommissionAction } from "@/app/admin/actions";
+import { canManage } from "@/lib/admin-permissions";
+import { useAdminStore, useAdminSession } from "@/lib/admin-store";
 import { formatUsdt } from "@/lib/currency";
 import type {
   AdminCommissionEntry,
@@ -69,6 +74,17 @@ export function ReferralsView() {
 
 function ReferralsBrowser() {
   const { settings, referralAccounts, commissionLedger } = useAdminStore();
+  const session = useAdminSession();
+  const { run, pending } = useAdminAction();
+  /*
+   * The entry awaiting confirmation, if any.
+   *
+   * Releasing commission moves real money into somebody's balance, so it takes
+   * the same confirmation every other consequential action in this console
+   * takes rather than firing on a single click.
+   */
+  const [releasing, setReleasing] = useState<AdminCommissionEntry | null>(null);
+  const mayRelease = canManage(session, "referrals");
   const [query, setQuery] = useState("");
   const [vip, setVip] = useState<VipFilter>("all");
 
@@ -274,6 +290,30 @@ function ReferralsBrowser() {
       cell: (entry) => (
         <AdminStatusBadge kind="commission" status={entry.status} />
       ),
+    },
+    {
+      id: "release",
+      header: "Action",
+      cell: (entry) =>
+        entry.status === "pending" ? (
+          /*
+           * Disabled rather than hidden for an operator without `manage`.
+           *
+           * CLAUDE.md §15.3: a read-only operator should be able to see that
+           * the capability exists and who to ask for it, rather than wondering
+           * whether the screen is broken.
+           */
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={!mayRelease || pending}
+            onClick={() => setReleasing(entry)}
+          >
+            Release
+          </Button>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        ),
     },
   ];
 
@@ -481,11 +521,56 @@ function ReferralsBrowser() {
                     {formatUsdt(entry.amountUsdt)}
                   </span>
                 </DataCardRow>
+                {entry.status === "pending" ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    block
+                    disabled={!mayRelease || pending}
+                    onClick={() => setReleasing(entry)}
+                  >
+                    Release commission
+                  </Button>
+                ) : null}
               </DataCard>
             )}
           />
         </TabsContent>
       </Tabs>
+
+      <ConfirmActionDialog
+        open={releasing !== null}
+        onOpenChange={(open) => !open && setReleasing(null)}
+        title="Release this commission?"
+        description={
+          releasing ? (
+            <>
+              <strong className="font-medium text-foreground">
+                {formatUsdt(releasing.amountUsdt)}
+              </strong>{" "}
+              will be credited to{" "}
+              <strong className="font-medium text-foreground">
+                {releasing.beneficiaryName}
+              </strong>
+              &rsquo;s available balance, with a ledger entry they can see. This
+              cannot be undone from here.
+            </>
+          ) : null
+        }
+        confirmLabel="Release commission"
+        reason={{
+          label: "Note",
+          placeholder: "Anything worth recording?",
+        }}
+        onConfirm={(note) => {
+          const entry = releasing;
+          if (!entry) return;
+          setReleasing(null);
+          run(() =>
+            releaseCommissionAction({ commissionEntryId: entry.id, note }),
+          );
+        }}
+      />
     </AdminSection>
   );
 }

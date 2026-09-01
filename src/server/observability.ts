@@ -253,12 +253,35 @@ const untraced: PendingEvent[] = [];
 let untracedTimer: ReturnType<typeof setTimeout> | null = null;
 
 function flushUntraced(): void {
+  void drainUntraced();
+}
+
+/** The same flush, awaitable. Used by `flushPipelineEvents()`. */
+function drainUntraced(): Promise<void> {
   if (untracedTimer) {
     clearTimeout(untracedTimer);
     untracedTimer = null;
   }
   const rows = untraced.splice(0, untraced.length);
-  void writeRows(rows);
+  return writeRows(rows);
+}
+
+/**
+ * Writes anything still buffered, and waits for it.
+ *
+ * FOR SCRIPTS, NOT FOR REQUESTS. A request flushes through
+ * `flushTraceAfterResponse()`, which hands the insert to `after()` so the user
+ * waits for none of it; awaiting here would put instrumentation back on the
+ * critical path, which rule 1 above exists to prevent.
+ *
+ * A CLI has no response to come after and no reason to stay alive for an
+ * unref'd 100ms timer. Without this, `tron:inspect` recorded its TronGrid calls
+ * on that timer, which fired *after* the script had closed the pool, reopened
+ * it, and — with `idle_timeout: 0` — held the connections until the process was
+ * killed. Draining before closing is what makes the script exit.
+ */
+export function flushPipelineEvents(): Promise<void> {
+  return drainUntraced();
 }
 
 function enqueueUntraced(row: PendingEvent): void {

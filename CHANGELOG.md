@@ -4,6 +4,492 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-09-02c (KYC document storage, RLS, Flexible Reserve withdrawal)
+
+### 0. Every application table was readable by anyone with the anon key
+
+Found while checking where KYC documents could safely live. Supabase publishes
+`public` over PostgREST at `/rest/v1/...` and grants `anon` SELECT; Drizzle
+creates tables with RLS off, because RLS is not part of a table definition.
+Verified against the live project *before* any change:
+
+    GET /rest/v1/users            -> 200  full names, emails, phones, KYC status
+    GET /rest/v1/wallet_balances  -> 200  every balance
+    GET /rest/v1/kyc_submissions  -> 200  legal names, DOB, addresses
+    GET /rest/v1/transactions     -> 200  every ledger entry
+    GET /rest/v1/admin_agents     -> 200  the operator directory
+
+…using the key that is inlined into the browser bundle. No application code was
+involved.
+
+`npm run db:secure` enables RLS on all 32 tables with **no policies**, which
+closes PostgREST completely. The app is unaffected: it connects as `postgres`,
+which has `rolbypassrls` (verified, not assumed). Every table now returns `[]`
+to `anon` and to a signed-in customer, and there is a regression test that reads
+all ten sensitive tables as both.
+
+### 1. KYC documents are real now
+
+Private Supabase Storage bucket, 10 MB limit, MIME allow-list, keys shaped
+`{auth_user_id}/{kind}-{ts}-{rand}.{ext}`. `kyc_documents` gained
+`storage_path`, `content_type` and `byte_size` (migration `0007`), all nullable
+because pre-storage rows have no object.
+
+**The browser uploads straight to Storage** — a Vercel function has a ~4.5 MB
+body limit and the flow accepts 10 MB, so a server-action upload would work in
+development and fail in production. That puts enforcement in the storage
+service, which is stronger: type and size are checked before an object exists,
+and the INSERT policy pins every object to the uploader's own folder. The server
+then re-reads the object and records what actually landed, not what was claimed.
+
+Four policies: owner-insert, owner-read, operator-read via
+`is_kyc_operator()`, and delete restricted to *unsubmitted* uploads via
+`is_unsubmitted_kyc_object()`. No UPDATE policy at all, so a resubmission writes
+a new key and an attached document cannot be deleted by its subject. Reviewers
+open documents through a 120-second signed URL minted after
+`requirePermission("kyc", "view")`. **No service-role key anywhere.**
+
+Twelve tests, every one using a real user JWT against the live project — nothing
+runs as `postgres`, which would bypass RLS and pass while the bucket stood open.
+
+### 2. The investment reward rule — reported, not implemented
+
+Unchanged, deliberately. `recordInvestmentEarning()` remains uncalled. The
+detail is in the report; the short version is that a plan sells an
+`estimated_return_range` and `estimated_return_percent` is a point inside it, so
+paying `projected_profit ÷ periods` would convert a projection into a guarantee.
+`payoutDelayDays` turns out to be a **referral** setting, not an investment one.
+
+### 3. Flexible Reserve can be ended by the customer
+
+The product defines this in four places, with no fee and no forfeiture.
+`endOpenEndedInvestment()` verifies ownership, refuses fixed-term plans, honours
+`allowEarlyExit`, and delegates to `matureInvestment()` rather than duplicating
+the money path — so the guard that makes it idempotent is the one already
+tested. Fixed-term early exit stays unimplemented because its fee and forfeiture
+arithmetic does not exist.
+
+### 4. Cron
+
+Both routes reject unauthenticated, wrong-secret and customer-session requests
+(401), and refuse everybody when `CRON_SECRET` is unset. Two new tests pin the
+catch-up property: maturity selects on `matures_at <= now` so one pass clears a
+forty-day backlog, and the schedule is *recomputed from `started_at`* rather
+than incremented, so a missed run cannot drift. `*/5` and `0 * * * *` require
+the Pro plan; Hobby allows one invocation per day.
+
+### 5. Financial audit
+
+No new bugs. Confirmed: nothing writes `wallet_balances` outside
+`wallet.repository.ts`; `total_profit` is raised only by rewards and commission,
+never by a principal return; every user money action takes its identity from the
+session with no `userId` parameter; withdrawal fees and the payout rate are
+computed server-side from constants, not accepted from the client; the bank
+account is ownership-checked. `recordCommission()` in `account-write.service` is
+a second, **uncalled** commission path — worth deleting or wiring, noted rather
+than touched.
+
+### Verification
+
+`typecheck`, `lint`, `build` clean. **159 tests pass, 0 fail** (was 142).
+All user and admin routes 200 after the RLS change, zero server errors.
+
+---
+
+## 2026-09-02b (money lifecycle, referral attribution, KYC feedback)
+
+Five priorities, worked in order. Nothing was redesigned; four of the five were
+completed by finding the piece that had no caller.
+
+### 1. The allocation lifecycle had no ending
+
+`createInvestment` and `matureInvestment` were both implemented and correct, and
+**nothing called the second one**. A real allocation took the money and froze:
+`elapsed_days` never moved, the term progress bar stayed where it was stamped,
+and the row sat `active` indefinitely past its own `matures_at` with the
+principal still counted as locked. Nobody's capital ever came back.
+
+- `/api/cron/settle-investments` (hourly, `CRON_SECRET`, same shape as the
+  deposit scan) matures what is due and recomputes each running allocation's
+  `elapsed_days` / `next_reward_at` / `next_reward_amount` from `started_at` —
+  recomputed rather than incremented, so a missed run cannot drift.
+- `createInvestment` now stamps the reward schedule. It left both columns null,
+  so every allocation a *real* user made read "next reward —" for ever while
+  every seeded one looked correct. The arithmetic is the seed's own:
+  `projected_profit ÷ (duration_days ÷ period_days)` — Balanced Growth's 90 days
+  weekly on 300 USDT gives 23.33, and the seed says 23.4.
+- `isCronRequestAuthorised` extracted so both job routes share one timing-safe
+  comparison.
+
+**Two bugs found by testing this, one of them mine.** A plan whose only reward
+falls exactly on maturity got no schedule at all (`>=` where `>` was meant). And
+`duration_days: 0` is not a missing value — it is Flexible Reserve, sold as "no
+fixed term — funds stay allocated until you withdraw them" — so `matures_at`
+equals `started_at` and the first version of the settler **force-matured every
+open-ended allocation on its first pass**, returning principal from a product
+whose entire point is that the customer chooses when. The job now filters
+`duration_days > 0`, there is a test named for it, and the four allocations the
+buggy pass had already returned (7,900 USDT across four seeded accounts) were
+repaired with compensating ledger entries rather than by deleting rows.
+
+**The reward *amount* is the one rule this codebase does not define, and nothing
+credits one.** A plan sells an `estimated_return_range`;
+`estimated_return_percent` is a point inside it. Paying `projected_profit ÷
+periods` on a schedule would turn a projection into a guarantee — a product and
+compliance decision, not a gap in the plumbing.
+
+### 2. Referral codes were validated for shape and nothing else
+
+A well-formed but wrong code passed every check, was stored, and was silently
+dropped at account creation: the person believed they had used their friend's
+code and the friend never appeared. `applyReferralCode` now resolves it against
+a real, `active` account server-side and refuses with a message. Clearing the
+field now *deletes* the cookie, which is what makes manual entry actually beat a
+`?ref=` the middleware already captured.
+
+Verified end to end against the real database by driving `completeSignIn` with a
+referral cookie: a `referrals` row, `referred_by_code`, `referral_count` and
+`referral_accounts.direct_referrals` all landed; an invalid code produced an
+unattributed account and touched no counter.
+
+### 3. KYC: the rejection reason was stored, tested, and invisible
+
+`rejectKyc()` requires a reason, its comment calls it "what the user is shown",
+and there is a test named "rejection stores the reason the user is shown".
+Nothing showed it. A rejected person saw a red badge and had no way to learn
+what to fix. Added `getOwnKycCase()` — session-scoped, projecting status, reason
+and two timestamps and nothing else — and surfaced it above the form.
+
+### 4. Admin ↔ user synchronisation
+
+Audited all 28 operator actions: **every one has a `requirePermission` check**,
+and revalidation coverage is otherwise complete. One real gap — a sent campaign
+revalidated only `/settings/notifications`, so the unread badge in `TopBar` (on
+every user page) and Home stayed silent until the person opened that one screen.
+
+### 5. TRON: verified, not extended
+
+Config, contract, deposit address, detection, solidification, amount scaling and
+idempotency all verified against live Shasta (16 unit tests, plus an inspect run
+that finds the 1,000 USDT transfer and reports it correctly). No behaviour
+changed.
+
+Documented the analysis that was missing: **a tx-hash claim flow is the obvious
+shortcut and is unsafe on its own.** The chain is public, so anyone can watch a
+shared deposit address, see a stranger's transfer land and submit that hash
+first; verifying the hash proves the transfer happened and nothing about who is
+asking. Per-user addresses or sender-address binding are what make it safe, and
+both are decisions rather than code.
+
+### Verification
+
+`typecheck`, `lint`, `build` clean. **142 tests pass** (was 136; six added).
+All user and admin routes 200 with zero server errors, zero failed
+`pipeline_events`, zero connect retries. Every account whose history went
+through `applyLedgerEntry` reconciles exactly; the 26 that do not are seeded
+fixtures, whose balances the seed writes directly rather than building from a
+ledger.
+
+---
+
+## 2026-09-02 (admin console latency, log timestamps, referral completion)
+
+### 1. The console was doing four database round trips to render one screen
+
+Measured with a temporary probe (`src/server/probe.ts`, `NANOTRON_PROBE=1` for
+spans, `=sql` for per-statement connection ids) against a production build with
+a real operator session. A warm admin page load was **two sequential waves of
+~370ms**, and the waves contained four reads of which one was the page's own:
+
+| | |
+|---|---|
+| `auth.getPrincipal` | 10–15ms (local ES256 verify — not the problem) |
+| wave 1 | operator lookup **+ the page's own read** |
+| wave 2 | platform settings + admin agents + agent permission grants |
+
+Three defects, all structural, none of them a slow query — server-side execution
+for the worst offender (`/admin/system-logs`) is **0.338ms**; everything else is
+round trips and transfer.
+
+- **The console shell read the whole operator directory on every page.** Two
+  statements (`admin_agents`, then `admin_agent_permissions`, sequentially) to
+  serve two screens: `/admin/agents`, which already read its own fresher copy,
+  and `/admin/audit-logs`, which resolves actor names against it. Both read it
+  themselves now. `AdminShellData` is one row. This also fixes a staleness bug —
+  a layout does not re-run on a client navigation, so the audit log was
+  resolving names against the directory as it looked when the console opened.
+- **The layout awaited the operator, then the shell.** `getAdminShell()` takes
+  no argument from the operator. They now start together, after the free local
+  principal check. The gate is unchanged and still decides before anything
+  renders; the exposure added is that a caller holding a verified Supabase JWT
+  who is *not* an operator can cause one `platform_settings` read whose result
+  is never sent to them.
+- **`listAdminAgents` ran its two statements in sequence.** They are
+  independent. Now one wave.
+
+Also: the console layout had no `traceRender`, so its events took the immediate
+path in `recordPipelineEvent` and became **two `INSERT`s per page load, issued
+while the page was still rendering**, from the same five-connection pool.
+Wrapped, they buffer into one insert behind `after()`. §22.1a said recording
+must never be measurable; it was.
+
+And `/api/trace` resolved a *customer* account on every beacon — including the
+one that rides every admin navigation, where it can only ever return null
+(operators are `admin_agents`, not `public.users`). Skipped when every event in
+the batch is an `/admin/*` route.
+
+**Before → after**, production build, real session, medians:
+
+| route | serial before | serial after |
+|---|---|---|
+| `/admin` | 3041ms | 1295ms |
+| `/admin/plans` | 780ms | 425ms |
+| `/admin/audit-logs` | 768ms | 439ms |
+| `/admin/agents` | 1000ms | 452ms |
+| `/admin/deposits` | 1390ms | 481ms |
+| `/admin/users` | 848ms | 649ms |
+
+Rapid navigation — eight page loads fired 120ms apart, six samples after the
+change against two before:
+
+| | p50 | wall |
+|---|---|---|
+| before | 2497–2550ms | 3285–3351ms |
+| after | 842–1480ms (median 1333) | 1906–3660ms (median 2416) |
+
+Zero 500s, zero `EMAXCONNSESSION`, zero `CONNECT_TIMEOUT`, zero
+`database.connectRetry` rows across every run.
+
+**What was *not* the cause, stated so nobody re-tests it:** the pool (it was
+already raised to 5 and 18-way concurrency showed no deadline breaches); missing
+indexes (`pipeline_events_occurred_idx` is used, execution is 0.3ms); data
+volume (33 users, 34 audit rows, the system log capped at 200);
+`auth.resolveAccount`/`auth.resolvePrincipal` (10–15ms warm, and on admin routes
+they came from the trace beacon, not the page).
+
+**What could not be fixed:** abandoned navigations are not cancelled. Measured —
+abort the client fetch at 60ms and the server still issues every query. Next
+does not stop rendering when the browser stops listening, and nothing threads an
+abort signal into postgres.js. Making each render cheaper is the only lever, and
+that is what the above does.
+
+`/admin/system-logs` is unchanged at ~1050ms and is transfer-bound: 200 rows
+carrying a jsonb `metadata` column, ~213KB, on a link with a ~200ms RTT. The
+screen filters and expands that data client-side, so trimming it means paging
+server-side — a redesign, not an optimisation.
+
+### 2. Why the system log read 18:00 when the testing was at 23:00 IST
+
+Nothing was wrong with any timestamp. `pipeline_events.occurred_at` is
+`timestamptz`, serialised with `toISOString()`, and rendered through the
+UTC-pinned formatter in `@/utils/format` — pinned deliberately, because an
+`Intl` call without an explicit `timeZone` uses the server's zone during SSR and
+the viewer's after hydration, which is a hydration mismatch on every screen that
+shows a date. IST is UTC+5:30, and 23:00 − 5:30 = 17:30.
+
+So the display was correct and unlabelled. Added `formatDateTimeUtc()` and used
+it on the two screens where a timestamp is correlated against the real world —
+the system log and the audit trail. No stored value changed, no conversion
+changed, no historical data touched.
+
+### 3. Referrals, finished
+
+Four gaps, all found in the existing code rather than invented:
+
+- **`programmeEnabled` and `maxTiers` were editable in the CRM and ignored.** An
+  operator could switch the referral programme off, watch it save, and
+  commission would keep accruing. Both are now read inside the accrual
+  transaction; `maxTiers` is clamped to 2 because the VIP table defines two
+  commission columns.
+- **VIP level never advanced.** The thresholds are in `vip_levels` and the
+  aggregates started moving when accrual landed, so `nextLevelProgress` could
+  climb to 100% and stick there for ever while the account kept earning the
+  entry-level rate. Promotion now applies the highest level whose *both*
+  requirements are met, after the commission so an allocation pays at the rate
+  held when it was made. Promotion only — nothing defines demotion, and doing it
+  as a side effect of somebody else's allocation would be the wrong way to find
+  out.
+- **Pending commission had no path to a wallet.** `/admin/referrals` had no
+  actions at all. `releaseCommission()` + a confirmed *Release* control, gated on
+  `manage` over `referrals`: one transaction with the ledger row, the balance,
+  the aggregate move and the audit entry, and the status transition asserted in
+  the `UPDATE`'s own `WHERE` so two operators clicking together pay once.
+- **The invite *code* could not be redeemed anywhere.** The referral screen
+  shows it as a first-class artifact with a copy affordance, and no field in the
+  application accepted one. Added an optional invite-code field to sign-up,
+  prefilled from `?ref=`, writing the same cookie the middleware writes. A typed
+  code overrides a stored one — the middleware's first-wins rule exists to stop
+  one *link* stealing from another, not to overrule a person's explicit choice.
+
+Deliberately unchanged: accrual still credits nobody, and the test asserting
+that is still there.
+
+### Verification
+
+`npm run typecheck`, `npm run lint`, `npm run build` clean. **136 tests pass**
+with a database configured (was 133; three added: VIP promotion, release
+idempotency, the programme switch). All thirteen admin screens render; the
+referral release control, the UTC labels and the invite-code field were each
+verified in the rendered HTML. One run out of four showed a single unidentified
+test failure that did not reproduce in three subsequent full runs — see the
+report; it was not captured and is **NOT VERIFIED** as flaky.
+
+---
+
+## 2026-09-01 (production-readiness pass)
+
+Preparing for deployment. Five areas, in order of how much they were actually
+broken. No architecture was replaced: same platform, same database, same driver,
+same ORM, same auth.
+
+### 1. Connection pool: 3 → 5 (and warm-up 2 → 3)
+
+`DATABASE_POOL_MAX` had been lowered to 3 to stop `EMAXCONNSESSION`, which it
+did, and it overcorrected into contention. Measured against a production build
+with a real session — eighteen concurrent authenticated requests, same build,
+same machine, alternating runs:
+
+| | wall | p50 | errors |
+|---|---|---|---|
+| `max 3`, warm 2 | 14.0s, 21.9s | 8.3s, 16.5s | 0 |
+| `max 5`, warm 3 | 8.2s, 8.4s, 8.8s | 5.3–5.5s | 0 |
+
+At three, individual requests reached 14.3s against the 15s read deadline — one
+round trip from failing rather than queuing. Serially five is no worse and
+mostly better (Home 1,834 → 1,192ms median; Plans 1,171 → 754ms; the rest
+inside noise).
+
+Five is what the arithmetic allows: the project ceiling is fifteen session-mode
+clients shared by every instance, the `db:*` scripts, the scanner and the test
+suite, so five per instance leaves room for two instances plus the scripts.
+`DATABASE_POOL_MAX` still overrides it. Nothing else about the connection
+changed — still the session pooler on :5432, still `prepare: true`, still one
+globally-cached `postgres()` client (there was never a duplicate).
+
+Zero `EMAXCONNSESSION`, zero `CONNECT_TIMEOUT`, zero `database.connectRetry`
+rows and zero 500s across every run.
+
+### 2. The Shasta transfer that "was not detected" had been detected
+
+`dep_mt2nnxzu1jdf0` — 1,000 USDT, tx `bde2fe60…`, contract and recipient both
+correct, status `confirmed`, `user_id` null — recorded on 2026-08-21, the day
+it arrived. Two things made it look like a failure:
+
+- **Nothing ran the scanner.** The only trigger was `npm run tron:scan`, typed
+  by a person. `chain_scan_state.last_success_at` was 2026-08-23 and nothing had
+  run in the week since. Added `GET /api/cron/scan-deposits`, authorised by
+  `CRON_SECRET` and refusing everybody when it is unset, with the schedule in
+  `vercel.json`. Verified end to end: it found the transfer and correctly
+  reported it `unchanged`.
+- **It is unassigned, on purpose.** One shared receiving address cannot say
+  whose money arrived, so an operator attributes it in `/admin/deposits`
+  (§18.4). Nothing was wrong with that; it is just invisible from the user app.
+
+Also: `npm run tron:inspect` defaults to a 24-hour window, and the transfer was
+eleven days old — the first investigation ran it at 168h and got "(none)". The
+default is documented now and the example uses a wider window.
+
+And `tron:inspect` never exited. It calls no deposits service, but every
+TronGrid call is instrumented, so it opened the runtime pool to write
+`pipeline_events` and — with `idle_timeout: 0` — held those connections out of
+the project's fifteen until the process was killed. Added
+`flushPipelineEvents()` (scripts only, never requests) and a `closeDb()` on
+exit. `EXIT=124` → `EXIT=0`.
+
+**TRON is not, and never was, on the rendering path.** The only chain-adjacent
+call in a page is `getPublicDepositTarget()` on `/wallet/deposit`, which reads
+environment variables and validates an address locally. No layout, page, auth
+path or server action reaches TronGrid.
+
+### 3. Referral: the middle of the chain was missing
+
+Link generation, `?ref=` capture, the cookie that survives signup, self-referral
+and bad-code rejection, and the immutable attribution all already worked. What
+did not exist was anything between "they signed up" and "you earned
+commission": every referral stayed `registered`, `active_referrals` and
+`team_volume_usdt` stayed zero so VIP progression could never move, and
+`commission_entries` was never written outside the seed.
+
+`accrueReferralCommission` now runs inside `createInvestment`'s transaction —
+one commission entry for the direct referrer at their VIP tier-1 rate, one for
+that person's referrer at tier 2, the direct edge moved to `active` with its
+totals, and both aggregates advanced. `indirect_referrals` is now counted at
+signup, where it comes into existence.
+
+Every rate is read from `vip_levels`, never restated. All arithmetic happens in
+Postgres against `numeric` — the commission expression is recomputed rather than
+read back, because `usdt` columns map to `number` and a `.returning()` would put
+a float in a money path.
+
+**It credits nobody.** Entries are `pending`; no ledger row, no balance change.
+"Once their allocation settles" has no settlement process, and paying out on a
+rule nobody wrote is the one thing worth refusing here. Five new integration
+tests, including one asserting the referrer's wallet and ledger are untouched.
+
+### 4. KYC: it was asserting things that had not happened
+
+The document step was a button that set a boolean. So was the liveness step.
+The document type was hard-coded `national_id`, the "document number" was
+`Math.random()`, the filename was the literal `identity-document.jpg` for every
+submission ever made — both real submissions in the database carry it — and the
+form then sent `livenessCheckPassed: true`, which an operator reads in the CRM
+as a check that ran and passed.
+
+Now:
+
+- the document step opens the real file picker or the real camera
+  (`<input capture="environment">`), checks type and size, and records the
+  actual filename, byte count and MIME type;
+- the person chooses their document type and types their document number, and
+  **only its last four characters leave the browser** — the server composes the
+  mask, so no full identity number exists in a request, a process or a log;
+- the selfie step opens the device camera through `getUserMedia` with a live
+  preview, stopping every track on exit, and falls back to the OS camera app.
+  The fallback is offered always, not only after a failure: `mediaDevices` does
+  not exist on an insecure origin, which is every phone testing a LAN address;
+- `livenessCheckPassed` is no longer a parameter. `submitKyc` writes `false`
+  plus a `liveness_not_verified` risk flag, and the CRM renders that as
+  *"Not checked — compare by hand"* in muted type rather than "Not passed" in
+  red — a reviewer must not be told somebody failed a check that never ran;
+- the submission records two document rows, "Identity document" and "Selfie
+  capture", which is what a reviewer actually compares.
+
+**Still missing, and said on screen rather than implied: no file is
+transmitted.** There is no document store and no verification provider, so the
+photos stay on the device and only metadata is recorded. Connecting either is a
+deployment decision with legal weight, not a component change — see the
+readiness list below.
+
+### 5. Failure isolation, finished
+
+`/wallet` and `/referral` had already been given `SectionBoundary`. `/` had the
+same defect: `getEarningsSummary()` sat in the page's `Promise.all`, so a
+rejected earnings read discarded the balance, the allocations and the activity
+list and rendered the route error page. Same treatment — the read still starts
+in the page's own wave, and is awaited inside the boundary. Balances,
+allocations and verification state stay on the critical path deliberately.
+
+### Mobile
+
+No reproducible mobile-specific defect was found in the code. The fundamentals
+are already right: 16px inputs, `viewportFit: cover`, safe-area utilities,
+44px targets, guarded `crypto.randomUUID`, guarded `navigator.share`, a
+clipboard fallback for insecure origins. The one real divergence is the
+secure-context rule, which the new camera code now detects and works around
+rather than failing silently. Anything else reported on a phone is most likely
+an insecure LAN origin or a Supabase redirect allow-list that does not include
+the origin being tested — both configuration, not code.
+
+### Verification
+
+`npm run typecheck`, `npm run lint`, `npm run build` clean. **133 tests pass**
+with a database configured (was 127; six added). Routes exercised against
+`npm run start` with a real session: `/`, `/wallet`, `/plans`, `/referral`,
+`/settings`, `/settings/kyc`, `/wallet/deposit`, `/wallet/transactions` — all
+200, no 500s, no connection errors in the server log or in `pipeline_events`.
+
+---
+
 ## 2026-08-25 (navigation latency forensic)
 
 A measured hunt for the extra seconds in normal page navigation, and the

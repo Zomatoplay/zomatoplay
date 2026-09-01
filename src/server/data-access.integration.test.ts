@@ -118,7 +118,20 @@ describe("repositories", { skip }, () => {
 
   test("reads the ledger for the account", async () => {
     const transactions = await listTransactionsForUser(db, DEMO);
-    assert.equal(transactions.length, 14);
+    /*
+     * At least the seeded entries, never exactly them.
+     *
+     * This asserted `=== 14` and broke the first time the settlement job
+     * returned a matured allocation's principal — a correct movement that
+     * writes a correct ledger row. CLAUDE.md §16.7 already forbids exact counts
+     * against the live database for precisely this reason; the count was
+     * incidental to what this test is for, which is that the ledger reads back
+     * with the right shapes.
+     */
+    assert.ok(
+      transactions.length >= 14,
+      `expected at least the seeded ledger, got ${transactions.length}`,
+    );
     assert.ok(transactions.some((transaction) => transaction.type === "deposit"));
     assert.ok(transactions.some((transaction) => transaction.amount < 0));
     // Optional columns arrive as undefined, never null.

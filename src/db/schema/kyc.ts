@@ -1,4 +1,12 @@
-import { boolean, index, integer, jsonb, pgTable, text } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 import { ts } from "./columns";
 import { kycDocumentTypeEnum, kycReviewStatusEnum } from "./enums";
@@ -45,7 +53,24 @@ export const kycSubmissions = pgTable(
   ],
 );
 
-/** Uploaded identity documents. Mock file references — no storage is connected. */
+/**
+ * Uploaded identity documents.
+ *
+ * `storagePath` is the object's key in the private `kyc-documents` Supabase
+ * Storage bucket, shaped `{auth_user_id}/{submission_id}/{file}`. The bytes are
+ * **not** in Postgres and must not be: a document is megabytes of binary that
+ * nothing here queries, and a `bytea` column would put it in every backup,
+ * every replica and every `select *` a future reader writes by accident.
+ *
+ * The leading folder is the owner's `auth.uid()`, which is what the storage
+ * policies key on — a person may read only their own folder, and a KYC operator
+ * may read the bucket. See `db/scripts/secure.ts`.
+ *
+ * All three columns are nullable because rows written before storage existed
+ * carry only a filename, and a migration cannot invent an object for them.
+ * `storagePath === null` means exactly "there is no file to open", and the CRM
+ * says so rather than offering a link that 404s.
+ */
 export const kycDocuments = pgTable(
   "kyc_documents",
   {
@@ -56,10 +81,20 @@ export const kycDocuments = pgTable(
     label: text("label").notNull(),
     type: kycDocumentTypeEnum("type").notNull(),
     fileName: text("file_name").notNull(),
+    /** Object key in the private bucket. Null for pre-storage rows. */
+    storagePath: text("storage_path"),
+    /** As Storage recorded it, not as the browser claimed. */
+    contentType: text("content_type"),
+    byteSize: integer("byte_size"),
     uploadedAt: ts("uploaded_at").notNull(),
     pages: integer("pages").notNull().default(1),
   },
-  (table) => [index("kyc_documents_submission_idx").on(table.submissionId)],
+  (table) => [
+    index("kyc_documents_submission_idx").on(table.submissionId),
+    // A given object belongs to one document row. Without this a replayed
+    // submission could point two rows at the same key.
+    uniqueIndex("kyc_documents_storage_path_key").on(table.storagePath),
+  ],
 );
 
 /** Reviewer notes on a case. Append-only in the UI. */

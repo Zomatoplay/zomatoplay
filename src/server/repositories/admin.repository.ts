@@ -28,13 +28,25 @@ const PERMISSION_IDS = schema.adminPermissionEnum.enumValues;
  * per agent: the agents screen renders the whole matrix at once.
  */
 export async function listAdminAgents(db: Database): Promise<AdminAgent[]> {
-  const agents = await db
-    .select()
-    .from(schema.adminAgents)
-    .orderBy(asc(schema.adminAgents.createdAt));
+  /*
+   * One wave, not two.
+   *
+   * These were sequential — read the agents, then read every grant — with an
+   * early return when there were no agents. The grants query does not depend on
+   * the agents query (it reads the whole table either way), so awaiting them in
+   * order bought nothing and cost a full ~200ms round trip on a read that the
+   * console shell used to run on every admin page.
+   *
+   * The early return is gone with it. It saved one small query in a state that
+   * cannot occur in a working deployment — an operator is reading this screen,
+   * so there is at least one agent — and paid for that with a round trip in
+   * every state that can.
+   */
+  const [agents, grants] = await Promise.all([
+    db.select().from(schema.adminAgents).orderBy(asc(schema.adminAgents.createdAt)),
+    db.select().from(schema.adminAgentPermissions),
+  ]);
   if (agents.length === 0) return [];
-
-  const grants = await db.select().from(schema.adminAgentPermissions);
 
   const grantsByAgent = new Map<string, typeof grants>();
   for (const grant of grants) {

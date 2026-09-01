@@ -229,30 +229,42 @@ export function getDb(): Database {
        * That fifteen is shared by every application instance, `npm run db:*`,
        * the TRON scanner and the test suite.
        *
-       * WHY THIS WAS LOWERED FROM EIGHT
-       * -------------------------------
+       * EIGHT WAS TOO GREEDY, THREE WAS TOO TIGHT, FIVE IS THE ANSWER
+       * -------------------------------------------------------------
        * Eight was measured on a single long-running server and is genuinely
        * faster there: Home issues nine independent reads once its account id is
        * known, so a bigger pool turns two waves into one and `warmConnectionPool`
-       * pays for the handshakes off the critical path. Three alternating runs
-       * against a production build gave Home 1.10–1.49s at max 5 to 0.75–0.83s
-       * at max 10.
+       * pays for the handshakes off the critical path. But at eight-plus-seven-
+       * warm ONE instance holds over half the project's budget the moment it
+       * starts, a second cannot warm fully, and a third is refused outright —
+       * and being refused is `EMAXCONNSESSION`, a failed render rather than a
+       * slow one.
        *
-       * But it is the wrong shape for a platform that answers load by adding
-       * instances. At eight-plus-seven-warm, ONE instance holds over half the
-       * project's budget the moment it starts, a second cannot warm fully, and
-       * a third is refused outright — and being refused surfaces as a failed
-       * render, not as a slow one. Three per instance lets four or five
-       * instances coexist and still leaves headroom for the scripts.
+       * Three fixed that and overcorrected. Measured against a production
+       * build with a real session, eighteen concurrent authenticated requests:
        *
-       * So this is deliberately sized for the worst case rather than the
-       * fastest one. `DATABASE_POOL_MAX` raises it for a deployment that really
-       * is a single long-running server, and the honest way to buy the speed
-       * back everywhere is to raise the project's pool size in the Supabase
-       * dashboard first. It moves together with `DATABASE_WARM_CONNECTIONS`;
-       * see `./warmup` for why raising one alone is worse than raising neither.
+       *   max 3, warm 2  →  wall 14,291ms, p50 8,518ms   (max 14,277ms, one
+       *                     round trip short of the 15s read deadline)
+       *   max 5, warm 3  →  wall  9,348ms / 8,360ms, p50 6,055 / 5,411ms
+       *
+       * Serially it is no worse and mostly better: Home 1,834 → 1,192ms median,
+       * Plans 1,171 → 754ms, everything else inside noise.
+       *
+       * Five is the arithmetic that fits. The project ceiling is fifteen
+       * session-mode clients shared by every instance, `npm run db:*`, the TRON
+       * scanner and the test suite; five per instance lets two instances run
+       * with five to spare for the scripts, which is the shape this deployment
+       * actually has. It is NOT a number to raise per-instance on a platform
+       * that answers load by adding instances — the honest way to buy more is
+       * to raise the project's pool size in the Supabase dashboard first, or to
+       * make the driver migration in `./env`.
+       *
+       * `DATABASE_POOL_MAX` overrides it for a deployment that really is a
+       * single long-running server. It moves together with
+       * `DATABASE_WARM_CONNECTIONS`; see `./warmup` for why raising one alone
+       * is worse than raising neither.
        */
-      max: Number(process.env.DATABASE_POOL_MAX ?? 3),
+      max: Number(process.env.DATABASE_POOL_MAX ?? 5),
     });
 
     /*

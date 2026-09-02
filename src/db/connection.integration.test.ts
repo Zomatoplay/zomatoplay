@@ -88,4 +88,39 @@ describe("connection", { skip }, () => {
     assert.equal(results.length, 40);
     assert.ok(results.every(([row]) => row.ok === 1));
   });
+
+  /**
+   * The regression test for `EMAXCONNSESSION`.
+   *
+   * `idle_timeout: 0` means a connection is never handed back for being idle.
+   * On the *session* pooler that is not "keeping a connection warm" — it is
+   * permanently claiming up to `max` of a fifteen-slot, project-wide budget,
+   * for the whole life of the process. Three idle instances therefore lock out
+   * every other one, at zero traffic, on localhost and on Vercel alike:
+   *
+   *   (EMAXCONNSESSION) max clients reached in session mode
+   *   - max clients are limited to pool_size: 15
+   *
+   * Reproduced and re-verified by measuring the open sockets: at `0` all
+   * fifteen were still held 55s after the last query and a new client was
+   * refused; at 30 they drained by ~40s and the same client connected.
+   *
+   * This asserts the two numbers whose product is that budget, because the
+   * failure they cause appears nowhere in this suite — it needs a second
+   * process to be visible at all.
+   */
+  test("the pool cannot exhaust the project's session-mode budget", () => {
+    const options = getDb().$client.options as { idle_timeout: number; max: number };
+
+    assert.notEqual(
+      options.idle_timeout,
+      0,
+      "idle_timeout 0 never releases a session-mode connection: see EMAXCONNSESSION above",
+    );
+    assert.ok(
+      options.max * 3 <= 15,
+      `max ${options.max} leaves room for fewer than three instances inside the ` +
+        `project's fifteen session-mode clients`,
+    );
+  });
 });

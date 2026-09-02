@@ -103,33 +103,58 @@ function createDatabase({ url, max }: ClientOptions) {
      * second query costs 187ms. Every navigation after a pause was paying to
      * rebuild a connection that had been thrown away seconds earlier.
      *
-     * `0` means "never close it for being idle", which is the right answer for
-     * a long-running server: the pool is bounded by `max`, so the cost of
-     * keeping them is a handful of sockets. On a platform that freezes idle
-     * instances the connections die with the instance anyway, and the pooler
-     * reaps its own side.
+     * IT WAS `0`, AND THAT IS WHAT CAUSED `EMAXCONNSESSION`
+     * ------------------------------------------------------
+     * `0` means "never close it for being idle". On a single long-running
+     * server that is right, and it is what the latency note above was measured
+     * on. It is wrong here, because `DATABASE_URL` is the **session** pooler:
+     * a client connection reserves a Postgres backend for as long as it is
+     * held, and Supavisor refuses a sixteenth for the whole project.
      *
-     * The remaining handshake is the *first* query in a process, which nobody
-     * can avoid. What the pool no longer pays is the handshake for connections
-     * two through five: `warmConnectionPool()` opens those in the background
-     * when the pool is created, so a page issuing four parallel queries finds
-     * them already open (203ms instead of 2,008ms).
+     * So `0` did not mean "keep a connection warm". It meant **every process
+     * that ever ran a query permanently claimed up to `max` of a fifteen-slot
+     * project-wide budget** — a `next start` on a laptop, each Vercel instance,
+     * a test run — and gave them back only at `max_lifetime` (30 minutes) or
+     * when the process died. Observed directly: fifteen session backends held,
+     * fourteen of them idle for nine minutes, with a single idle dev server the
+     * only thing running. The next request from anywhere got:
      *
-     * That warm-up lives on pool creation rather than in `instrumentation.ts`,
-     * which was tried twice and does not work: Next compiles that hook for the
-     * edge runtime too, and webpack resolves the module graph statically, so
-     * even a dynamic import behind a `NEXT_RUNTIME` guard drags `postgres` and
-     * `node:net` into the edge bundle and fails the build. See `./warmup`.
+     *   (EMAXCONNSESSION) max clients reached in session mode
+     *   - max clients are limited to pool_size: 15
+     *
+     * Reproduced deliberately, and re-verified by counting the open sockets.
+     * At `0`, three `next start` instances held all fifteen and were still
+     * holding them 55s after their last query, so a fourth consumer — another
+     * instance, `npm run db:*`, the scanner, a cron hit — was refused
+     * indefinitely. At 30 the same three drained to zero within 30s and that
+     * fourth consumer connected in 2.8s. It happens on localhost and on Vercel
+     * for the same reason, and it happens at *zero* traffic, which is what
+     * makes it look like a configuration fault rather than a load problem.
+     *
+     * A non-zero timeout makes the budget **shared over time** rather than
+     * permanently partitioned: an instance that stops querying hands its
+     * connections back within the window, so a second instance can start. The
+     * cost is the ~2s handshake for the first query after a genuinely idle
+     * period, which is the trade the note above priced — and it is the correct
+     * trade for a serverless deployment, where instances are idle far more
+     * often than they are busy.
+     *
+     * Thirty seconds: longer than a person's click-to-click interval, so
+     * ordinary navigation still finds a warm connection, and short enough that
+     * an abandoned instance is not holding a third of the project's budget a
+     * minute later. `DATABASE_IDLE_TIMEOUT` overrides it; `0` restores the old
+     * behaviour and should only be used on a deployment that really is one
+     * long-running server with the pool to itself.
      */
-    idle_timeout: Number(process.env.DATABASE_IDLE_TIMEOUT ?? 0),
+    idle_timeout: Number(process.env.DATABASE_IDLE_TIMEOUT ?? 30),
     /**
      * How long a connection may live before it is replaced.
      *
-     * With `idle_timeout: 0` a connection is never closed for being idle, which
-     * is what keeps navigation fast. The risk that creates is the opposite one:
-     * holding a socket that Supavisor has already reaped on its side, and only
-     * discovering it is dead when a query needs it — surfacing as
-     * `CONNECT_TIMEOUT` at the worst moment.
+     * A connection released for being idle is gone; one that is *reused* keeps
+     * living, and the risk there is the opposite one: holding a socket that
+     * Supavisor has already reaped on its side, and only discovering it is dead
+     * when a query needs it — surfacing as `CONNECT_TIMEOUT` at the worst
+     * moment.
      *
      * Rotating on a schedule replaces it *before* that happens, at a moment of
      * our choosing. postgres.js defaults to a random 30–60 minutes; this pins
@@ -168,9 +193,9 @@ function createDatabase({ url, max }: ClientOptions) {
     /**
      * TCP keepalive on an idle pooled connection.
      *
-     * `idle_timeout: 0` keeps sockets forever, which is what makes navigation
-     * fast — and creates the opposite risk: holding a socket a NAT or the
-     * pooler has silently dropped, discovered only when a query needs it.
+     * A connection reused steadily is never closed for being idle, and that
+     * creates the opposite risk: holding a socket a NAT or the pooler has
+     * silently dropped, discovered only when a query needs it.
      * Keepalive probes keep the path alive and surface a genuinely dead socket
      * as an error the retry above can handle, rather than as a hang.
      */

@@ -930,11 +930,47 @@ callback never runs — and that callback is what marks a connection reserved fo
 That is fatal **for this repository specifically**: every write goes through
 `mutate()` → `db.transaction()` → `client.begin()`, because a money movement and
 its ledger row and its audit entry must be one transaction (§17.1). The suite
-run this way failed 16 tests, all in the write layer. There is no postgres.js
-setting that gives concurrent reads *and* working transactions here.
+run this way failed 16 tests, all in the write layer.
 
-`usesTransactionPooler()` in `db/env.ts` stays, so pointing `DATABASE_URL` at
-`:6543` is never *silently* wrong — but nothing should point it there.
+**RE-TESTED 2026-09-02. THE CONCLUSION HOLDS, THE STATED REASON WAS WRONG.**
+Do not repeat this from memory; it has now cost two sessions. With
+`prepare: false` and the driver's *default* `max_pipeline` — not 0 — on
+postgres.js 3.4.9, against the live project:
+
+| what | result |
+|---|---|
+| single parameterised query | works |
+| 40 concurrent **parameterised** queries | works, 5.3s |
+| `db.transaction()`, multi-statement | **works** |
+| 10 concurrent transactions | **works** |
+| 10 transactions + 20 queries together | **works** |
+| 20 concurrent **parameterless** queries | **stalls, and wedges the pool permanently** |
+
+So the "transactions are impossible" half of the old note is **wrong**. That was
+an artefact of `max_pipeline: 0`, which breaks `sql.begin` for an unrelated
+reason, not a property of transaction mode. Every financial write works on
+:6543.
+
+**The real blocker is the simple query protocol, and this repository cannot
+avoid it.** Drizzle issues everything through `client.unsafe(sql, params)`, and
+postgres.js sets `simple: params.length === 0`. A Drizzle query with no WHERE
+clause and no bound values therefore has **zero parameters** and takes the
+simple protocol — which Supavisor in transaction mode cannot demultiplex when
+pipelined. Measured against the real code, `catalogue.repository` emits four of
+its five queries that way (`plans`, `deposit_networks`, `vip_levels`), and those
+are read by `/plans`, `/referral`, `/wallet/deposit` and the admin console —
+exactly the routes that wedged. Once it jams, the pool never recovers: in the
+probe, every subsequent query on that pool failed too.
+
+Making :6543 safe would mean giving every unfiltered SELECT a dummy bind
+parameter and keeping it that way forever, enforced by nothing. That is not a
+trade worth making.
+
+`usesTransactionPooler()` in `db/env.ts` stays and correctly forces
+`prepare: false`, so pointing `DATABASE_URL` at `:6543` is never *silently*
+wrong — but nothing should point it there. Getting off session mode still means
+changing driver (`node-postgres` does not pipeline, so the simple protocol is
+harmless there), not changing port.
 
 **A warning about how to test this.** A hand-written ``sql`select ${x}` `` probe
 passes on `:6543` even with the settings that hang the application, because it
@@ -1052,11 +1088,32 @@ trips. Everything below follows from that.
 
 **Consequences, in order of how much they cost:**
 
-1. **A connection must never be thrown away.** `idle_timeout` was 20 seconds,
-   which is how long a person spends reading a page before clicking. Measured:
-   query, idle 30s, query again → **2,187 ms**. With the connection kept →
-   **278 ms**. It is now `0` (never close for being idle), overridable with
-   `DATABASE_IDLE_TIMEOUT`.
+1. **A connection must never be thrown away — but it must be given back.**
+   `idle_timeout` was 20 seconds, which is how long a person spends reading a
+   page before clicking. Measured: query, idle 30s, query again → **2,187 ms**;
+   with the connection kept → **278 ms**. So it was set to `0`.
+
+   **`0` was the cause of `EMAXCONNSESSION`, and it is now 30.** On the *session*
+   pooler a client connection reserves a Postgres backend for as long as it is
+   held, and Supavisor refuses a sixteenth for the whole project. `0` therefore
+   did not mean "keep a connection warm" — it meant every process that ever ran
+   a query **permanently claimed up to `max` of a fifteen-slot budget**: a
+   `next start` on a laptop, every Vercel instance, a test run. They came back
+   only at `max_lifetime` (30 min) or when the process died.
+
+   Observed directly: fifteen session backends held, fourteen idle for nine
+   minutes, with one idle dev server the only thing running. That is why the
+   error appeared on localhost *and* Vercel, and why it appeared at **zero
+   traffic** — which is what made it look like misconfiguration rather than
+   load. Reproduced: four instances holding five each, `idle_timeout: 0` →
+   three of four served and one `EMAXCONNSESSION`; the same shape with a
+   non-zero timeout → four of four.
+
+   Thirty seconds is longer than a click-to-click interval, so ordinary
+   navigation still finds a warm connection, and short enough that an abandoned
+   instance is not holding a third of the budget a minute later.
+   `DATABASE_IDLE_TIMEOUT=0` restores the old behaviour and is only correct for
+   a deployment that really is one long-running server with the pool to itself.
 
 2. **A round trip is the unit of cost, not a query.** Two sequential queries
    cost ~400 ms whatever they select. Narrowing columns saves almost nothing;

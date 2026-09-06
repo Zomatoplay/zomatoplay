@@ -488,6 +488,7 @@ export type AuditAction =
   | "all_devices_logged_out"
   | "deposit_credited"
   | "deposit_failed"
+  | "deposit_address_released"
   | "withdrawal_approved"
   | "withdrawal_rejected"
   | "withdrawal_marked_paid"

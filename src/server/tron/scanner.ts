@@ -14,6 +14,7 @@ import { recordPipelineEvent, withTrace } from "../observability";
 import { newId } from "../write";
 import { getTronConfig, isTronConfigured, type TronConfig } from "./config";
 import { parseTransfer, REJECTION_LABELS, type RejectionReason } from "./parse";
+import { syncAndListWatchedAddresses } from "./pool";
 import {
   fetchSolidBlockNumber,
   fetchTransactionBlock,
@@ -24,9 +25,9 @@ import {
 /**
  * The deposit scanner.
  *
- * Polls TronGrid for TRC-20 transfers into the platform address, filters them
- * against the configured contract and recipient, and records the ones that pass
- * once they are irreversible.
+ * Polls TronGrid for TRC-20 transfers into every address in the deposit-address
+ * pool (`@/server/tron/pool`), filters them against the configured contract and
+ * recipient, and records the ones that pass once they are irreversible.
  *
  * WHY POLLING
  * -----------
@@ -38,13 +39,16 @@ import {
  *
  * WHAT MAKES IT SAFE
  * ------------------
- * - It never advances its cursor past a page it failed to fetch. A rate-limit
- *   response is an error, not an empty result.
+ * - It never advances an address's cursor past a page it failed to fetch. A
+ *   rate-limit response is an error, not an empty result.
  * - It records nothing until the transfer's block is solidified, when the
  *   confirmation policy is on.
  * - Recording is idempotent at the database level, so an overlapping window,
  *   a retry, or two scanners running at once cannot double-credit.
- * - It never assigns a user. That is an operator decision.
+ * - It resolves the recipient address to a user through `deposit_addresses`
+ *   and credits automatically when that resolves; an unrecognised or
+ *   unassigned recipient is recorded unattributed, exactly as before — the
+ *   scanner still never *guesses* an owner. See `recordObservedDeposit`.
  */
 
 export interface ScanSummary {
@@ -104,100 +108,39 @@ async function runScan(options: { dryRun?: boolean }): Promise<ScanSummary> {
     errors: [],
   };
 
-  const cursor = options.dryRun ? null : await readCursor(config);
-  const since =
-    cursor?.lastTimestamp
-      ? cursor.lastTimestamp.getTime() - CURSOR_OVERLAP_MS
-      : Date.now() - config.lookbackMs;
+  // The pool, not one address: `TRON_DEPOSIT_POOL_ADDRESSES` plus whatever the
+  // database already knows about — see `@/server/tron/pool`. A dry run never
+  // writes, including the pool sync, so it reads configuration only.
+  const addresses = options.dryRun
+    ? config.poolAddresses
+    : await syncAndListWatchedAddresses(config);
 
   let solidBlock: bigint;
   try {
     solidBlock = await fetchSolidBlockNumber(config);
     summary.solidBlock = solidBlock.toString();
   } catch (error) {
-    await noteFailure(config, error, options.dryRun);
+    // A block-height failure blocks the whole pass, not one address — every
+    // watched address's row records it, so none of them looks like a scan
+    // that simply never ran.
+    await Promise.all(
+      addresses.map((address) => noteFailure(config, address, error, options.dryRun)),
+    );
     throw error;
   }
 
-  let highestTimestamp = cursor?.lastTimestamp?.getTime() ?? 0;
-  let pageUrl: string | undefined;
-
-  try {
-    // Bounded: a runaway cursor or a very busy address must not turn one tick
-    // into an unbounded crawl.
-    for (let page = 0; page < 20; page += 1) {
-      const { transfers, nextUrl } = await fetchTrc20Transfers(config, {
-        address: config.depositAddress,
-        contract: config.usdtContract,
-        minTimestamp: since > 0 ? since : undefined,
-        pageUrl,
-      });
-
-      for (const raw of transfers) {
-        summary.scanned += 1;
-
-        const parsed = parseTransfer(raw, config);
-        if (!parsed.ok) {
-          summary.rejected[parsed.reason] =
-            (summary.rejected[parsed.reason] ?? 0) + 1;
-          continue;
-        }
-
-        const { transfer } = parsed;
-        highestTimestamp = Math.max(
-          highestTimestamp,
-          transfer.blockTimestamp?.getTime() ?? 0,
-        );
-
-        // The listing carries no block number, so solidity needs one more call.
-        const block = await fetchTransactionBlock(config, transfer.txHash);
-        const confirmed =
-          !config.requireConfirmation ||
-          (block !== null && block.blockNumber <= solidBlock);
-
-        if (!confirmed) {
-          // Deliberately not recorded as a credited-able deposit yet. The next
-          // pass will see it again — the overlap window exists for this.
-          summary.pending += 1;
-          continue;
-        }
-
-        if (options.dryRun) {
-          summary.created += 1;
-          continue;
-        }
-
-        const result = await recordObservedDeposit({
-          txHash: transfer.txHash,
-          from: transfer.from,
-          to: transfer.to,
-          contract: transfer.contract,
-          tokenSymbol: transfer.tokenSymbol,
-          amount: transfer.amount,
-          blockNumber: block?.blockNumber ?? null,
-          blockTimestamp:
-            transfer.blockTimestamp ??
-            (block?.blockTimestamp ? new Date(block.blockTimestamp) : null),
-          network: config.network,
-          confirmed: true,
-          confirmationsRequired: config.requireConfirmation ? 1 : 0,
-        });
-
-        countOutcome(summary, result.outcome);
-      }
-
-      if (!nextUrl) break;
-      pageUrl = nextUrl;
+  // Each address keeps its own cursor and fails independently — one address
+  // rate-limited or temporarily unreachable must not stop the rest of the pool
+  // from being scanned, exactly as one bad investment must not stop the
+  // settlement engine crediting the others.
+  for (const address of addresses) {
+    try {
+      await scanOneAddress(config, address, solidBlock, summary, options);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown error";
+      summary.errors.push(`${address}: ${message}`);
+      await noteFailure(config, address, error, options.dryRun);
     }
-  } catch (error) {
-    // The cursor is not advanced. Whatever was missed is re-read next pass;
-    // treating a failure as "nothing arrived" is how a scanner loses deposits.
-    await noteFailure(config, error, options.dryRun);
-    throw error;
-  }
-
-  if (!options.dryRun) {
-    await advanceCursor(config, highestTimestamp, solidBlock);
   }
 
   // A pass that found nothing and a scanner that has been broken since Tuesday
@@ -209,7 +152,7 @@ async function runScan(options: { dryRun?: boolean }): Promise<ScanSummary> {
     message:
       summary.errors.length > 0
         ? "Scan pass completed with errors"
-        : `Scanned ${summary.scanned} transfer${summary.scanned === 1 ? "" : "s"}`,
+        : `Scanned ${summary.scanned} transfer${summary.scanned === 1 ? "" : "s"} across ${addresses.length} address(es)`,
     errorMessage: summary.errors.length > 0 ? summary.errors.join("; ") : null,
     metadata: {
       scanned: summary.scanned,
@@ -217,12 +160,104 @@ async function runScan(options: { dryRun?: boolean }): Promise<ScanSummary> {
       updated: summary.updated,
       unchanged: summary.unchanged,
       pendingConfirmation: summary.pending,
+      poolSize: addresses.length,
       dryRun: Boolean(options.dryRun),
       solidBlock: summary.solidBlock ?? "unknown",
     },
   });
 
   return summary;
+}
+
+/** One address's worth of one pass: its own cursor, its own pages, its own advance. */
+async function scanOneAddress(
+  config: TronConfig,
+  address: string,
+  solidBlock: bigint,
+  summary: ScanSummary,
+  options: { dryRun?: boolean },
+): Promise<void> {
+  const cursor = options.dryRun ? null : await readCursor(config, address);
+  const since =
+    cursor?.lastTimestamp
+      ? cursor.lastTimestamp.getTime() - CURSOR_OVERLAP_MS
+      : Date.now() - config.lookbackMs;
+
+  let highestTimestamp = cursor?.lastTimestamp?.getTime() ?? 0;
+  let pageUrl: string | undefined;
+
+  // Bounded: a runaway cursor or a very busy address must not turn one tick
+  // into an unbounded crawl.
+  for (let page = 0; page < 20; page += 1) {
+    const { transfers, nextUrl } = await fetchTrc20Transfers(config, {
+      address,
+      contract: config.usdtContract,
+      minTimestamp: since > 0 ? since : undefined,
+      pageUrl,
+    });
+
+    for (const raw of transfers) {
+      summary.scanned += 1;
+
+      const parsed = parseTransfer(raw, config, address);
+      if (!parsed.ok) {
+        summary.rejected[parsed.reason] = (summary.rejected[parsed.reason] ?? 0) + 1;
+        continue;
+      }
+
+      const { transfer } = parsed;
+      highestTimestamp = Math.max(
+        highestTimestamp,
+        transfer.blockTimestamp?.getTime() ?? 0,
+      );
+
+      // The listing carries no block number, so solidity needs one more call.
+      const block = await fetchTransactionBlock(config, transfer.txHash);
+      const confirmed =
+        !config.requireConfirmation ||
+        (block !== null && block.blockNumber <= solidBlock);
+
+      if (!confirmed) {
+        // Deliberately not recorded as a credited-able deposit yet. The next
+        // pass will see it again — the overlap window exists for this.
+        summary.pending += 1;
+        continue;
+      }
+
+      if (options.dryRun) {
+        summary.created += 1;
+        continue;
+      }
+
+      const result = await recordObservedDeposit({
+        txHash: transfer.txHash,
+        from: transfer.from,
+        to: transfer.to,
+        contract: transfer.contract,
+        tokenSymbol: transfer.tokenSymbol,
+        amount: transfer.amount,
+        blockNumber: block?.blockNumber ?? null,
+        blockTimestamp:
+          transfer.blockTimestamp ??
+          (block?.blockTimestamp ? new Date(block.blockTimestamp) : null),
+        network: config.network,
+        confirmed: true,
+        confirmationsRequired: config.requireConfirmation ? 1 : 0,
+      });
+
+      countOutcome(summary, result.outcome);
+    }
+
+    if (!nextUrl) break;
+    pageUrl = nextUrl;
+  }
+
+  // The cursor only advances here, once this address's pages all succeeded —
+  // a page-fetch throw above skips straight past this and the caller records
+  // the failure instead, exactly as a single-address failure did before.
+  if (!options.dryRun) {
+    await advanceCursor(config, address, highestTimestamp, solidBlock);
+  }
 }
 
 function countOutcome(summary: ScanSummary, outcome: RecordOutcome) {
@@ -257,7 +292,7 @@ export function formatScanSummary(summary: ScanSummary): string {
 /* Cursor                                                                      */
 /* -------------------------------------------------------------------------- */
 
-async function readCursor(config: TronConfig) {
+async function readCursor(config: TronConfig, address: string) {
   const db = getDb();
   const [row] = await db
     .select()
@@ -266,7 +301,7 @@ async function readCursor(config: TronConfig) {
       and(
         eq(t.chainScanState.chain, "tron"),
         eq(t.chainScanState.network, config.network),
-        eq(t.chainScanState.address, config.depositAddress),
+        eq(t.chainScanState.address, address),
       ),
     )
     .limit(1);
@@ -275,6 +310,7 @@ async function readCursor(config: TronConfig) {
 
 async function advanceCursor(
   config: TronConfig,
+  address: string,
   highestTimestamp: number,
   solidBlock: bigint,
 ) {
@@ -288,7 +324,7 @@ async function advanceCursor(
       id: newId("scan", now),
       chain: "tron",
       network: config.network,
-      address: config.depositAddress,
+      address,
       lastBlockNumber: solidBlock,
       lastTimestamp,
       lastScanAt: now,
@@ -328,7 +364,12 @@ async function advanceCursor(
  * not merely absent from it — "no new deposits" and "no successful scan since
  * Tuesday" look identical from the deposits table alone.
  */
-async function noteFailure(config: TronConfig, error: unknown, dryRun?: boolean) {
+async function noteFailure(
+  config: TronConfig,
+  address: string,
+  error: unknown,
+  dryRun?: boolean,
+) {
   if (dryRun || !isDatabaseConfigured()) return;
 
   const message =
@@ -346,7 +387,7 @@ async function noteFailure(config: TronConfig, error: unknown, dryRun?: boolean)
         id: newId("scan", now),
         chain: "tron",
         network: config.network,
-        address: config.depositAddress,
+        address,
         lastScanAt: now,
         lastError: message,
         consecutiveFailures: 1,

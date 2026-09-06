@@ -85,9 +85,22 @@ describe("repositories", { skip }, () => {
   test("reads the wallet, and the numbers are numbers", async () => {
     const wallet = await findWalletBalance(db, DEMO);
     assert.ok(wallet);
-    assert.equal(wallet.available, 1250);
+    // Not an exact figure for `available`/`totalProfit`: the investment
+    // settlement engine (CLAUDE.md §10a) credits real, scheduled earnings on
+    // the demo account's active allocations exactly like any other account's,
+    // and a settlement pass run anywhere in this suite — or a real cron tick
+    // against this database — moves both upward. An exact assertion here
+    // would make the engine actually working look like a regression, the same
+    // trap the seeded-user-count assertion elsewhere in this file already
+    // avoids. `lockedInInvestments` is untouched by settlement (only
+    // `matureInvestment` moves it, and none of the demo account's allocations
+    // are due yet), so it stays an exact check.
+    assert.ok(wallet.available >= 1250, `expected at least the seeded 1250, got ${wallet.available}`);
     assert.equal(wallet.lockedInInvestments, 3900);
-    assert.equal(wallet.totalProfit, 842.35);
+    assert.ok(
+      wallet.totalProfit >= 842.35,
+      `expected at least the seeded 842.35, got ${wallet.totalProfit}`,
+    );
     // `numeric` comes back from the driver as a string unless mapped; a
     // regression here would silently turn arithmetic into concatenation.
     assert.equal(typeof wallet.available, "number");
@@ -191,9 +204,14 @@ describe("repositories", { skip }, () => {
     );
     assert.ok(withdrawals.every((withdrawal) => withdrawal.userName.length > 0));
 
-    // Totals come from the wallet table via a left join.
+    // Totals come from the wallet table via a left join. Not an exact figure
+    // — see the note in "reads the wallet, and the numbers are numbers" on
+    // why the settlement engine makes this a moving, not a fixed, number.
     const demo = users.find((user) => user.id === DEMO);
-    assert.equal(demo?.totals.availableUsdt, 1250);
+    assert.ok(
+      (demo?.totals.availableUsdt ?? 0) >= 1250,
+      `expected at least the seeded 1250, got ${demo?.totals.availableUsdt}`,
+    );
     assert.equal(demo?.restrictions.accountFrozen, false);
   });
 
@@ -259,12 +277,17 @@ describe("services read the database, not the seed modules", { skip }, () => {
 
   test("the CRM's allocations are the seeded rows, not @/data/admin", async () => {
     const live = await getAdminInvestments();
-    // Both are 29 now that the dataset is trimmed to thirty accounts, so the
-    // count alone no longer distinguishes database from fallback. The stronger
-    // check is below: an allocation belonging to an account the dataset drops
-    // exists in the mock module and must NOT come back from the database.
+    // The mock module is a fixed array — exactly 29 — but the live count is
+    // not: this same query also sees the throwaway allocations another
+    // integration test file's currently-running tests happen to have open at
+    // this instant (`money-lifecycle.integration.test.ts` runs real
+    // allocations through real settlement for tens of seconds at a time), and
+    // asserting an exact figure here would fail this test for activity that
+    // has nothing to do with it. The count alone was already not what
+    // distinguished database from fallback — the stronger check below, that a
+    // mock-only row never comes back from the database, is.
     assert.equal(adminInvestments.length, 29);
-    assert.equal(live.length, 29);
+    assert.ok(live.length >= 29, `expected at least the seeded 29, got ${live.length}`);
 
     const liveIds = new Set(live.map((investment) => investment.id));
     const droppedByTrim = adminInvestments.filter(

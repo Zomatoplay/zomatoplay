@@ -89,7 +89,7 @@ async function main() {
   }
 
   for (const raw of transfers) {
-    const parsed = parseTransfer(raw, config);
+    const parsed = parseTransfer(raw, config, config.depositAddress);
     if (!parsed.ok) {
       console.log(
         `  ✗ ${raw.transaction_id ?? "(no id)"} — skipped: ` +

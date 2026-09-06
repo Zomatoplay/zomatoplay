@@ -84,6 +84,16 @@ export async function debitWallet(
  * (investment_id, period_key) means a scheduler that fires twice, or is
  * replayed after a crash, inserts nothing the second time. The check is the
  * database's, not a prior `SELECT` — two concurrent runs would both pass that.
+ *
+ * `periodIndex` — the 1-based position this period holds in the allocation's
+ * own schedule (`investment-schedule.ts`'s `EarningPeriod.index`) — advances
+ * `investments.earnings_credited_periods`, the cursor `creditDueEarnings` uses
+ * to know which period is next. `greatest(…)` rather than a plain increment:
+ * two concurrent settlement attempts crediting different periods out of order
+ * must not walk the cursor backwards, and a replayed call for an
+ * already-credited period (which reaches this function only when something
+ * retries after its own crash, since `creditDueEarnings` itself only ever
+ * asks for periods past the cursor) must not move it at all.
  */
 export async function recordInvestmentEarning(
   request: {
@@ -91,6 +101,7 @@ export async function recordInvestmentEarning(
     userId: string;
     amount: Decimal;
     periodKey: string;
+    periodIndex: number;
     planName: string;
   },
   actor: Actor = SYSTEM_ACTOR,
@@ -132,12 +143,13 @@ export async function recordInvestmentEarning(
       .set({ creditedAt: now, ledgerTxId })
       .where(eq(t.investmentEarnings.id, inserted[0].id));
 
-    // The allocation's own running profit, added in Postgres like every other
-    // money value.
+    // The allocation's own running profit and its credited-period cursor,
+    // both added/advanced in Postgres like every other money value.
     await tx
       .update(t.investments)
       .set({
         profit: sql`${t.investments.profit} + ${request.amount}::numeric`,
+        earningsCreditedPeriods: sql`greatest(${t.investments.earningsCreditedPeriods}, ${request.periodIndex})`,
         updatedAt: now,
       })
       .where(eq(t.investments.id, request.investmentId));

@@ -337,6 +337,7 @@ export const auditActionLabels: Record<AuditAction, string> = {
   all_devices_logged_out: "All devices signed out",
   deposit_credited: "Deposit credited",
   deposit_failed: "Deposit marked failed",
+  deposit_address_released: "Deposit address released",
   withdrawal_approved: "Withdrawal approved",
   withdrawal_rejected: "Withdrawal rejected",
   withdrawal_marked_paid: "Withdrawal marked paid",
@@ -385,6 +386,7 @@ export const auditActionGroups: { label: string; actions: AuditAction[] }[] = [
     actions: [
       "deposit_credited",
       "deposit_failed",
+      "deposit_address_released",
       "withdrawal_approved",
       "withdrawal_rejected",
       "withdrawal_marked_paid",

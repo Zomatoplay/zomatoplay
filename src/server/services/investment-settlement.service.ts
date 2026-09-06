@@ -2,60 +2,69 @@ import "server-only";
 
 import { and, asc, eq, gt, lte, sql } from "drizzle-orm";
 
+import { decimalFrom } from "@/db/money";
 import { getDb, isDatabaseConfigured } from "@/db";
 import * as t from "@/db/schema";
 import { timestampValue } from "@/db/sql-values";
 
+import { recordInvestmentEarning } from "./wallet.service";
 import { matureInvestment } from "./investments-write.service";
-import { elapsedDaysFor, rewardScheduleFor } from "./investment-schedule";
+import { earningPeriodsFor, elapsedDaysFor, rewardScheduleFor } from "./investment-schedule";
 import { SYSTEM_ACTOR } from "../write";
 
 /**
- * The part of the allocation lifecycle that nothing was running.
+ * The allocation lifecycle's scheduled machinery: earnings, maturity, and the
+ * display schedule that describes both.
  *
- * WHAT WAS MISSING
- * ----------------
- * `createInvestment` and `matureInvestment` were both implemented and correct.
- * Nothing called the second one. So a real allocation was created, took the
- * money, and then froze: `elapsed_days` stayed at whatever it was stamped with,
- * the term progress bar never moved, and the row sat `active` indefinitely past
- * its own `matures_at` with the principal still counted as locked. The money
- * lifecycle stopped one step short of returning anybody's capital.
- *
- * This is the caller. It does two things, both of which are bookkeeping the
- * schema already describes:
- *
- *  1. **Refreshes the schedule** — `elapsed_days`, `next_reward_at` and
- *     `next_reward_amount`, all recomputed from `started_at` rather than
- *     incremented. A job that increments drifts when a run is missed; one that
- *     recomputes cannot. See `./investment-schedule`.
+ * WHAT THIS JOB DOES, IN ORDER
+ * -----------------------------
+ *  1. **Credits due earnings** (`creditDueEarnings`) — every fixed-term
+ *     allocation's own schedule (`investment-schedule.ts`) says exactly which
+ *     periods are due and for how much; this calls `recordInvestmentEarning()`
+ *     for each one a settlement pass has not yet reached. Non-compounding: a
+ *     period's amount always comes from the allocation's original
+ *     `projected_profit`, never from a principal a previous period enlarged.
  *  2. **Matures what is due** — hands each allocation past its `matures_at` to
  *     `matureInvestment`, which returns the principal to `available`, releases
  *     it from `locked_in_investments`, writes the ledger entry that explains
- *     the movement and audits it. That function was already idempotent (its
- *     `UPDATE` asserts `status = 'active'`), so a job that runs twice, or two
- *     jobs racing, mature it once.
+ *     the movement and audits it. That function is idempotent (its `UPDATE`
+ *     asserts `status = 'active'`), so a job that runs twice, or two jobs
+ *     racing, matures it once.
+ *  3. **Refreshes the display schedule** — `elapsed_days`, `next_reward_at`
+ *     and `next_reward_amount` for everything still running, all recomputed
+ *     from `started_at` and the credited-period cursor rather than
+ *     incremented. A job that increments drifts when a run is missed; one
+ *     that recomputes cannot.
  *
- * WHAT IT DELIBERATELY DOES NOT DO: CREDIT A REWARD
- * -------------------------------------------------
- * `recordInvestmentEarning()` exists, is idempotent on
- * `(investment_id, period_key)`, and is still called by nothing. That is not an
- * oversight left for later — it is the one rule this codebase does not define.
+ * Earnings are credited **before** maturity is checked, deliberately: maturity
+ * sets `status = 'matured'` and clears the schedule, and an allocation's final
+ * period is due exactly *at* `matures_at` (`investment-schedule.ts`'s
+ * `earningPeriodsFor`), so crediting it after maturity would find no `active`
+ * row left to credit against. Both steps still guard on `status = 'active'` in
+ * their own write, so nothing here assumes the order is what makes either one
+ * safe — only what makes both of them *complete* in one pass rather than two.
  *
- * A plan sells an `estimated_return_range`, a *range*, and
- * `estimated_return_percent` is a point inside it. `projected_profit` is
- * therefore a projection, and every screen is required to say so (CLAUDE.md
- * §10: never "guaranteed", always "estimated"/"projected", risk disclosure
- * adjacent). Paying out exactly `projected_profit ÷ periods` on a schedule
- * would convert that projection into a guarantee — a product and compliance
- * decision, not a gap in the plumbing, and one no data in this repository
- * makes.
+ * WHY THE RATE IS NOW EXACT, NOT A PROJECTION
+ * ---------------------------------------------
+ * This module used to credit nothing at all, because a plan's
+ * `estimated_return_percent` was a point inside a sold *range*
+ * (`estimated_return_low`/`high`) and paying `projected_profit ÷ periods` on a
+ * schedule would have converted that projection into a guarantee no product
+ * decision had made. That decision has since been made: the configured rate is
+ * now what the platform actually pays, and `projected_profit` — computed once,
+ * at `createInvestment`, from the rate in effect at the moment the allocation
+ * was made — is the total this function distributes. The UI still shows the
+ * range and still says "estimated"/"projected" (CLAUDE.md §10's language rules
+ * are about not promising a guarantee beyond what the product defines, not
+ * about whether the number is real), but the number underneath it is now the
+ * one the ledger actually moves.
  *
- * What is missing is a source of truth for what an allocation *actually*
- * earned. When there is one — real strategy performance, or an operator-entered
- * period result — it calls `recordInvestmentEarning()` with that amount and
- * this job is where it belongs. Until then, crediting anything here would be
- * inventing money.
+ * FLEXIBLE RESERVE IS EXCLUDED FROM BOTH STEPS
+ * -----------------------------------------------
+ * `duration_days: 0` has no term for `projected_profit` to be a total *over*,
+ * so there is no schedule to credit from — see `isOpenEnded()` and the
+ * `gt(durationDays, 0)` filter both steps apply, the same guard that already
+ * kept it out of maturity.
  */
 
 /**
@@ -71,6 +80,8 @@ const BATCH = 200;
 export interface SettlementSummary {
   /** Allocations whose schedule was recomputed. */
   refreshed: number;
+  /** Earning periods credited across every allocation in this pass. */
+  earningsCredited: number;
   /** Allocations that reached maturity in this pass. */
   matured: number;
   /** Allocations already matured by someone else between select and update. */
@@ -79,6 +90,110 @@ export interface SettlementSummary {
 }
 
 export class SettlementUnavailableError extends Error {}
+
+/**
+ * Credits every scheduled earning period that has fallen due and has not been
+ * credited yet, across active fixed-term allocations.
+ *
+ * One transaction *per period*, via `recordInvestmentEarning` — not one for
+ * the whole pass, and not even one per allocation. An allocation that missed
+ * several ticks (a paused cron, a redeploy) may have more than one period due
+ * at once, and each is an independent, idempotent money movement; a single bad
+ * period must not roll back the ones either side of it, the same reasoning
+ * `settleInvestments` already applies to maturity below.
+ *
+ * Reads `earnings_credited_periods` as the cursor and only ever asks for
+ * periods after it, so a long-running daily plan is not re-attempted from
+ * period one on every tick once it is caught up — `recordInvestmentEarning`'s
+ * own unique index is what makes a *retry* of an already-credited period safe,
+ * not a reason to manufacture one on every pass.
+ *
+ * Bounded to `MAX_PERIODS_PER_INVESTMENT` overdue periods per allocation, per
+ * pass. This matters exactly once for any given allocation — the first pass
+ * after either the allocation was created or this engine was deployed against
+ * an already-running one — and it matters a lot there: a daily allocation
+ * several months old with nothing ever credited would otherwise ask this one
+ * request to make a hundred-plus sequential transactional writes, which is
+ * both slower than the platform's request budget allows and unnecessary,
+ * since correctness only requires that the backlog *eventually* clears, not
+ * that it clears in one HTTP request. Whatever is left is exactly what the
+ * cursor is for: the next pass picks up where this one stopped, and nothing
+ * is lost or double-counted either way.
+ */
+const MAX_PERIODS_PER_INVESTMENT = 60;
+async function creditDueEarnings(
+  db: ReturnType<typeof getDb>,
+  now: Date,
+): Promise<{ credited: number; errors: string[] }> {
+  const errors: string[] = [];
+  let credited = 0;
+
+  const active = await db
+    .select({
+      id: t.investments.id,
+      userId: t.investments.userId,
+      planName: t.investments.planName,
+      startedAt: t.investments.startedAt,
+      maturesAt: t.investments.maturesAt,
+      durationDays: t.investments.durationDays,
+      rewardFrequency: t.investments.rewardFrequency,
+      projectedProfit: t.investments.projectedProfit,
+      earningsCreditedPeriods: t.investments.earningsCreditedPeriods,
+    })
+    .from(t.investments)
+    .where(
+      and(
+        eq(t.investments.status, "active"),
+        // Flexible Reserve has no term for `projected_profit` to be a total
+        // over — the same exclusion `settleInvestments` applies to maturity.
+        gt(t.investments.durationDays, 0),
+      ),
+    )
+    .orderBy(asc(t.investments.startedAt))
+    .limit(BATCH);
+
+  for (const investment of active) {
+    try {
+      const periods = earningPeriodsFor({
+        startedAt: investment.startedAt,
+        maturesAt: investment.maturesAt,
+        durationDays: investment.durationDays,
+        rewardFrequency: investment.rewardFrequency,
+        projectedProfit: decimalFrom(investment.projectedProfit),
+      });
+
+      const due = periods
+        .filter(
+          (period) =>
+            period.index > investment.earningsCreditedPeriods && period.dueAt <= now,
+        )
+        .slice(0, MAX_PERIODS_PER_INVESTMENT);
+
+      for (const period of due) {
+        const result = await recordInvestmentEarning(
+          {
+            investmentId: investment.id,
+            userId: investment.userId,
+            amount: period.amount,
+            periodKey: period.periodKey,
+            periodIndex: period.index,
+            planName: investment.planName,
+          },
+          SYSTEM_ACTOR,
+        );
+        if (result.credited) credited += 1;
+      }
+    } catch (error) {
+      // One allocation's schedule failing to credit must not stop the rest of
+      // the batch — the same reasoning `settleInvestments` applies to maturity.
+      errors.push(
+        `${investment.id}: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
+    }
+  }
+
+  return { credited, errors };
+}
 
 export async function settleInvestments(
   options: { now?: Date } = {},
@@ -93,19 +208,26 @@ export async function settleInvestments(
   const db = getDb();
   const summary: SettlementSummary = {
     refreshed: 0,
+    earningsCredited: 0,
     matured: 0,
     alreadyMatured: 0,
     errors: [],
   };
 
   /*
-   * Maturity first, then the schedule refresh.
+   * Earnings, then maturity, then the schedule refresh.
    *
-   * Order matters: maturing sets `next_reward_at` to null, and refreshing an
-   * allocation that has just matured would recompute a schedule for a row that
-   * no longer has one. Doing maturity first means the refresh below only ever
-   * sees rows that are genuinely still running.
+   * An allocation's final earning period is due exactly at `matures_at` (see
+   * the module comment), so crediting must run while the row is still
+   * `active` — after maturity there is no `active` row left to credit
+   * against. Maturity before the schedule refresh is the original ordering:
+   * maturing clears `next_reward_at`, and refreshing an allocation that has
+   * just matured would recompute a schedule for a row that no longer has one.
    */
+  const { credited, errors: earningErrors } = await creditDueEarnings(db, now);
+  summary.earningsCredited = credited;
+  summary.errors.push(...earningErrors);
+
   const due = await db
     .select({ id: t.investments.id })
     .from(t.investments)
@@ -165,6 +287,7 @@ export async function settleInvestments(
       durationDays: t.investments.durationDays,
       projectedProfit: t.investments.projectedProfit,
       rewardFrequency: t.investments.rewardFrequency,
+      earningsCreditedPeriods: t.investments.earningsCreditedPeriods,
       elapsedDays: t.investments.elapsedDays,
       nextRewardAt: t.investments.nextRewardAt,
       nextRewardAmount: t.investments.nextRewardAmount,
@@ -176,7 +299,10 @@ export async function settleInvestments(
 
   for (const investment of running) {
     const elapsedDays = elapsedDaysFor(investment, now);
-    const schedule = rewardScheduleFor(investment, now);
+    const schedule = rewardScheduleFor(
+      { ...investment, projectedProfit: decimalFrom(investment.projectedProfit) },
+      now,
+    );
 
     /*
      * Skipped when nothing would change.

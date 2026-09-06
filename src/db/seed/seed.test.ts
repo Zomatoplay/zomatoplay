@@ -89,12 +89,21 @@ test("every table in the schema is seeded", async () => {
    * rather than resuming from a position nothing ever scanned — and
    * `pipeline_events` is the record of what the system actually did. A fixture
    * there would make the one screen that exists to diagnose real problems the
-   * one screen guaranteed to be fiction.
+   * one screen guaranteed to be fiction. `plan_rate_history` is the same shape
+   * again: it exists to say who changed a plan's rate and when
+   * (`db/schema/plans.ts`), and no operator has ever edited a seeded plan — a
+   * fixture row would invent a change that did not happen, on the one table
+   * whose entire purpose is recording that a change genuinely did.
+   * `deposit_addresses` is the same again: it exists to say which real address
+   * belongs to which real account, and no seeded fixture account has ever
+   * asked for a deposit address or been handed one from the pool.
    */
   const operational = new Set([
     "investment_earnings",
     "chain_scan_state",
     "pipeline_events",
+    "plan_rate_history",
+    "deposit_addresses",
   ]);
 
   assert.deepEqual(

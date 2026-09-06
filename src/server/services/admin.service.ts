@@ -39,6 +39,8 @@ import {
   findPlatformSettings,
   listAdminAgents,
   listAuditLog,
+  listPlanRateHistory,
+  type PlanRateHistoryEntry,
 } from "../repositories/admin.repository";
 import { listAdminPlans } from "../repositories/catalogue.repository";
 import { listNotificationCampaigns } from "../repositories/engagement.repository";
@@ -93,6 +95,16 @@ export async function getAdminUsers(): Promise<AdminUser[]> {
 
 export async function getAdminPlans(): Promise<AdminPlan[]> {
   return fromDatabase(listAdminPlans, () => seedAdminPlans);
+}
+
+/**
+ * A plan's recorded rate changes, newest first. No seed equivalent — the
+ * history starts the first time a real plan is created or edited, and an
+ * empty list with no database configured is the honest answer for a feature
+ * with no mock predecessor.
+ */
+export async function getPlanRateHistory(planId: string): Promise<PlanRateHistoryEntry[]> {
+  return fromDatabase((db) => listPlanRateHistory(db, planId), () => []);
 }
 
 export async function getKycSubmissions(): Promise<KycSubmission[]> {

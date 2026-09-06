@@ -31,6 +31,7 @@ import {
   ignoreDeposit,
   reopenDeposit,
 } from "@/server/services/deposits.service";
+import { releaseDepositAddress } from "@/server/services/deposit-address.service";
 import {
   approveWithdrawal,
   markWithdrawalPaid,
@@ -366,6 +367,29 @@ export async function reopenDepositAction(input: {
     return { ok: true, message: "Deposit returned to the queue." };
   } catch (error) {
     return failed(error, "The deposit was not changed.");
+  }
+}
+
+/**
+ * Releases a deposit-address pool assignment back to `available`.
+ *
+ * The only way an address is ever un-assigned — see the doc comment on
+ * `deposit_addresses`. Refused by the service when any deposit against that
+ * address has not reached a terminal state, so this cannot be used to hand a
+ * still-active address to someone else.
+ */
+export async function releaseDepositAddressAction(input: {
+  addressId: string;
+  reason: string;
+}): Promise<AdminActionResult> {
+  try {
+    const operator = await requirePermission("deposits");
+    const reason = requireReason(input.reason, "release a deposit address");
+    await releaseDepositAddress({ addressId: input.addressId, reason }, operator.actor);
+    revalidate("/admin/deposits", "/admin");
+    return { ok: true, message: "Address released back to the pool." };
+  } catch (error) {
+    return failed(error, "The address was not released.");
   }
 }
 
@@ -772,6 +796,20 @@ export async function createPlanAction(
         updatedAt: now,
       });
 
+      // The opening entry in the rate's own history — no "before" to record,
+      // but the row it establishes is what every later change is a change
+      // *from*.
+      await tx.insert(t.planRateHistory).values({
+        id: newId("prh", now),
+        planId: id,
+        previousRatePercent: null,
+        newRatePercent: input.estimatedReturnPercent,
+        effectiveAt: now,
+        changedByActorId: operator.actor.id,
+        changedByLabel: operator.actor.name,
+        createdAt: now,
+      });
+
       audit({
         action: "plan_created",
         target: { type: "plan", id, label: input.name.trim() },
@@ -794,12 +832,23 @@ export async function createPlanAction(
 export async function updatePlanAction(input: {
   planId: string;
   plan: PlanInput;
+  /** Why the rate changed, if it did. Recorded on the rate-history row only. */
+  rateChangeReason?: string;
 }): Promise<AdminActionResult> {
   try {
     const operator = await requirePermission("plans");
     validatePlan(input.plan);
 
     await mutate(operator.actor, async ({ tx, now, audit }) => {
+      const [before] = await tx
+        .select({ estimatedReturnPercent: t.plans.estimatedReturnPercent })
+        .from(t.plans)
+        .where(eq(t.plans.id, input.planId))
+        .limit(1)
+        .for("update");
+
+      if (!before) throw new Error("That plan no longer exists.");
+
       const updated = await tx
         .update(t.plans)
         .set({
@@ -822,12 +871,41 @@ export async function updatePlanAction(input: {
 
       if (updated.length === 0) throw new Error("That plan no longer exists.");
 
+      /*
+       * The rate's own history, written only when the rate actually moved.
+       *
+       * `investments` already copies `projected_profit` onto each allocation
+       * at the moment it is created (CLAUDE.md §10a), so this edit never
+       * touches a running allocation's schedule — this row exists so the
+       * *change itself* — who, when, from what, to what — survives, rather
+       * than being recoverable only by reading `audit_logs.details` as prose.
+       * See the comment on `plan_rate_history` in `db/schema/plans.ts`.
+       */
+      if (before.estimatedReturnPercent !== input.plan.estimatedReturnPercent) {
+        await tx.insert(t.planRateHistory).values({
+          id: newId("prh", now),
+          planId: input.planId,
+          previousRatePercent: before.estimatedReturnPercent,
+          newRatePercent: input.plan.estimatedReturnPercent,
+          effectiveAt: now,
+          changedByActorId: operator.actor.id,
+          changedByLabel: operator.actor.name,
+          reason: input.rateChangeReason?.trim() || null,
+          createdAt: now,
+        });
+      }
+
       // Existing allocations keep the terms they were sold under: their rows
       // copied the plan's name and rates at creation and are not rewritten.
       audit({
         action: "plan_updated",
         target: { type: "plan", id: input.planId, label: input.plan.name.trim() },
-        details: `Updated ${input.plan.name.trim()}. Existing allocations keep their original terms.`,
+        details:
+          before.estimatedReturnPercent !== input.plan.estimatedReturnPercent
+            ? `Updated ${input.plan.name.trim()}. Rate changed from ` +
+              `${before.estimatedReturnPercent}% to ${input.plan.estimatedReturnPercent}%, ` +
+              `effective immediately for new allocations. Existing allocations keep their original terms.`
+            : `Updated ${input.plan.name.trim()}. Existing allocations keep their original terms.`,
       });
     });
 

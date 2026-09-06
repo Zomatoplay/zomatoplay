@@ -199,3 +199,93 @@ export function decimalFrom(value: number | string | null | undefined): Decimal 
   if (value === null || value === undefined) return ZERO;
   return decimal(typeof value === "string" ? value : value);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Splitting a total across periods                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Splits `total` into `parts` non-negative shares that sum to exactly `total`,
+ * with no fractional unit created or lost.
+ *
+ * Used to divide an allocation's total scheduled profit across its reward
+ * periods (CLAUDE.md §10a): non-compounding profit needs every period's amount
+ * to be a fixed share of the *original* total, and the shares still need to
+ * add up to it exactly. Floating point cannot promise that — `1000 / 3` three
+ * times does not sum back to `1000` in float64 — so this scales the amount to
+ * an integer count of the schema's smallest unit (1e-8 USDT) with `BigInt`,
+ * which is exact at any size, and does the division there.
+ *
+ * Each of the first `parts - 1` shares is `total ÷ parts`, truncated toward
+ * zero at the schema's scale; the last share is whatever is left, which is why
+ * it is not always exactly equal to the others — the same shape a bank uses
+ * when splitting a bill that does not divide evenly. `parts` must be a
+ * positive integer; the caller decides how many periods a term has.
+ */
+export function splitEvenly(total: Decimal, parts: number): Decimal[] {
+  if (!Number.isInteger(parts) || parts < 1) {
+    throw new MoneyError(`Cannot split an amount into ${parts} parts.`);
+  }
+  const totalUnits = toUnits(total);
+  const share = totalUnits / BigInt(parts);
+  const shares: Decimal[] = [];
+  for (let i = 0; i < parts - 1; i += 1) {
+    shares.push(fromUnits(share));
+  }
+  shares.push(fromUnits(totalUnits - share * BigInt(parts - 1)));
+  return shares;
+}
+
+/** Scales an exact decimal string to an integer count of `1e-MAX_SCALE` units. */
+function toUnits(amount: Decimal): bigint {
+  const negative = amount.startsWith("-");
+  const [whole, fraction = ""] = (negative ? amount.slice(1) : amount).split(".");
+  const units = BigInt(whole + fraction.padEnd(MAX_SCALE, "0"));
+  return negative ? -units : units;
+}
+
+/**
+ * An exact amount scaled by a percentage (`percent` = `"8.5"` meaning 8.5%),
+ * with no floating point at any point in the computation.
+ *
+ * Used wherever a percentage from a `percent` column (`numeric(8,4)`) needs to
+ * be applied to a `Decimal` amount — the reward-schedule stamp at
+ * `createInvestment` needs exactly this, because `value * percent / 100` in
+ * JavaScript is a float64 multiply-then-divide on values that came from exact
+ * columns, and the result is almost never itself exactly representable at the
+ * schema's 8-decimal scale — `decimal()` would correctly refuse most of them.
+ *
+ * Truncated toward zero at the schema's scale, the same simple rule
+ * `splitEvenly()` uses for its non-final shares. This is not required to
+ * match, digit for digit, whatever Postgres's own `numeric` arithmetic
+ * produces for the same expression elsewhere (a column computed directly in
+ * SQL is still the value of record) — it only has to be exact and
+ * deterministic in its own right, which truncation is.
+ */
+export function applyPercent(amount: Decimal, percent: Decimal): Decimal {
+  const PERCENT_SCALE = 4;
+  const negative = percent.startsWith("-");
+  const [whole, fraction = ""] = (negative ? percent.slice(1) : percent).split(".");
+  if (fraction.length > PERCENT_SCALE) {
+    throw new MoneyError(`Percent ${percent} has more than ${PERCENT_SCALE} decimal places.`);
+  }
+  const magnitude = BigInt(whole + fraction.padEnd(PERCENT_SCALE, "0"));
+  const percentUnits = negative ? -magnitude : magnitude;
+
+  // amount = amountUnits / 10^MAX_SCALE, percent = percentUnits / 10^PERCENT_SCALE.
+  // (amount * percent / 100) expressed back in amount-scale units reduces to
+  // amountUnits * percentUnits / 10^(PERCENT_SCALE + 2).
+  const resultUnits =
+    (toUnits(amount) * percentUnits) / BigInt(10) ** BigInt(PERCENT_SCALE + 2);
+  return fromUnits(resultUnits);
+}
+
+/** The inverse of `toUnits`. */
+function fromUnits(units: bigint): Decimal {
+  const negative = units < BigInt(0);
+  const abs = negative ? -units : units;
+  const digits = abs.toString().padStart(MAX_SCALE + 1, "0");
+  const whole = digits.slice(0, -MAX_SCALE);
+  const fraction = digits.slice(-MAX_SCALE);
+  return decimal(`${negative ? "-" : ""}${whole}.${fraction}`);
+}

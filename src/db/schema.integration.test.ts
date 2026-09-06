@@ -63,7 +63,7 @@ describe("schema", { skip }, () => {
     const live = new Set(rows.map((row) => row.table_name));
     const declared = tables.map(getTableName);
 
-    assert.equal(declared.length, 32, "the schema should declare 32 tables");
+    assert.equal(declared.length, 34, "the schema should declare 34 tables");
 
     assert.deepEqual(
       declared.filter((name) => !live.has(name)).sort(),
@@ -91,7 +91,7 @@ describe("schema", { skip }, () => {
     `);
     const live = new Map(rows.map((row) => [row.name, row.labels]));
 
-    assert.equal(enums.length, 41, "the schema should declare 41 enums");
+    assert.equal(enums.length, 43, "the schema should declare 43 enums");
 
     for (const declared of enums) {
       const labels = live.get(declared.enumName);
@@ -147,7 +147,7 @@ describe("schema", { skip }, () => {
       }
     }
 
-    assert.equal(declared.length, 26, "the schema should declare 26 foreign keys");
+    assert.equal(declared.length, 28, "the schema should declare 28 foreign keys");
 
     assert.deepEqual(
       declared.filter((key) => !live.has(key)).sort(),

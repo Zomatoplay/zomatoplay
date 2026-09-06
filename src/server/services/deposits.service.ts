@@ -6,6 +6,7 @@ import { decimalFrom, isPositive, numericValue, type Decimal } from "@/db/money"
 import * as t from "@/db/schema";
 import type { Tx } from "@/db";
 
+import { findOwnerOfAddress } from "../repositories/deposit-address.repository";
 import { applyLedgerEntry, ensureWallet } from "../repositories/wallet.repository";
 import { fromDatabase } from "../database";
 import { mutate, newId, withReason, SYSTEM_ACTOR, type Actor } from "../write";
@@ -16,12 +17,19 @@ import { mutate, newId, withReason, SYSTEM_ACTOR, type Actor } from "../write";
  * Two separate concerns, kept separate on purpose:
  *
  * - **Recording** is mechanical and automatic. The scanner sees a transfer and
- *   writes a row. It never guesses whose money it is.
- * - **Attribution** is a decision, made by an operator, and audited. See the
- *   note on the `deposits` table for why it cannot be automatic with a single
- *   receiving address.
+ *   writes a row.
+ * - **Attribution** is a lookup, not a guess: the recipient address is checked
+ *   against `deposit_addresses`. When it resolves to a user, that user is
+ *   credited automatically, in the same transaction as the recording — the
+ *   address *is* the identity, structurally, so there is nothing left for an
+ *   operator to decide. When it does not resolve (an address never assigned,
+ *   already released, or a transfer to the pre-pool shared address from before
+ *   this existed), the deposit is recorded unattributed exactly as before, and
+ *   `assignDepositToUser` below is how an operator resolves it by hand.
  *
- * Crediting only happens after both, and only once.
+ * Crediting only ever happens once, whichever path resolves it: both are
+ * guarded by the same re-asserted `WHERE status = …` pattern used everywhere
+ * else money moves in this codebase.
  */
 
 export interface ObservedTransfer {
@@ -58,6 +66,17 @@ export interface RecordResult {
  *
  * A transfer seen again while still unconfirmed gets its confirmation state
  * refreshed; one that is already credited is never touched again.
+ *
+ * AUTOMATIC ATTRIBUTION
+ * ----------------------
+ * Once a deposit reaches `confirmed` and has no `userId` yet, its recipient
+ * address is looked up in `deposit_addresses`. A resolved, currently-assigned
+ * owner is credited immediately, in this same transaction, through the exact
+ * ledger path an operator's manual assignment uses (`ensureWallet` +
+ * `applyLedgerEntry`) — this does not create a second way for money to move.
+ * An address that does not resolve (never assigned, released, or the legacy
+ * shared address) is left `userId = null`, exactly as before, for
+ * `assignDepositToUser` to resolve by hand.
  */
 export async function recordObservedDeposit(
   transfer: ObservedTransfer,
@@ -97,51 +116,127 @@ export async function recordObservedDeposit(
       .onConflictDoNothing({ target: [t.deposits.chain, t.deposits.txHash] })
       .returning({ id: t.deposits.id });
 
+    let depositId: string;
+    let outcome: RecordOutcome;
+    let eligibleForAutoCredit: boolean;
+
     if (inserted.length > 0) {
+      depositId = inserted[0].id;
+      outcome = "created";
+      eligibleForAutoCredit = transfer.confirmed;
       audit({
         action: "deposit_credited",
         target: {
           type: "deposit",
-          id: inserted[0].id,
+          id: depositId,
           label: `${transfer.amount} USDT from ${transfer.from}`,
         },
         details:
           `Detected ${transfer.amount} USDT on TRON ${transfer.network} ` +
-          `(${transfer.txHash}). Unassigned pending operator attribution.`,
+          `(${transfer.txHash}).`,
       });
-      return { outcome: "created" as const, depositId: inserted[0].id };
+    } else {
+      // Already known. Refresh confirmation state, but never re-open a deposit
+      // that has already moved money.
+      const [existing] = await tx
+        .select({ id: t.deposits.id, status: t.deposits.status, userId: t.deposits.userId })
+        .from(t.deposits)
+        .where(and(eq(t.deposits.chain, "tron"), eq(t.deposits.txHash, transfer.txHash)))
+        .limit(1);
+
+      if (!existing) return { outcome: "unchanged" as const, depositId: id };
+
+      if (existing.status === "credited" || existing.status === "ignored") {
+        return { outcome: "unchanged" as const, depositId: existing.id };
+      }
+
+      if (transfer.confirmed && existing.status !== "confirmed") {
+        await tx
+          .update(t.deposits)
+          .set({
+            status: "confirmed",
+            confirmedAt: now,
+            confirmationsCurrent: transfer.confirmationsRequired,
+            blockNumber: transfer.blockNumber,
+            blockTimestamp: transfer.blockTimestamp,
+            updatedAt: now,
+          })
+          .where(eq(t.deposits.id, existing.id));
+        depositId = existing.id;
+        outcome = "updated";
+        eligibleForAutoCredit = existing.userId === null;
+      } else {
+        return { outcome: "unchanged" as const, depositId: existing.id };
+      }
     }
 
-    // Already known. Refresh confirmation state, but never re-open a deposit
-    // that has already moved money.
-    const [existing] = await tx
-      .select({ id: t.deposits.id, status: t.deposits.status })
-      .from(t.deposits)
-      .where(and(eq(t.deposits.chain, "tron"), eq(t.deposits.txHash, transfer.txHash)))
+    if (!eligibleForAutoCredit) return { outcome, depositId };
+
+    const owner = await findOwnerOfAddress(tx, {
+      chain: "tron",
+      network: transfer.network as "shasta" | "nile" | "mainnet",
+      asset: "usdt",
+      address: transfer.to,
+    });
+    if (!owner) return { outcome, depositId };
+
+    const [user] = await tx
+      .select({ id: t.users.id, name: t.users.fullName, displayId: t.users.displayId })
+      .from(t.users)
+      .where(eq(t.users.id, owner.userId))
       .limit(1);
+    // The address row points at a user id that no longer resolves — leave the
+    // deposit unassigned for an operator rather than crediting nobody's wallet.
+    if (!user) return { outcome, depositId };
 
-    if (!existing) return { outcome: "unchanged" as const, depositId: id };
+    await ensureWallet(tx, user.id);
+    const ledgerTxId = await applyLedgerEntry(tx, {
+      userId: user.id,
+      type: "deposit",
+      amount: transfer.amount,
+      description: "Deposit received",
+      reference: transfer.txHash,
+      network: "trc20",
+      confirmations: {
+        current: transfer.confirmationsRequired,
+        required: transfer.confirmationsRequired,
+      },
+      occurredAt: now,
+      buckets: { totalDeposited: transfer.amount },
+    });
 
-    if (existing.status === "credited" || existing.status === "ignored") {
-      return { outcome: "unchanged" as const, depositId: existing.id };
+    const credited = await tx
+      .update(t.deposits)
+      .set({
+        userId: user.id,
+        assignedAt: now,
+        assignedBy: "deposit-address-pool",
+        status: "credited",
+        creditedAt: now,
+        updatedAt: now,
+      })
+      // Re-asserted so a deposit an operator credited manually between this
+      // transaction starting and reaching here is refused, not double-paid.
+      .where(and(eq(t.deposits.id, depositId), eq(t.deposits.status, "confirmed")))
+      .returning({ id: t.deposits.id });
+
+    if (credited.length === 0) {
+      throw new DepositError("That deposit was credited by someone else just now.");
     }
 
-    if (transfer.confirmed && existing.status !== "confirmed") {
-      await tx
-        .update(t.deposits)
-        .set({
-          status: "confirmed",
-          confirmedAt: now,
-          confirmationsCurrent: transfer.confirmationsRequired,
-          blockNumber: transfer.blockNumber,
-          blockTimestamp: transfer.blockTimestamp,
-          updatedAt: now,
-        })
-        .where(eq(t.deposits.id, existing.id));
-      return { outcome: "updated" as const, depositId: existing.id };
-    }
+    audit({
+      action: "deposit_credited",
+      target: {
+        type: "deposit",
+        id: depositId,
+        label: `${transfer.amount} USDT · ${transfer.txHash}`,
+      },
+      details:
+        `Automatically attributed to ${user.name} (${user.displayId}) via their ` +
+        `deposit address and credited ${transfer.amount} USDT. Ledger entry ${ledgerTxId}.`,
+    });
 
-    return { outcome: "unchanged" as const, depositId: existing.id };
+    return { outcome, depositId };
   });
 }
 

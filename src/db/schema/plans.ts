@@ -76,6 +76,71 @@ export const plans = pgTable(
 );
 
 /**
+ * A record of a plan's profit rate changing.
+ *
+ * WHY THIS EXISTS
+ * ----------------
+ * `plans.estimated_return_percent` is now the rate the settlement engine
+ * actually pays (CLAUDE.md §10a), not only a marketing projection. An operator
+ * editing it in `/admin/plans` is therefore a financially meaningful act, and
+ * `updatePlanAction` used to just overwrite the column — the old figure was
+ * gone the moment the new one was saved, recoverable only by reading
+ * `audit_logs.details` as prose.
+ *
+ * WHAT MAKES HISTORICAL EARNINGS SAFE FROM A RATE CHANGE
+ * -------------------------------------------------------
+ * This table is a record of what changed and when — it is not consulted by
+ * the settlement engine. That is deliberate, not an oversight: `investments`
+ * already copies `plan_name`, `reward_frequency` and, via `projected_profit`,
+ * the rate itself onto the allocation row at the moment it is created (the
+ * comment at the top of `investments.ts` has said "the plan reference stays
+ * for navigation; the terms are a snapshot" since before this table existed).
+ * A running allocation's schedule is entirely a function of its own
+ * `projected_profit`, `duration_days` and `started_at` — none of which this
+ * table, or a later edit to `plans`, ever touches. So:
+ *
+ *   - an allocation's periods already credited keep the amount they were
+ *     credited at, because nothing rewrites a credited `investment_earnings`
+ *     row;
+ *   - an allocation's periods **not yet credited** are still paid at the rate
+ *     the allocation was sold at, because they are computed from its own
+ *     `projected_profit`, not from `plans.estimated_return_percent`;
+ *   - only an allocation created **after** the change reads the new rate,
+ *     because `createInvestment` reads `plans` at the moment it runs.
+ *
+ * "All users enrolled in the same plan are governed by the same effective
+ * rate from that point forward" therefore means new enrollments, not a
+ * retroactive repricing of a contract already sold — the same rule this
+ * codebase already applies to a plan's name and term, extended to its rate.
+ * Recomputing a *running* allocation's remaining periods against a new rate
+ * was considered and rejected: nothing in the product's terms tells a
+ * customer their return can change mid-term, and doing it anyway would be
+ * inventing a rule on the one table where inventing rules pays real money.
+ */
+export const planRateHistory = pgTable(
+  "plan_rate_history",
+  {
+    id: text("id").primaryKey(),
+    planId: text("plan_id")
+      .notNull()
+      .references(() => plans.id, { onDelete: "cascade" }),
+    /** Null only for the row written at plan creation, which has no "before". */
+    previousRatePercent: percent("previous_rate_percent"),
+    newRatePercent: percent("new_rate_percent").notNull(),
+    /** When the new rate took effect — always "now" from the operator's edit. */
+    effectiveAt: ts("effective_at").notNull(),
+    /** The operator (or `system` for the seed/creation row) who made the change. */
+    changedByActorId: text("changed_by_actor_id").notNull(),
+    changedByLabel: text("changed_by_label").notNull(),
+    reason: text("reason"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("plan_rate_history_plan_idx").on(table.planId, table.effectiveAt),
+  ],
+);
+
+/**
  * Deposit networks and their receiving addresses.
  *
  * INTEGRATION POINT: the deposit service issues an address per user, so this

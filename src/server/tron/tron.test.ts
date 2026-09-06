@@ -128,7 +128,7 @@ test("reports whether TRON is configured at all", () => {
 /* -------------------------------------------------------------------------- */
 
 test("accepts a well-formed incoming USDT transfer", () => {
-  const result = parseTransfer(transfer(), config());
+  const result = parseTransfer(transfer(), config(), DEPOSIT);
   assert.ok(result.ok);
   assert.equal(result.transfer.amount, "1.5");
   assert.equal(result.transfer.from, SENDER);
@@ -142,19 +142,20 @@ test("ignores a different TRC-20 token", () => {
   const result = parseTransfer(
     transfer({ token_info: { symbol: "USDT", address: SENDER, decimals: 6 } }),
     config(),
+    DEPOSIT,
   );
   assert.ok(!result.ok);
   assert.equal(result.reason, "wrong_contract");
 });
 
 test("ignores a transfer to another address", () => {
-  const result = parseTransfer(transfer({ to: SENDER }), config());
+  const result = parseTransfer(transfer({ to: SENDER }), config(), DEPOSIT);
   assert.ok(!result.ok);
   assert.equal(result.reason, "wrong_recipient");
 });
 
 test("ignores a self-transfer", () => {
-  const result = parseTransfer(transfer({ from: DEPOSIT, to: DEPOSIT }), config());
+  const result = parseTransfer(transfer({ from: DEPOSIT, to: DEPOSIT }), config(), DEPOSIT);
   assert.ok(!result.ok);
   assert.equal(result.reason, "outgoing");
 });
@@ -165,13 +166,14 @@ test("refuses to guess the token's decimals", () => {
   const result = parseTransfer(
     transfer({ token_info: { symbol: "USDT", address: CONTRACT } }),
     config(),
+    DEPOSIT,
   );
   assert.ok(!result.ok);
   assert.equal(result.reason, "missing_decimals");
 });
 
 test("scales by the decimals the token reports", () => {
-  const six = parseTransfer(transfer({ value: "2500000" }), config());
+  const six = parseTransfer(transfer({ value: "2500000" }), config(), DEPOSIT);
   assert.ok(six.ok);
   assert.equal(six.transfer.amount, "2.5");
 
@@ -181,6 +183,7 @@ test("scales by the decimals the token reports", () => {
       token_info: { symbol: "USDT", address: CONTRACT, decimals: 18 },
     }),
     config(),
+    DEPOSIT,
   );
   assert.ok(eighteen.ok);
   assert.equal(eighteen.transfer.amount, "2.5");
@@ -197,14 +200,14 @@ test("rejects invalid or empty transaction data", () => {
   ];
 
   for (const [override, reason] of cases) {
-    const result = parseTransfer(transfer(override), config());
+    const result = parseTransfer(transfer(override), config(), DEPOSIT);
     assert.ok(!result.ok, `${reason} should be rejected`);
     assert.equal(result.reason, reason);
   }
 });
 
 test("handles a transfer with no block timestamp", () => {
-  const result = parseTransfer(transfer({ block_timestamp: undefined }), config());
+  const result = parseTransfer(transfer({ block_timestamp: undefined }), config(), DEPOSIT);
   assert.ok(result.ok);
   assert.equal(result.transfer.blockTimestamp, null);
 });

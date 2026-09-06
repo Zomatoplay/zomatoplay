@@ -98,20 +98,27 @@ scoped reads and every write refuse instead, which is deliberate — see §16.3.
   it cannot invalidate the Supabase refresh token behind it, because that needs
   the service-role key this project deliberately does not hold (§19.6). The UI
   and the audit line both say so rather than implying otherwise.
-- Per-user deposit addresses, which is what would make attribution automatic.
+- **True per-user, HD-derived deposit addresses.** A small *pool* of
+  operator-provided addresses exists and makes attribution automatic for
+  whichever user each one is assigned to (§18.8) — but the pool is not
+  minted per signup, and no address in it is derived from a private key this
+  application has ever touched. That is a deliberate key-custody decision,
+  not an oversight: see §18.8 for exactly what is missing and why it was not
+  guessed at.
 - A real KYC provider, **and no document storage**. The flow now opens the real
   file picker and the real camera, but nothing is transmitted: only the document
   type, the real filename, its size and the last four characters of the document
   number are recorded. `liveness_check_passed` is therefore always `false` and
   carries a `liveness_not_verified` risk flag — see §23.
-- A real investment engine. Accrual exists as `recordInvestmentEarning()` with
-  its idempotency key; no scheduler calls it (§16.5).
 - Referral payout **automation**. The programme itself is complete and works
   end to end: an allocation accrues commission at the beneficiary's VIP rate,
   moves their standing, promotes their level, and an operator releases the
   pending entry into their wallet from `/admin/referrals` (§10). What is absent
-  is anything that releases it *without* an operator, which needs the investment
-  engine above to define when an allocation has settled.
+  is anything that releases it *without* an operator — the investment engine
+  now settles allocations (§10a, §16.5), but nothing in the product's rules
+  says commission becomes payable the moment an allocation does, so this is
+  still a deliberate operator decision rather than something a settlement pass
+  guesses at.
 - Real notification delivery beyond in-app.
 - Phone/SMS one-time codes. Email only; the `phone` field is preserved on the
   profile so it can be added without a migration.
@@ -463,36 +470,67 @@ Rules:
 - **Deposit lifecycle** — select network → show address → await transfer →
   detected → confirmations accumulate → credited.
 
-### 10a The allocation lifecycle, and the one rule that is missing
+### 10a The allocation lifecycle
 
     deposit → available → allocation (principal locked)
-            → schedule maintained → maturity → principal returned
+            → scheduled earnings credited → maturity → principal returned
 
 `createInvestment` debits `available`, raises `total_invested` and
-`locked_in_investments`, writes the ledger entry and stamps the reward schedule.
+`locked_in_investments`, writes the ledger entry, and computes and stores the
+allocation's **total scheduled profit** as `projected_profit` — the plan's
+`estimated_return_percent` applied to the amount, at the rate in effect the
+moment the allocation is made (via `applyPercent()` in `@/db/money`, exact
+integer arithmetic, never a JavaScript float on a money value). That figure is
+a snapshot: it is computed once, stored on the row, and never recomputed from
+the plan again, which is what makes a later edit to the plan's rate reach only
+allocations made after it (§10b).
+
 `/api/cron/settle-investments` — hourly, `CRON_SECRET`, same shape as the
-deposit scan — recomputes `elapsed_days` and the schedule from `started_at`
-(recomputed, never incremented, so a missed run cannot drift) and hands
-everything past its `matures_at` to `matureInvestment()`, which returns the
-principal through the ledger. Both halves were implemented before and **neither
-had a caller**: an allocation took the money and then froze, sitting `active`
-past its own maturity with the principal still locked.
+deposit scan — does three things, in order, via `settleInvestments()` in
+`investment-settlement.service.ts`:
 
-**`duration_days: 0` means open-ended, not "already matured".** Flexible Reserve
-is sold as "no fixed term — funds stay allocated until you withdraw them", and
-`matures_at` is computed as `started_at + 0 days`. Any arithmetic that trusts
-that column alone concludes such a row matured the instant it was created, and
-a settler without the `duration_days > 0` filter would force the principal back
-out of a product whose entire point is that the customer chooses when. There is
-a test named for it; do not remove the filter.
+1. **Credits every due earning period** (`creditDueEarnings`). Each fixed-term
+   allocation's own schedule (`investment-schedule.ts`'s `earningPeriodsFor`)
+   says exactly which periods exist, when each is due, and how much it is
+   for — the plan's configured `reward_frequency` (`daily` / `weekly` /
+   `monthly` / `on_maturity`) decides the period length, and the engine reads
+   it rather than assuming one. `recordInvestmentEarning()` credits each due,
+   not-yet-credited period, guarded by a unique index on
+   `(investment_id, period_key)` so a replay or an overlapping run cannot pay
+   it twice, and by `investments.earnings_credited_periods` — a cursor the
+   same credit advances — so a caught-up allocation is not re-attempted every
+   tick once there is nothing left to do.
+2. **Matures what is due** — recomputes `elapsed_days` and hands everything
+   past its `matures_at` to `matureInvestment()`, which returns the principal
+   through the ledger. Earnings are credited *before* maturity is checked: an
+   allocation's final period is due exactly at `matures_at`, so crediting it
+   has to happen while the row is still `active`.
+3. **Refreshes the display schedule** — `next_reward_at` and
+   `next_reward_amount` for everything still running, recomputed from
+   `started_at` and the credited-period cursor rather than incremented, so a
+   missed run cannot drift.
 
-**Nothing credits a reward, deliberately.** `recordInvestmentEarning()` exists,
-is idempotent on `(investment_id, period_key)`, and is called by nothing —
-because the amount is the one financial rule this codebase does not define. See
-§13 item 7. `next_reward_amount` is a *forecast* the schema asks for, computed
-as `projected_profit ÷ (duration_days ÷ period_days)` — the arithmetic every
-seeded allocation already carries — and it is displayed under the language rules
-above. It is not a promise to pay it.
+All three steps were implemented before the scheduler existed and **had no
+caller**: an allocation took the money and then froze, sitting `active` past
+its own maturity with the principal still locked and nothing ever credited.
+
+**Non-compounding, exactly.** Every period's amount is a fixed share of the
+*original* `projected_profit`, split by `splitEvenly()` (`@/db/money`) using
+integer arithmetic on the schema's smallest unit — so the shares always sum to
+exactly the total sold, with the last period absorbing whatever the others'
+truncation leaves, and a credited period never enlarges the base the next one
+is computed from.
+
+**`duration_days: 0` means open-ended, not "already matured" — and not
+scheduled for earnings either.** Flexible Reserve is sold as "no fixed term —
+funds stay allocated until you withdraw them", and `matures_at` is computed as
+`started_at + 0 days`. Any arithmetic that trusts that column alone concludes
+such a row matured the instant it was created, and a settler without the
+`duration_days > 0` filter would force the principal back out of a product
+whose entire point is that the customer chooses when. The same filter excludes
+it from `creditDueEarnings`: an open-ended allocation has no term for
+`projected_profit` to be a total *over*, so there is no schedule to credit it
+against. There are tests named for both; do not remove either filter.
 
 **An open-ended allocation is ended by the customer, and only by them.**
 `endOpenEndedInvestment()` → `endAllocationAction` → the *Return funds* control
@@ -513,6 +551,35 @@ is deliberate. Starter says "after day 7 with forfeiture of accrued rewards",
 Balanced says "after day 30 with a 2% exit fee on principal". Both are rules,
 neither is built, and returning the principal in full would be inventing terms
 more generous than the ones sold.
+
+### 10b Changing a plan's rate
+
+`updatePlanAction` writes a `plan_rate_history` row whenever an edit changes
+`estimated_return_percent` — previous rate, new rate, an `effective_at`
+timestamp (always "now"), and the operator who made the change. It is an
+append-only audit trail, read by `getPlanRateHistory()`; nothing updates or
+deletes a row in it, the same rule `audit_logs` follows.
+
+**It changes nothing about a running allocation.** `investments.projected_profit`
+is a snapshot taken at `createInvestment` (§10a) — the plan's terms are copied
+onto the allocation, not joined at read time, the same rule that already
+applied to a plan's name and duration before this table existed. So:
+
+- a period already credited keeps the amount it was credited at, because
+  nothing ever rewrites a settled `investment_earnings` row;
+- an allocation's periods **not yet credited** are still paid from its own
+  `projected_profit`, computed at the rate it was sold at — a rate change never
+  reaches a period the engine has not credited yet, any more than it reaches
+  one already credited;
+- only an allocation created **after** the edit reads the new rate, because
+  `createInvestment` reads `plans` at the moment it runs.
+
+Recomputing a *running* allocation's remaining periods against a new rate was
+considered and rejected: nothing in the product's terms tells a customer their
+return can change mid-term, and doing so would be inventing a rule on the one
+table where inventing rules pays real money. "All accounts enrolled in a plan
+are governed by the same rate from that point forward" is therefore true of new
+enrollments, not a retroactive repricing of a contract already sold.
 
 ### Language discipline (important)
 
@@ -613,18 +680,16 @@ Ordered roughly by dependency.
    `DepositFlowStage` states, removal of the demo simulation control.
 5. **Withdrawal / payout rails** — real INR payouts and status transitions.
 6. **Rates API** — replace `getUsdtInrRate()`.
-7. **Investment engine** — the *reward amount*, and only that. Maturity and the
-   reward schedule now run: `/api/cron/settle-investments` returns principal at
-   term end and keeps `elapsed_days` / `next_reward_at` / `next_reward_amount`
-   current (§10a). What no data in this repository defines is what an
-   allocation **actually earns** — a plan sells an `estimated_return_range` and
-   `estimated_return_percent` is a point inside it, so paying
-   `projected_profit ÷ periods` would turn a projection into a guarantee. When
-   there is a source of truth for real performance, it calls
-   `recordInvestmentEarning()` from that job and nothing else changes.
+7. **Investment engine — done.** `/api/cron/settle-investments` credits every
+   due earning period, returns principal at term end, and keeps
+   `elapsed_days` / `next_reward_at` / `next_reward_amount` current (§10a). The
+   configured plan rate is what it actually pays, non-compounding, exact to the
+   last decimal place. What remains is the product decision in item 8 below,
+   not plumbing.
 8. **Referral payouts** — the *calculation* is done (§10); what remains is
-   releasing `pending` commission into a wallet, which needs the settlement in
-   (7) to exist first.
+   releasing `pending` commission into a wallet *without* an operator, and
+   there is still no product rule for exactly when an allocation should be
+   considered to have "settled" for that purpose — see §23.
 9. **Reporting** — the CRM dashboard's aggregates and chart series, still on
    seed data for the reason given in §16.5.
 10. **Localisation** — `settings/language` lists the intended locales.
@@ -1346,7 +1411,8 @@ the seeded rows.
 `npm test` runs `node:test` through `tsx`, with `--conditions=react-server` so
 `server-only` modules resolve the way Next resolves them. Tests that need a
 database skip themselves when `DATABASE_URL` is unset, so the suite stays green
-on a fresh clone. **136 tests with a database configured.**
+on a fresh clone. **183 tests with a database configured**, all passing as of
+2026-09-06.
 
 **Do not assert exact row counts against the live database.** Four assertions
 did, and all four broke the first time a real person registered and submitted
@@ -1366,6 +1432,9 @@ appears twice, that there are *at least* `SEED_USER_COUNT` accounts.
 | `server/data-access.integration.test.ts` | yes | repositories and services |
 | `server/auth-and-kyc.integration.test.ts` | yes | auth boundary, operator gate, KYC lifecycle |
 | `server/writes.integration.test.ts` | yes | ledger, idempotency, overdrafts, audit |
+| `server/money-lifecycle.integration.test.ts` | yes | allocation → maturity end to end, the investment earnings engine (daily/weekly/monthly, exact rounding, missed-cron catch-up, Flexible Reserve exclusion, rate-change isolation) |
+| `server/deposit-address.integration.test.ts` | yes | pool allocation (claim, reuse, no cross-user leakage, no auto-release), automatic attribution and crediting, idempotency under concurrency |
+| `server/tron/tron.test.ts` | no | TRON config validation and transfer parsing/filtering, against fixtures |
 | `server/referrals.integration.test.ts` | yes | commission accrual, tiers, and that it credits nobody |
 | `server/pipeline.integration.test.ts` | partly | redaction and correlation with no database; recording with one |
 
@@ -1379,6 +1448,21 @@ Two are worth knowing about:
   both directions**: declared-but-missing *and* present-but-undeclared, plus
   every enum's labels in order, every foreign key's target, and that no money
   column has become a float.
+- **`settleInvestments()` is global, and integration test files share one
+  live database.** A test in `money-lifecycle.integration.test.ts` now runs
+  real allocations through real settlement for tens of seconds at a time
+  (crediting a real backlog of periods, one transaction each), and
+  `settleInvestments()` processes *every* active fixed-term allocation in the
+  database when it runs — including scratch rows a different file's test has
+  open at that exact moment. Two tests found this the hard way: an exact
+  `investments` row count in `data-access.integration.test.ts`, and a blanket
+  `summary.errors.length === 0` in `money-lifecycle.integration.test.ts`
+  itself, both failed for allocations that had nothing to do with the test
+  that asserted on them. The fix in both places is the same shape as the
+  seeded-row-count rule two sections up: assert the property this specific
+  test owns (an allocation's own id is not in the error list; there are *at
+  least* the seeded rows), not a fact about the whole shared table. See
+  `assertNoErrorsFor()` in `money-lifecycle.integration.test.ts`.
 
 ---
 
@@ -1574,10 +1658,20 @@ Read-only, Shasta only. `@/server/tron/`.
 ### 18.2 The pipeline
 
 ```
-TronGrid  →  parse/filter  →  confirmation check  →  deposits row (unassigned)
-                                                          ↓  operator assigns
-                                             ledger entry + balance + audit
+TronGrid  →  parse/filter  →  confirmation check  →  deposits row
+                                                          │
+                                        recipient in deposit_addresses?
+                                          │                     │
+                                         yes                    no
+                                          │                     │
+                              credited automatically      unassigned, in
+                              (ledger + balance + audit)  the operator queue
 ```
+
+The right-hand branch (§18.4, unchanged from before this pool existed) is
+still how a transfer to the legacy shared address, or to a pool address that
+was never assigned, gets attributed — by an operator, in `/admin/deposits`,
+never by guessing.
 
 Three filters decide what counts, and all three are enforced locally even
 where TronGrid was asked to do it:
@@ -1602,27 +1696,32 @@ pass; the poll window overlaps by a minute so nothing falls between passes.
 should not be used anywhere real: crediting before finality means crediting
 money a re-org can take back.
 
-### 18.4 Deposit attribution — the limitation
+### 18.4 Deposit attribution
 
-**A blockchain transaction does not identify which user paid.**
+**A blockchain transaction does not identify which user paid — unless the
+recipient address itself already does.**
 
-There is one platform receiving address. A TRC-20 transfer carries a sender
-address and nothing else — no memo, no invoice id. Two users withdrawing from
-the same exchange are indistinguishable on-chain, and a user can pay from an
-address they have never mentioned.
+Until this pool existed there was one platform receiving address, and this
+whole section described why that could never be attributed automatically. It
+still cannot be, *for that one address* — a TRC-20 transfer carries a sender
+and nothing else, no memo, no invoice id, and two users paying from the same
+exchange withdrawal are indistinguishable on-chain. But `deposit_addresses`
+(§18.8) now lets the *recipient* carry the identity instead: a transfer to an
+address this application handed to a specific user is that user's money,
+structurally, not by inference.
 
-So:
+So, today:
 
-- `deposits.user_id` is **nullable**, and the scanner never sets it.
-- An operator attributes each deposit in `/admin/deposits`. That action credits
-  the wallet and is audited.
-- The CRM offers no "best match" suggestion, on purpose. A plausible suggestion
-  is the thing most likely to be accepted without checking, and crediting the
-  wrong account is a loss, not a display bug.
-
-**The way out is per-user deposit addresses.** Nothing here blocks it: add a
-`deposit_addresses` table, resolve `to_address` through it at detection, and
-`user_id` becomes derivable. Every other column stays as it is.
+- A transfer to an **assigned pool address** resolves to its owner and is
+  credited automatically, in the same transaction that records it — see
+  `recordObservedDeposit` in `@/server/services/deposits.service`.
+- A transfer to the **legacy shared address**, or to a pool address that was
+  never assigned, still cannot say who paid. `deposits.user_id` stays
+  **nullable** for exactly this case, and an operator attributes it by hand in
+  `/admin/deposits` — the CRM still offers no "best match" suggestion, on
+  purpose, for the same reason as before: a plausible guess is the thing most
+  likely to be accepted without checking, and crediting the wrong account is a
+  loss, not a display bug.
 
 **A tx-hash claim flow is the obvious shortcut and it is not safe on its own.**
 The idea — the user pastes their transaction hash, the server verifies it
@@ -1633,19 +1732,24 @@ has no way to tell the two claimants apart, because on a shared address the
 transfer carries nothing that identifies the payer. Verifying the hash proves
 the *transfer* happened; it proves nothing about *who is asking*.
 
-Two things do make a claim safe, and both are decisions rather than code:
+Two things make a claim safe, and this codebase now has the first one for
+whoever holds a pool address:
 
-- **Per-user addresses**, as above. Attribution stops being a claim at all.
-- **Binding the sender address to the account first.** A claim is accepted only
-  when the transfer's `from` matches an address the account proved it controls
-  (a signed message, or a small verification transfer). An attacker cannot
-  forge `from`, so the race disappears — at the cost of a whole address
-  ownership flow, and of refusing anybody who paid from an exchange, which is
-  most people.
+- **Per-user addresses** (§18.8, now implemented for the pool). Attribution
+  stops being a claim at all — the recipient address *is* the identity, and
+  nothing the browser says about who sent what changes anything.
+- **Binding the sender address to the account first**, for the shared/legacy
+  address specifically. A claim is accepted only when the transfer's `from`
+  matches an address the account proved it controls (a signed message, or a
+  small verification transfer). An attacker cannot forge `from`, so the race
+  disappears — at the cost of a whole address ownership flow, and of refusing
+  anybody who paid from an exchange, which is most people. Not implemented;
+  the legacy address does not need it once the pool covers real usage.
 
-Until one of those exists, attribution stays an operator decision in
-`/admin/deposits`. That is slow and it is correct; crediting the wrong account
-is a loss, not a display bug.
+A transfer to the shared address, or to a released pool address nobody
+currently holds, still has none of that — attribution there stays an operator
+decision in `/admin/deposits`. That is slow and it is correct; crediting the
+wrong account is a loss, not a display bug.
 
 ### 18.5 The scanner
 
@@ -1691,7 +1795,8 @@ will report nothing until `TRON_LOOKBACK_MS` covers it.
 | `TRON_GRID_URL` | Must be https. |
 | `TRON_GRID_API_KEY` | Optional; without it, a much lower rate limit. Server-only. |
 | `TRON_USDT_CONTRACT` | The only contract that counts as a deposit. |
-| `TRON_PLATFORM_DEPOSIT_ADDRESS` | The single receiving address. |
+| `TRON_PLATFORM_DEPOSIT_ADDRESS` | The legacy single receiving address — always pool member zero (§18.8). |
+| `TRON_DEPOSIT_POOL_ADDRESSES` | Optional. Comma-separated additional pool addresses. |
 | `TRON_CONFIRMATION_REQUIRED` | Wait for solidification. Default on. |
 | `TRON_POLL_INTERVAL_MS` | Scanner interval. Default 30000. |
 | `TRON_LOOKBACK_MS` | First-run window. Default 24h. |
@@ -1702,14 +1807,15 @@ the application is affected.
 ### 18.7 Shasta workflow
 
 ```bash
-npm run tron:inspect          # read the chain, last 24h
+npm run tron:inspect          # read the chain, last 24h (TRON_PLATFORM_DEPOSIT_ADDRESS only)
 npm run tron:inspect -- 336   # …looking back two weeks
-npm run tron:scan             # one pass, records unassigned deposits
+npm run tron:scan             # one pass, scans the whole pool (§18.8)
 npm run tron:scan -- --watch  # poll continuously
 npm run tron:scan -- --dry    # read and report, write nothing
 ```
 
-End-to-end:
+End-to-end, against the legacy shared address (still the manual-attribution
+path — §18.4):
 
 1. Get Shasta TRX from a faucet, and test USDT for the configured contract.
 2. Send test USDT to `TRON_PLATFORM_DEPOSIT_ADDRESS`.
@@ -1719,6 +1825,10 @@ End-to-end:
 5. Open `/admin/deposits`, use **Assign**, pick the account.
 6. The wallet balance rises, a ledger entry cites the transaction hash, and the
    audit log records who assigned it.
+
+End-to-end, through a real user's own pool address, credits automatically at
+step 3 with no operator step at all: sign in, open **Add funds → Shasta Net
+USDT**, send test USDT to the address shown, then `npm run tron:scan`.
 
 **Check the lookback before concluding anything.** `tron:inspect` defaults to
 24 hours and passes it to TronGrid as `min_timestamp`, so an older transfer is
@@ -1731,6 +1841,71 @@ never opens a transaction. It is not silent, though: every TronGrid call is
 instrumented, so it writes `pipeline_events` and therefore opens the runtime
 pool. It closes it explicitly on exit; before that it held session-mode
 connections out of the project's fifteen and never terminated.
+
+### 18.8 The deposit-address pool
+
+`deposit_addresses` (`@/db/schema/chain.ts`) maps one blockchain address to at
+most one user at a time. It is what makes §18.4's automatic branch possible:
+the scanner resolves a transfer's recipient through this table instead of
+leaving every deposit for an operator to attribute.
+
+**It is a pool, not one address per signup.** `getOrCreateDepositAddress`
+(`@/server/services/deposit-address.service.ts`) hands a user their existing
+assignment if they have one, or claims one `available` row and assigns it —
+never the other way around. Sized by how many addresses
+`TRON_DEPOSIT_POOL_ADDRESSES` lists (§18.6); `TRON_PLATFORM_DEPOSIT_ADDRESS`
+is always pool member zero, so this works today with the one address every
+deployment already has, and grows by adding more addresses to the env var, not
+by writing code.
+
+**An address is never reassigned automatically.** No code path reclaims one
+because a page closed, a session ended, or time passed — the only way an
+address returns to the pool is `releaseDepositAddress`, an explicit operator
+action (`/admin/actions.ts`'s `releaseDepositAddressAction`) that refuses when
+any deposit against that address is not yet `credited`, `failed` or `ignored`.
+A transfer that arrives after the browser tab is long gone must still find its
+owner.
+
+**Concurrency.** Two requests for the same user's first-ever address are
+serialised by a transaction-scoped `pg_advisory_xact_lock`, keyed to that user
+and target — the one race a database constraint alone does not close, because
+both requests correctly observe "no assignment exists yet" and would otherwise
+both claim a slot. Claiming *which* row, when several are available, is
+`SELECT … FOR UPDATE SKIP LOCKED` — the standard "take a ticket" pattern, so
+two different users' requests never contend on each other.
+
+**Why there is no real address derivation here — a key-custody decision, not
+an oversight.** The task that built this pool asked for BIP-44 TRON address
+derivation from an operator-held seed, with only the derived *addresses* ever
+reaching this application — never the mnemonic, seed, xprv or any private key,
+which the same task explicitly forbids exposing to the browser, the database,
+logs, API responses, **or the coding assistant building this feature**. That
+last constraint is the one that matters: generating a real seed to derive
+addresses would mean that seed passing through this session to get written
+down anywhere, which is precisely what must never happen. The standard safe
+pattern — generate a mnemonic offline, derive an account-level extended
+*public* key (an xpub), and derive addresses from the xpub alone, since BIP-44's
+last two path levels use non-hardened derivation — needs that xpub to exist
+first, generated by the operator using their own trusted, offline tooling. It
+does not exist in this project. Fabricating one inside a coding session would
+not be safer than not having it; it would be exactly the insecure-key-material
+problem the constraint exists to prevent, wearing a testnet disguise.
+
+So today, every pool address is **configured**, the same way
+`TRON_PLATFORM_DEPOSIT_ADDRESS` always has been: the operator generates it with
+their own wallet tooling, and only the address string — never anything that
+could sign with it — ever reaches this codebase. `derivation_index` exists as
+a column on `deposit_addresses` for exactly the day an xpub does; it is `null`
+on every row today because nothing here derives anything.
+
+**What sweeping would still need, when that day comes** (also not implemented,
+and out of scope for the same reason): a signing key — never this
+application's — with narrow, auditable authority to move funds off pool
+addresses to a treasury address; a policy for TRX/energy/bandwidth funding,
+since every sweep is itself a transaction that costs network resources; a
+minimum-sweep threshold, so a $2 deposit does not spend $3 of network fees
+consolidating itself; and a decision on whether a provider handles this or the
+operator does it by hand at this volume. None of that is guessed at here.
 
 ---
 
@@ -2091,13 +2266,15 @@ is the detail.
   exist. `submitKyc` writes `false` and a `liveness_not_verified` risk flag, and
   the CRM renders that as *"Not checked — compare by hand"* rather than as a
   failure. **Do not reintroduce a path that lets a click set it.**
-- **Investment automation.** `recordInvestmentEarning()` exists with its
-  `(investment_id, period_key)` idempotency key; nothing schedules it, so
-  earnings report what has settled and there is no settling process yet (§16.5).
-  This is also what `platform_settings.referrals.payoutDelayDays` is waiting on:
-  the setting is stored and shown, and nothing reads it, because "N days after
-  the allocation settles" needs a settlement to count from. Commission release
-  is an operator action until then (§10).
+- **Referral commission release timing.** Investment settlement (§10a) now
+  exists, so `platform_settings.referrals.payoutDelayDays` could in principle
+  be read against something. It still is not: nothing in the product's rules
+  defines exactly when an allocation should be treated as "settled" for the
+  purpose of releasing a referrer's *commission* — at first credited earning,
+  at maturity, immediately on accrual — and guessing on the one table that
+  pays a third party's money is worse than leaving it manual. Commission
+  release remains an operator action (§10) until that rule is actually
+  written down as a product decision.
 - **Per-user deposit addresses**, which is what would make attribution automatic
   (§18.4).
 - **Operator credential provisioning from the CRM** (§20.3).

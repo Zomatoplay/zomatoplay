@@ -56,10 +56,17 @@ export type ParseResult =
  *   is not a deposit here.
  * - **direction** — `from == to` self-transfers and anything outgoing are not
  *   incoming money.
+ *
+ * `expectedRecipient` is passed explicitly rather than read from
+ * `config.depositAddress`: the scanner now watches every address in the
+ * deposit-address pool, one TronGrid query per address, so "the address this
+ * particular page of transfers was requested for" is a parameter, not a
+ * singleton.
  */
 export function parseTransfer(
   raw: TronGridTransfer,
   config: TronConfig,
+  expectedRecipient: string,
 ): ParseResult {
   const txHash = raw.transaction_id?.trim();
   if (!txHash) return { ok: false, reason: "missing_transaction_id" };
@@ -70,7 +77,7 @@ export function parseTransfer(
   }
 
   const to = raw.to?.trim() ?? "";
-  if (!addressesEqual(to, config.depositAddress)) {
+  if (!addressesEqual(to, expectedRecipient)) {
     return { ok: false, reason: "wrong_recipient", detail: to || "(none)" };
   }
 

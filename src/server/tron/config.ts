@@ -29,6 +29,12 @@ export interface TronConfig {
   apiKey: string | undefined;
   usdtContract: string;
   depositAddress: string;
+  /**
+   * The deposit-address pool: every address the scanner watches and
+   * `getOrCreateDepositAddress` may hand out. Always includes `depositAddress`
+   * — see the note above `TRON_DEPOSIT_POOL_ADDRESSES` below.
+   */
+  poolAddresses: string[];
   requireConfirmation: boolean;
   pollIntervalMs: number;
   /** How far back a poll looks when there is no cursor yet. */
@@ -132,6 +138,8 @@ export function getTronConfig(): TronConfig {
     );
   }
 
+  const poolAddresses = parsePoolAddresses(depositAddress);
+
   return {
     network,
     gridUrl: gridUrl.replace(/\/+$/, ""),
@@ -141,6 +149,7 @@ export function getTronConfig(): TronConfig {
       undefined,
     usdtContract,
     depositAddress,
+    poolAddresses,
     // Defaults to on. A deposit credited before it is irreversible can be
     // undone by a re-org, and the money would be gone.
     /**
@@ -164,6 +173,45 @@ function positiveInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
+/**
+ * The deposit-address pool, from configuration.
+ *
+ * `TRON_DEPOSIT_POOL_ADDRESSES` is a comma-separated list of TRON addresses —
+ * generated and controlled by the operator, outside this application. Nothing
+ * here derives, generates or has ever seen a private key: see CLAUDE.md §18.8
+ * for why address *derivation* is deliberately not implemented yet, and why
+ * that is a decision rather than an oversight.
+ *
+ * The single legacy `TRON_DEPOSIT_ADDRESS` is always pool member zero, so the
+ * feature works with the one address every deployment already has configured;
+ * growing the pool is adding addresses to this variable, not a code change.
+ * Each entry is validated the same way `TRON_DEPOSIT_ADDRESS` is — a typo here
+ * would otherwise silently create a pool member that can never receive
+ * anything — and duplicates (including the legacy address repeated) collapse
+ * to one entry.
+ */
+function parsePoolAddresses(legacyDepositAddress: string): string[] {
+  const raw = process.env.TRON_DEPOSIT_POOL_ADDRESSES?.trim();
+  const configured = raw
+    ? raw
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+    : [];
+
+  for (const address of configured) {
+    if (!isTronAddress(address)) {
+      throw new TronConfigError(
+        `TRON_DEPOSIT_POOL_ADDRESSES contains an invalid TRON address: ` +
+          `${JSON.stringify(address)}.`,
+      );
+    }
+  }
+
+  const pool = [legacyDepositAddress, ...configured];
+  return Array.from(new Set(pool));
+}
+
 /** A public, secret-free summary, safe to render or log. */
 export function describeTronConfig(config: TronConfig) {
   return {
@@ -171,6 +219,7 @@ export function describeTronConfig(config: TronConfig) {
     gridUrl: config.gridUrl,
     usdtContract: config.usdtContract,
     depositAddress: config.depositAddress,
+    poolSize: config.poolAddresses.length,
     requireConfirmation: config.requireConfirmation,
     pollIntervalMs: config.pollIntervalMs,
     // Presence only. The value never leaves this process.

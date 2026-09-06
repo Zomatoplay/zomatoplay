@@ -161,6 +161,23 @@ export const chainNetworkEnum = pgEnum("chain_network", [
   "nile",
 ]);
 
+/** The asset a deposit address is allocated for. Only USDT is accepted today. */
+export const depositAssetEnum = pgEnum("deposit_asset", ["usdt"]);
+
+/**
+ * The lifecycle of one address in the deposit-address pool.
+ *
+ * `available` — unassigned, may be claimed by the next user who needs one.
+ * `assigned` — bound to exactly one user; the scanner attributes transfers to
+ *   it automatically. `retired` — administratively withdrawn from rotation
+ *   (never reused), but still watched — see `deposit_addresses` for why.
+ */
+export const depositAddressStatusEnum = pgEnum("deposit_address_status", [
+  "available",
+  "assigned",
+  "retired",
+]);
+
 export const withdrawalStatusEnum = pgEnum("withdrawal_status", [
   "pending",
   "under_review",
@@ -391,6 +408,7 @@ export const auditActionEnum = pgEnum("audit_action", [
   "all_devices_logged_out",
   "deposit_credited",
   "deposit_failed",
+  "deposit_address_released",
   "withdrawal_approved",
   "withdrawal_rejected",
   "withdrawal_marked_paid",

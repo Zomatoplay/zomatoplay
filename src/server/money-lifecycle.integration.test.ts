@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
 import { config as loadEnv } from "dotenv";
-import { eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 
 loadEnv({ path: ".env.local", quiet: true });
 loadEnv({ path: ".env", quiet: true });
 
 import { closeAdminDb, closeDb, createAdminDb, isDatabaseConfigured } from "@/db";
 import type { Database } from "@/db";
-import { decimal } from "@/db/money";
+import { decimal, decimalFrom } from "@/db/money";
 import * as t from "@/db/schema";
 
 import {
@@ -17,7 +17,12 @@ import {
   endOpenEndedInvestment,
 } from "./services/investments-write.service";
 import { settleInvestments } from "./services/investment-settlement.service";
-import { rewardScheduleFor, elapsedDaysFor } from "./services/investment-schedule";
+import {
+  earningPeriodCount,
+  earningPeriodsFor,
+  elapsedDaysFor,
+  rewardScheduleFor,
+} from "./services/investment-schedule";
 import { creditWallet } from "./services/wallet.service";
 import { newId, type Actor } from "./write";
 
@@ -108,6 +113,72 @@ describe("money lifecycle", { skip }, () => {
     return row;
   }
 
+  /**
+   * Backdates an allocation so it is overdue for maturity.
+   *
+   * `started_at` moves back by the same amount as `matures_at`, preserving
+   * `duration_days` exactly — a real allocation's `matures_at` is always
+   * `started_at + duration_days` (`createInvestment` computes it that way),
+   * and a fixture that broke that invariant would exercise a state
+   * production code can never actually produce.
+   *
+   * Necessarily, this also makes every one of the allocation's earning
+   * periods due, not only its principal: the final period's due date *is*
+   * `matures_at` (`earningPeriodsFor`), so an allocation overdue for
+   * maturity was — in the real time the backdate stands in for — overdue for
+   * every period along the way too. Tests using this helper assert on that
+   * rather than being surprised by it.
+   */
+  async function backdateToMaturity(investmentId: string, durationDays: number) {
+    const maturesAt = new Date(Date.now() - 60_000);
+    const startedAt = new Date(maturesAt.getTime() - durationDays * 86_400_000);
+    await db
+      .update(t.investments)
+      .set({ startedAt, maturesAt })
+      .where(eq(t.investments.id, investmentId));
+    return { startedAt, maturesAt };
+  }
+
+  /** How many periods, and how much total profit, an allocation is scheduled for. */
+  async function scheduleOf(investmentId: string) {
+    const [row] = await db
+      .select({
+        durationDays: t.investments.durationDays,
+        rewardFrequency: t.investments.rewardFrequency,
+        projectedProfit: t.investments.projectedProfit,
+      })
+      .from(t.investments)
+      .where(eq(t.investments.id, investmentId));
+    return {
+      periods: earningPeriodCount(row.durationDays, row.rewardFrequency),
+      totalProfit: decimalFrom(row.projectedProfit),
+    };
+  }
+
+  /**
+   * Asserts that a settlement pass raised no error *for the allocation(s)
+   * this test owns* — not that the whole pass was error-free.
+   *
+   * `settleInvestments()` is deliberately global: it processes every active
+   * fixed-term allocation in the database, not only the ones a given test
+   * created (CLAUDE.md §10a — that is what makes a real cron tick correct).
+   * Run inside this suite, that means a pass can also touch scratch rows a
+   * *different* integration test file is using at that exact moment, and
+   * `summary.errors` is one shared array — a blanket
+   * `errors.length === 0` would fail this test for a problem entirely
+   * outside it. Scoping the check to this test's own id(s) keeps it able to
+   * catch a real regression in the allocation under test while not being
+   * hostage to what else the shared database happens to be doing right now.
+   */
+  function assertNoErrorsFor(summary: { errors: string[] }, ...investmentIds: string[]) {
+    for (const id of investmentIds) {
+      assert.ok(
+        !summary.errors.some((error) => error.startsWith(`${id}:`)),
+        `expected no error for ${id}, got: ${summary.errors.join("; ")}`,
+      );
+    }
+  }
+
   test("a credit, an allocation and a maturity keep the ledger and balance agreeing", async () => {
     const userId = await makeUser();
 
@@ -167,17 +238,19 @@ describe("money lifecycle", { skip }, () => {
       );
     }
 
-    // Backdate past maturity so the settler has something due. This is what a
-    // term ending looks like to the job; nothing else about the row changes.
-    const matured = new Date(Date.now() - 60_000);
-    await db
-      .update(t.investments)
-      .set({ maturesAt: matured })
-      .where(eq(t.investments.id, investmentId));
+    // Backdate past maturity so the settler has something due. This
+    // necessarily makes every one of its earning periods due too — see
+    // `backdateToMaturity`.
+    const schedule = await scheduleOf(investmentId);
+    await backdateToMaturity(investmentId, investment.durationDays);
 
     const summary = await settleInvestments();
-    assert.equal(summary.errors.length, 0, "the pass had no errors");
+    assertNoErrorsFor(summary, investmentId);
     assert.ok(summary.matured >= 1, "at least this allocation matured");
+    assert.ok(
+      summary.earningsCredited >= schedule.periods,
+      "every one of its periods was credited, not only the last",
+    );
 
     const [after_] = await db
       .select()
@@ -187,24 +260,30 @@ describe("money lifecycle", { skip }, () => {
     assert.equal(after_.nextRewardAt, null, "a matured allocation owes no reward");
 
     wallet = await balanceOf(userId);
-    assert.equal(wallet.available, 1000, "the principal came back");
+    // 1000 deposited, 400 allocated away and back, plus the whole term's
+    // scheduled profit — settled exactly once, not approximated.
+    const expectedAvailable = 1000 + Number(schedule.totalProfit);
+    assert.ok(
+      Math.abs(wallet.available - expectedAvailable) < 1e-6,
+      `the principal and its full scheduled profit both came back (got ${wallet.available}, expected ${expectedAvailable})`,
+    );
     assert.equal(wallet.lockedInInvestments, 0, "and is no longer locked");
 
     /*
      * The ledger explains the balance — the property `applyLedgerEntry` exists
      * to guarantee (CLAUDE.md §17.3). Deposit +1000, allocation −400,
-     * principal +400.
+     * one reward entry per scheduled period, principal +400.
      */
     const ledger = await db
       .select()
       .from(t.transactions)
       .where(eq(t.transactions.userId, userId));
     const sum = ledger.reduce((total, row) => total + row.amount, 0);
-    assert.equal(sum, wallet.available, "the ledger sums to the balance");
-    assert.equal(ledger.length, 3);
+    assert.ok(Math.abs(sum - wallet.available) < 1e-6, "the ledger sums to the balance");
+    assert.equal(ledger.length, 3 + schedule.periods);
   });
 
-  test("settling twice returns the principal once", async () => {
+  test("settling twice returns the principal once, and pays no period twice", async () => {
     const userId = await makeUser();
     await creditWallet(
       { userId, amount: decimal("500"), description: "Test deposit", type: "deposit" },
@@ -214,28 +293,36 @@ describe("money lifecycle", { skip }, () => {
       { userId, planId, amount: decimal("200") },
       OPERATOR,
     );
-    await db
-      .update(t.investments)
-      .set({ maturesAt: new Date(Date.now() - 60_000) })
+    const [{ durationDays }] = await db
+      .select({ durationDays: t.investments.durationDays })
+      .from(t.investments)
       .where(eq(t.investments.id, investmentId));
+    const schedule = await scheduleOf(investmentId);
+    await backdateToMaturity(investmentId, durationDays);
 
     await settleInvestments();
     const first = await balanceOf(userId);
     await settleInvestments();
     const second = await balanceOf(userId);
 
-    assert.equal(first.available, 500);
+    const expectedAvailable = 500 + Number(schedule.totalProfit);
+    assert.ok(Math.abs(first.available - expectedAvailable) < 1e-6);
     assert.equal(
       second.available,
       first.available,
-      "a second pass is a no-op — the guard is on `status = 'active'`",
+      "a second pass is a no-op — the guard is on `status = 'active'` for maturity, " +
+        "and the unique `(investment_id, period_key)` index for earnings",
     );
 
     const ledger = await db
       .select()
       .from(t.transactions)
       .where(eq(t.transactions.userId, userId));
-    assert.equal(ledger.length, 3, "and writes no second principal-return entry");
+    assert.equal(
+      ledger.length,
+      3 + schedule.periods,
+      "and writes no second principal-return entry, and no earning twice",
+    );
   });
 
   test("an open-ended allocation is never matured by the settler", async (context) => {
@@ -260,7 +347,7 @@ describe("money lifecycle", { skip }, () => {
      * close a product sold as having no lock-in.
      */
     const summaryBefore = await settleInvestments();
-    assert.equal(summaryBefore.errors.length, 0);
+    assertNoErrorsFor(summaryBefore, investmentId);
 
     const [investment] = await db
       .select()
@@ -382,57 +469,306 @@ describe("money lifecycle", { skip }, () => {
     assert.equal(wallet.lockedInInvestments, 200, "still locked");
   });
 
-  test("a long gap between settlement runs catches up rather than drifting", async () => {
+  test("a missed cron run catches up every overdue earning period in one pass", async (context) => {
     /*
      * THE PROPERTY A SCHEDULER CANNOT BE ASSUMED TO HAVE.
      *
      * Vercel Cron makes no delivery guarantee, and on the Hobby plan it fires
-     * once a day at best. So the settler must not assume it ran yesterday. Both
-     * halves are written to be *stateless with respect to run history*:
+     * once a day at best. So the settler must not assume it ran yesterday or
+     * ever. `creditDueEarnings` selects on each period's own `dueAt <= now`
+     * and a cursor recomputed from `started_at`, never incremented — so an
+     * allocation nothing has settled for ten days is caught up in the very
+     * next pass rather than losing the periods a scheduler never ran for.
      *
-     *  - maturity selects on `matures_at <= now`, so an allocation overdue by
-     *    forty days and one overdue by an hour are found by the same pass;
-     *  - the schedule is recomputed from `started_at`, never incremented, so
-     *    skipping ten reward periods lands on the same answer as ten runs would.
-     *
-     * This asserts the second, which is the one that could silently drift.
+     * A daily plan specifically, chosen from the catalogue rather than reusing
+     * the file's shared `planId`: an eight-day backdate must land at least one
+     * period past due, and a weekly or monthly plan could make that flaky
+     * depending on which plan the catalogue happens to list first.
+     */
+    const [dailyPlan] = await db
+      .select({ id: t.plans.id })
+      .from(t.plans)
+      .where(and(eq(t.plans.rewardFrequency, "daily"), gt(t.plans.durationDays, 0)))
+      .limit(1);
+    if (!dailyPlan) return context.skip("no daily fixed-term plan in the catalogue");
+
+    const userId = await makeUser();
+    await creditWallet(
+      { userId, amount: decimal("1000"), description: "Test deposit", type: "deposit" },
+      OPERATOR,
+    );
+    const { investmentId } = await createInvestment(
+      { userId, planId: dailyPlan.id, amount: decimal("300") },
+      OPERATOR,
+    );
+
+    const [investment] = await db
+      .select({
+        startedAt: t.investments.startedAt,
+        maturesAt: t.investments.maturesAt,
+        rewardFrequency: t.investments.rewardFrequency,
+        durationDays: t.investments.durationDays,
+        projectedProfit: t.investments.projectedProfit,
+      })
+      .from(t.investments)
+      .where(eq(t.investments.id, investmentId));
+
+    // Backdated by shifting both ends of the term back by the same amount —
+    // as if this allocation had been running, uncredited, for an extra week.
+    // `duration_days` (the gap between them) is unchanged, which is exactly
+    // what a missed cron leaves behind: a term of the same length, further
+    // along than the last successful pass credited it for.
+    const shift = 8 * 24 * 60 * 60 * 1000;
+    const backdatedStart = new Date(investment.startedAt.getTime() - shift);
+    const backdatedMaturity = new Date(investment.maturesAt.getTime() - shift);
+    await db
+      .update(t.investments)
+      .set({ startedAt: backdatedStart, maturesAt: backdatedMaturity })
+      .where(eq(t.investments.id, investmentId));
+
+    const expected = earningPeriodsFor({
+      startedAt: backdatedStart,
+      maturesAt: backdatedMaturity,
+      durationDays: investment.durationDays,
+      rewardFrequency: investment.rewardFrequency,
+      projectedProfit: decimalFrom(investment.projectedProfit),
+    });
+    const overdue = expected.filter((period) => period.dueAt <= new Date());
+    assert.ok(overdue.length >= 1, "the backdate must leave at least one period due");
+
+    const summary = await settleInvestments();
+    assertNoErrorsFor(summary, investmentId);
+    assert.ok(
+      summary.earningsCredited >= overdue.length,
+      "every period overdue by the backdate is credited in the one pass",
+    );
+
+    const credited = await db
+      .select({ periodKey: t.investmentEarnings.periodKey })
+      .from(t.investmentEarnings)
+      .where(eq(t.investmentEarnings.investmentId, investmentId));
+    assert.equal(
+      credited.length,
+      overdue.length,
+      "exactly the overdue periods were credited — none skipped, none invented",
+    );
+
+    const expectedTotal = overdue.reduce(
+      (sum, period) => sum + Number(period.amount),
+      0,
+    );
+    const wallet = await balanceOf(userId);
+    assert.ok(
+      Math.abs(wallet.totalProfit - expectedTotal) < 1e-6,
+      "the credited total matches the schedule's own arithmetic",
+    );
+
+    // Repeating the pass must not pay any of them again.
+    const before = await balanceOf(userId);
+    const replaySummary = await settleInvestments();
+    assertNoErrorsFor(replaySummary, investmentId);
+    const after = await balanceOf(userId);
+    assert.equal(after.totalProfit, before.totalProfit, "a replayed pass credits nothing new");
+  });
+
+  test("non-compounding periods split the total profit exactly, with no rounding drift", () => {
+    /*
+     * `splitEvenly` (`@/db/money`) is what makes this exact rather than
+     * approximate: `300 ÷ 13` does not divide evenly, and the guarantee this
+     * asserts is that the thirteen shares it produces still sum to exactly
+     * 300 — no fractional unit invented or lost — for every reward frequency
+     * a plan can be configured with.
      */
     const startedAt = new Date("2026-01-01T00:00:00.000Z");
-    const maturesAt = new Date("2026-04-01T00:00:00.000Z"); // 90 days, weekly
 
-    const shape = {
-      startedAt,
-      maturesAt,
-      durationDays: 90,
-      projectedProfit: 300,
-      rewardFrequency: "weekly" as const,
-    };
+    for (const [rewardFrequency, durationDays] of [
+      ["daily", 30],
+      ["weekly", 90],
+      ["monthly", 365],
+      ["on_maturity", 60],
+    ] as const) {
+      const durationMs = durationDays * 86_400_000;
+      const maturesAt = new Date(startedAt.getTime() + durationMs);
+      const total = decimal("1000");
 
-    // Ten periods in, as if nothing had run since day zero.
-    const afterLongGap = rewardScheduleFor(shape, new Date("2026-03-12T00:00:00.000Z"));
+      const periods = earningPeriodsFor({
+        startedAt,
+        maturesAt,
+        durationDays,
+        rewardFrequency,
+        projectedProfit: total,
+      });
 
-    // Day 70 exactly; the next boundary is day 77.
-    assert.equal(
-      afterLongGap.nextRewardAt?.toISOString(),
-      new Date("2026-03-19T00:00:00.000Z").toISOString(),
-      "the next boundary is computed from the start, not from the last run",
+      // Non-compounding: every period's share is a fixed fraction of the
+      // *original* total, so summing every one of them recovers the whole
+      // amount that was sold — not more, from a share treated as new
+      // principal, and not less, from truncation nobody accounted for.
+      // Summed as scaled integers, not floats, for the same reason
+      // `splitEvenly` itself uses `BigInt`: a float sum of thirteen shares is
+      // exactly the kind of arithmetic that could hide a rounding drift.
+      const sum = periods.reduce(
+        (running, period) => running + toUnits(period.amount),
+        BigInt(0),
+      );
+      assert.equal(sum, toUnits(total), `${rewardFrequency}: periods must sum to the total exactly`);
+
+      // The final period is always due exactly at maturity — never a
+      // calendar boundary that could fall after the term ends.
+      assert.equal(
+        periods.at(-1)?.dueAt.getTime(),
+        maturesAt.getTime(),
+        `${rewardFrequency}: the last period is due at maturity, not a boundary past it`,
+      );
+
+      // Deterministic, order-based keys — not calendar dates, which would
+      // depend on when the job happened to run.
+      assert.deepEqual(
+        periods.map((p) => p.periodKey),
+        periods.map((_, i) => `p${i + 1}`),
+      );
+    }
+  });
+
+  test("crediting the final period and returning principal both happen in one pass at maturity", async () => {
+    const userId = await makeUser();
+    await creditWallet(
+      { userId, amount: decimal("500"), description: "Test deposit", type: "deposit" },
+      OPERATOR,
+    );
+    const { investmentId } = await createInvestment(
+      { userId, planId, amount: decimal("200") },
+      OPERATOR,
     );
 
-    // Running again a moment later must not move it on again.
-    const immediatelyAfter = rewardScheduleFor(
-      shape,
-      new Date("2026-03-12T00:00:01.000Z"),
+    const [investment] = await db
+      .select({
+        durationDays: t.investments.durationDays,
+        rewardFrequency: t.investments.rewardFrequency,
+        projectedProfit: t.investments.projectedProfit,
+      })
+      .from(t.investments)
+      .where(eq(t.investments.id, investmentId));
+
+    // Backdated so `now` lands exactly on maturity — the case where the last
+    // earning period and the principal return are due on the same tick.
+    const startedAt = new Date(Date.now() - investment.durationDays * 86_400_000);
+    await db
+      .update(t.investments)
+      .set({ startedAt, maturesAt: new Date() })
+      .where(eq(t.investments.id, investmentId));
+
+    const totalProfit = decimalFrom(investment.projectedProfit);
+
+    const summary = await settleInvestments();
+    assertNoErrorsFor(summary, investmentId);
+    assert.ok(summary.matured >= 1, "the allocation matured in the same pass");
+    assert.ok(summary.earningsCredited >= 1, "and its final period was credited alongside it");
+
+    const wallet = await balanceOf(userId);
+    // 500 deposited, 200 locked away, 200 principal back, plus every period's
+    // profit — the whole term's worth, credited exactly once.
+    assert.ok(
+      Math.abs(wallet.available - (500 + Number(totalProfit))) < 1e-6,
+      "principal and the full scheduled profit both landed, exactly once",
     );
-    assert.equal(
-      immediatelyAfter.nextRewardAt?.toISOString(),
-      afterLongGap.nextRewardAt?.toISOString(),
-      "a second pass in the same period is a no-op",
+    assert.equal(wallet.lockedInInvestments, 0);
+
+    const [row] = await db
+      .select({ status: t.investments.status })
+      .from(t.investments)
+      .where(eq(t.investments.id, investmentId));
+    assert.equal(row.status, "matured");
+  });
+
+  test("Flexible Reserve accrues no scheduled earnings — it has no term to schedule them over", async (context) => {
+    if (!openEndedPlanId) return context.skip("no open-ended plan in the catalogue");
+
+    const userId = await makeUser();
+    await creditWallet(
+      { userId, amount: decimal("500"), description: "Test deposit", type: "deposit" },
+      OPERATOR,
     );
-    assert.equal(
-      elapsedDaysFor(shape, new Date("2026-03-12T00:00:00.000Z")),
-      70,
-      "elapsed days is a function of the clock, not of how often the job ran",
+    const { investmentId } = await createInvestment(
+      { userId, planId: openEndedPlanId, amount: decimal("100") },
+      OPERATOR,
     );
+
+    await settleInvestments();
+
+    const earnings = await db
+      .select({ id: t.investmentEarnings.id })
+      .from(t.investmentEarnings)
+      .where(eq(t.investmentEarnings.investmentId, investmentId));
+    assert.equal(earnings.length, 0, "an open-ended allocation is never scheduled for earnings");
+
+    const [row] = await db
+      .select({ earningsCreditedPeriods: t.investments.earningsCreditedPeriods })
+      .from(t.investments)
+      .where(eq(t.investments.id, investmentId));
+    assert.equal(row.earningsCreditedPeriods, 0);
+  });
+
+  test("changing a plan's rate does not alter an allocation already sold at the old one", async () => {
+    const userId = await makeUser();
+    await creditWallet(
+      { userId, amount: decimal("500"), description: "Test deposit", type: "deposit" },
+      OPERATOR,
+    );
+
+    const [before] = await db
+      .select({ estimatedReturnPercent: t.plans.estimatedReturnPercent })
+      .from(t.plans)
+      .where(eq(t.plans.id, planId));
+
+    const { investmentId } = await createInvestment(
+      { userId, planId, amount: decimal("100") },
+      OPERATOR,
+    );
+    const [sold] = await db
+      .select({ projectedProfit: t.investments.projectedProfit })
+      .from(t.investments)
+      .where(eq(t.investments.id, investmentId));
+
+    /*
+     * The operator's edit, applied directly to the row — this is what
+     * `updatePlanAction` does to `plans.estimated_return_percent`, and the
+     * property under test is what that edit must NOT reach: an allocation
+     * that already exists.
+     */
+    await db
+      .update(t.plans)
+      .set({ estimatedReturnPercent: before.estimatedReturnPercent + 5 })
+      .where(eq(t.plans.id, planId));
+
+    try {
+      const [after] = await db
+        .select({ projectedProfit: t.investments.projectedProfit })
+        .from(t.investments)
+        .where(eq(t.investments.id, investmentId));
+      assert.equal(
+        after.projectedProfit,
+        sold.projectedProfit,
+        "the allocation's own projected profit is untouched by a later rate change",
+      );
+
+      await settleInvestments();
+      const [stillUnchanged] = await db
+        .select({ projectedProfit: t.investments.projectedProfit })
+        .from(t.investments)
+        .where(eq(t.investments.id, investmentId));
+      assert.equal(
+        stillUnchanged.projectedProfit,
+        sold.projectedProfit,
+        "a settlement pass after the rate change still schedules from the original total",
+      );
+    } finally {
+      // Restore the catalogue rate so no other test in this file — or a
+      // concurrent run of it — sees a plan mutated by this one.
+      await db
+        .update(t.plans)
+        .set({ estimatedReturnPercent: before.estimatedReturnPercent })
+        .where(eq(t.plans.id, planId));
+    }
   });
 
   test("one settlement pass matures everything overdue, however long the gap", async () => {
@@ -452,46 +788,87 @@ describe("money lifecycle", { skip }, () => {
     );
 
     // One overdue by forty days, one by a minute. A settler that assumed a run
-    // per period would only find the recent one.
-    await db
-      .update(t.investments)
-      .set({ maturesAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000) })
+    // per period would only find the recent one. Both backdates preserve
+    // `duration_days`, so both allocations' full schedules are also due — see
+    // `backdateToMaturity`.
+    const [{ durationDays: firstDuration }] = await db
+      .select({ durationDays: t.investments.durationDays })
+      .from(t.investments)
       .where(eq(t.investments.id, first.investmentId));
-    await db
-      .update(t.investments)
-      .set({ maturesAt: new Date(Date.now() - 60_000) })
+    const [{ durationDays: secondDuration }] = await db
+      .select({ durationDays: t.investments.durationDays })
+      .from(t.investments)
       .where(eq(t.investments.id, second.investmentId));
+    const firstSchedule = await scheduleOf(first.investmentId);
+    const secondSchedule = await scheduleOf(second.investmentId);
+    await backdateToMaturity(first.investmentId, firstDuration);
+    await backdateToMaturity(second.investmentId, secondDuration);
 
     const summary = await settleInvestments();
-    assert.equal(summary.errors.length, 0);
+    assertNoErrorsFor(summary, first.investmentId, second.investmentId);
+    assert.ok(summary.matured >= 2, "both allocations matured in the one pass");
 
     const wallet = await balanceOf(userId);
-    assert.equal(wallet.available, 1000, "both principals came back in one pass");
+    const expectedAvailable =
+      1000 + Number(firstSchedule.totalProfit) + Number(secondSchedule.totalProfit);
+    assert.ok(
+      Math.abs(wallet.available - expectedAvailable) < 1e-6,
+      "both principals, and both allocations' full scheduled profit, came back in one pass",
+    );
     assert.equal(wallet.lockedInInvestments, 0);
   });
 
-  test("the reward schedule matches the arithmetic the seeded data uses", () => {
-    // Balanced Growth's shape: 90 days, weekly, 300 USDT projected. The seed
-    // says 23.4; the formula gives 300 ÷ (90 ÷ 7) = 23.33.
+  test("the reward schedule shows the next uncredited period, not just the next calendar boundary", () => {
+    // Balanced Growth's shape: 90 days, weekly, 300 USDT total profit — a
+    // whole 13 periods now (ceil(90 ÷ 7)), not the old fractional 12.86, so
+    // every day of the term is actually covered by a period that gets paid.
     const startedAt = new Date("2026-06-18T00:00:00.000Z");
     const maturesAt = new Date("2026-09-16T00:00:00.000Z");
+    const projectedProfit = decimal("300");
+
+    // As of day 52 (Aug 9), a cron that has kept up would have credited the
+    // 7 periods due on days 7, 14, …, 49 — this is what the settlement job's
+    // own cursor (`earnings_credited_periods`) would read at that point.
     const schedule = rewardScheduleFor(
       {
         startedAt,
         maturesAt,
         durationDays: 90,
-        projectedProfit: 300,
+        projectedProfit,
         rewardFrequency: "weekly",
+        earningsCreditedPeriods: 7,
       },
       new Date("2026-08-09T00:00:00.000Z"),
     );
 
-    assert.ok(schedule.nextRewardAmount);
-    assert.ok(Math.abs(schedule.nextRewardAmount - 23.33) < 0.01);
-    // 52 days in, the next weekly boundary is day 56.
+    // 300 ÷ 13, truncated to the schema's scale — one of the twelve equal
+    // shares, not the thirteenth (remainder) one.
+    assert.equal(schedule.nextRewardAmount, 23.07692307);
+    // The 8th period's boundary is day 56.
     assert.equal(
       schedule.nextRewardAt?.toISOString(),
       new Date("2026-08-13T00:00:00.000Z").toISOString(),
+    );
+
+    // A cron that has fallen behind — nothing credited yet — shows the
+    // oldest unpaid period as next, even though it is already overdue. That
+    // is the honest answer: skipping ahead to a future boundary would imply
+    // the missed one was somehow already settled.
+    const behind = rewardScheduleFor(
+      {
+        startedAt,
+        maturesAt,
+        durationDays: 90,
+        projectedProfit,
+        rewardFrequency: "weekly",
+        earningsCreditedPeriods: 0,
+      },
+      new Date("2026-08-09T00:00:00.000Z"),
+    );
+    assert.equal(
+      behind.nextRewardAt?.toISOString(),
+      new Date("2026-06-25T00:00:00.000Z").toISOString(),
+      "the first, still-unpaid period — due day 7 — not a future boundary",
     );
   });
 
@@ -501,7 +878,14 @@ describe("money lifecycle", { skip }, () => {
     const past = new Date("2026-03-01T00:00:00.000Z");
 
     const schedule = rewardScheduleFor(
-      { startedAt, maturesAt, durationDays: 30, projectedProfit: 9, rewardFrequency: "daily" },
+      {
+        startedAt,
+        maturesAt,
+        durationDays: 30,
+        projectedProfit: decimal("9"),
+        rewardFrequency: "daily",
+        earningsCreditedPeriods: 0,
+      },
       past,
     );
     assert.equal(schedule.nextRewardAt, null);
@@ -512,3 +896,14 @@ describe("money lifecycle", { skip }, () => {
     assert.equal(elapsedDaysFor({ startedAt, durationDays: 30 }, past), 30);
   });
 });
+
+/** Scales an exact decimal string to an integer count of 1e-8 units, for
+ * comparing sums without floating point. Mirrors `toUnits` in `@/db/money`,
+ * which is intentionally not exported — a test has no business reaching into
+ * a module's internals, so this is its own copy of the same three lines. */
+function toUnits(amount: string): bigint {
+  const negative = amount.startsWith("-");
+  const [whole, fraction = ""] = (negative ? amount.slice(1) : amount).split(".");
+  const units = BigInt(whole + fraction.padEnd(8, "0"));
+  return negative ? -units : units;
+}

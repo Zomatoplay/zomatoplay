@@ -1,43 +1,59 @@
 import "server-only";
 
+import { splitEvenly, type Decimal } from "@/db/money";
 import * as t from "@/db/schema";
 
 /**
- * The reward *schedule* an allocation carries — when the next reward is due and
- * how much it is projected to be.
+ * The reward *schedule* an allocation carries — when the next reward is due,
+ * how much it is for, and the full list of periods a fixed-term allocation
+ * will actually be credited on.
  *
  * WHY THIS IS A SHARED MODULE AND NOT INLINE
  * ------------------------------------------
- * Two places need the same answer and must not drift: `createInvestment`, which
- * stamps the first schedule onto a new allocation, and the settlement job,
- * which advances it. A second copy of the arithmetic is how a plan starts
- * showing one figure on the allocation card and a different one after the first
- * tick.
+ * Three places need the same answer and must not drift: `createInvestment`,
+ * which stamps the first schedule onto a new allocation; the settlement job's
+ * display refresh, which advances the forecast; and `creditDueEarnings` in
+ * `investment-settlement.service`, which is the engine that actually pays.  A
+ * second copy of the arithmetic is how a plan starts showing one figure on the
+ * allocation card and crediting a different one.
  *
- * THE FORMULA IS READ FROM THE EXISTING DATA, NOT INVENTED
- * --------------------------------------------------------
- * Every seeded allocation already carries the answer, and the arithmetic that
- * produces it is unambiguous. Balanced Growth: 90 days, weekly, 300 USDT
- * projected profit. 90 ÷ 7 = 12.86 periods; 300 ÷ 12.86 = 23.33, and the seed
- * says `nextRewardAmount: 23.4`. Same for the daily and monthly plans. So the
- * projected per-period reward is
+ * NON-COMPOUNDING, BY THE PRODUCT'S OWN RULE
+ * -------------------------------------------
+ * Every period's share comes from the allocation's *original* principal via
+ * `projectedProfit`, computed once at `createInvestment` and never touched
+ * again. A credited period never enlarges the base the next one is computed
+ * from — that is what "non-compounding" means here, and it is why
+ * `earningPeriodsFor` takes the whole schedule as an input and produces it in
+ * one pass rather than compounding forward from whatever has already been
+ * paid.
  *
- *     projectedProfit ÷ (durationDays ÷ periodDays)
+ * EXACT, NOT APPROXIMATE
+ * -----------------------
+ * `splitEvenly()` (`@/db/money`) divides `projectedProfit` into exactly
+ * `earningPeriodCount()` shares using integer arithmetic on the schema's
+ * smallest unit, so the shares always sum to exactly the total sold — no
+ * period is invented and none is lost to rounding. The last period absorbs
+ * whatever the truncation of the others leaves, the same way a bank splits a
+ * bill that does not divide evenly.
  *
- * and this module is where that lives.
- *
- * WHAT THIS IS EMPHATICALLY NOT
- * -----------------------------
- * A payment. It is a **projection**, which is the only thing this codebase's
- * data supports: a plan sells an `estimatedReturnRange`, and
- * `estimatedReturnPercent` is a point inside it. Nothing anywhere defines what
- * an allocation *actually* earns, so nothing here credits anything — see the
- * note at the top of `investment-settlement.service`. `next_reward_amount` is
- * a forecast displayed to the user, and the language rules in CLAUDE.md §10
- * apply to it.
+ * WHAT CHANGED FROM THE PROJECTION-ONLY VERSION OF THIS MODULE
+ * --------------------------------------------------------------
+ * This used to divide by a *fractional* period count
+ * (`durationDays ÷ periodDays`, e.g. 12.86 for a 90-day weekly plan) and
+ * therefore had no period at all once the last whole boundary passed — the
+ * final six days of that example were projected as nothing. That was
+ * defensible while nothing was ever actually credited (CLAUDE.md's older
+ * text called this "emphatically not a payment"), but paying real periods
+ * that way would leave part of the profit a plan is sold on permanently
+ * unpaid. `earningPeriodCount()` uses a *whole* number of periods
+ * (`ceil(durationDays ÷ periodDays)`), and the last one's due date is
+ * `maturesAt` itself rather than a boundary that could fall after it — so the
+ * schedule always covers the whole term and the whole profit, and the display
+ * forecast (`rewardScheduleFor`) reads it from the same source the engine
+ * pays from instead of approximating it separately.
  */
 
-type RewardFrequency = (typeof t.rewardFrequencyEnum.enumValues)[number];
+export type RewardFrequency = (typeof t.rewardFrequencyEnum.enumValues)[number];
 
 /** How many days one reward period spans. `on_maturity` is the whole term. */
 const PERIOD_DAYS: Record<Exclude<RewardFrequency, "on_maturity">, number> = {
@@ -49,25 +65,105 @@ const PERIOD_DAYS: Record<Exclude<RewardFrequency, "on_maturity">, number> = {
 export interface RewardSchedule {
   /** When the next reward falls due, or null once there are none left. */
   nextRewardAt: Date | null;
-  /** The projected size of that reward, or null when there is none. */
+  /** The exact size of that reward, or null when there is none. */
   nextRewardAmount: number | null;
 }
 
+/** One scheduled earning period, in the order it will be credited. */
+export interface EarningPeriod {
+  /** 1-based, counted from the allocation's own `startedAt`. */
+  index: number;
+  /** The idempotency key `recordInvestmentEarning()` writes it under. */
+  periodKey: string;
+  /** When this period becomes due. The final period is always `maturesAt`. */
+  dueAt: Date;
+  /** This period's exact, non-compounding share of `projectedProfit`. */
+  amount: Decimal;
+}
+
 /**
- * The schedule for an allocation, as of `asOf`.
+ * How many discrete reward periods a fixed-term allocation has.
  *
- * Pure and total: given the same allocation and the same instant it always
- * returns the same answer, which is what lets the settlement job recompute
- * rather than increment. An incrementing job that misses a run drifts; a job
- * that recomputes from `startedAt` cannot.
+ * A whole number, always at least one: `ceil(durationDays ÷ periodDays)`, not
+ * the fractional count the old forecast-only version used — see the module
+ * comment for why a whole count is what makes the *last* period exist at all.
+ * `on_maturity` is one period by definition, the term itself.
+ */
+export function earningPeriodCount(
+  durationDays: number,
+  rewardFrequency: RewardFrequency,
+): number {
+  if (rewardFrequency === "on_maturity") return 1;
+  const periodDays = PERIOD_DAYS[rewardFrequency];
+  return Math.max(Math.ceil(durationDays / periodDays), 1);
+}
+
+/** The deterministic, order-based key a period is credited under. */
+export function periodKeyFor(periodIndex: number): string {
+  return `p${periodIndex}`;
+}
+
+/**
+ * The full schedule of earning periods for a fixed-term allocation — due
+ * dates and exact amounts, in order.
+ *
+ * Pure and total: the same allocation always produces the same list, which is
+ * what lets both the settlement engine and the display forecast call it
+ * without disagreeing. Not defined for an open-ended allocation (§ below) —
+ * callers must check `isOpenEnded()` first, the same guard `matureInvestment`'s
+ * caller already applies.
+ */
+export function earningPeriodsFor(investment: {
+  startedAt: Date;
+  maturesAt: Date;
+  durationDays: number;
+  rewardFrequency: RewardFrequency;
+  projectedProfit: Decimal;
+}): EarningPeriod[] {
+  const totalPeriods = earningPeriodCount(
+    investment.durationDays,
+    investment.rewardFrequency,
+  );
+  const amounts = splitEvenly(investment.projectedProfit, totalPeriods);
+  const periodDays =
+    investment.rewardFrequency === "on_maturity"
+      ? null
+      : PERIOD_DAYS[investment.rewardFrequency];
+
+  return amounts.map((amount, i) => {
+    const index = i + 1;
+    // Every period up to the last one lands on its calendar boundary from
+    // `startedAt`; the last one is pinned to `maturesAt` itself rather than a
+    // boundary that could land after it (a 90-day term paying weekly has its
+    // 13th boundary on day 91) or, for `on_maturity`, because the term itself
+    // is the only date the plan ever named.
+    const dueAt =
+      index === totalPeriods || periodDays === null
+        ? investment.maturesAt
+        : addDays(investment.startedAt, index * periodDays);
+    return { index, periodKey: periodKeyFor(index), dueAt, amount };
+  });
+}
+
+/**
+ * The schedule for an allocation, as of `asOf` — a forecast for display, read
+ * from the same period list the engine actually credits from.
+ *
+ * Pure and total: given the same allocation, the same credited-period count
+ * and the same instant it always returns the same answer, which is what lets
+ * the settlement job's display refresh recompute rather than increment. An
+ * incrementing job that misses a run drifts; a job that recomputes from
+ * `startedAt` cannot.
  */
 export function rewardScheduleFor(
   investment: {
     startedAt: Date;
     maturesAt: Date;
     durationDays: number;
-    projectedProfit: number;
+    projectedProfit: Decimal;
     rewardFrequency: RewardFrequency;
+    /** How many periods `creditDueEarnings` has already settled. */
+    earningsCreditedPeriods: number;
   },
   asOf: Date,
 ): RewardSchedule {
@@ -87,8 +183,9 @@ export function rewardScheduleFor(
    * annualised rate", and nothing in the schema records the horizon that
    * `estimated_return_percent` is measured over. Dividing by a term of zero
    * would pay the entire projected profit every single day. So the amount is
-   * null, the UI shows a date without a figure, and the missing rule is
-   * reported rather than guessed.
+   * null, the UI shows a date without a figure, and there is nothing for
+   * `creditDueEarnings` to schedule either — Flexible Reserve is excluded from
+   * it the same way it is excluded from maturity.
    */
   if (isOpenEnded(investment.durationDays)) {
     if (investment.rewardFrequency === "on_maturity") {
@@ -111,40 +208,11 @@ export function rewardScheduleFor(
     return { nextRewardAt: null, nextRewardAmount: null };
   }
 
-  if (investment.rewardFrequency === "on_maturity") {
-    // One payment, at the end. The date is the maturity date itself.
-    return {
-      nextRewardAt: investment.maturesAt,
-      nextRewardAmount: round8(investment.projectedProfit),
-    };
-  }
+  const periods = earningPeriodsFor(investment);
+  const next = periods[investment.earningsCreditedPeriods];
+  if (!next) return { nextRewardAt: null, nextRewardAmount: null };
 
-  const periodDays = PERIOD_DAYS[investment.rewardFrequency];
-  // At least one period, so a term shorter than its own reward interval still
-  // has a schedule rather than dividing by zero.
-  const periods = Math.max(investment.durationDays / periodDays, 1);
-
-  const nextRewardAt = nextBoundary(investment.startedAt, periodDays, asOf);
-
-  /*
-   * A boundary *past* maturity is not a reward date — the term ends first.
-   *
-   * Strictly greater, not `>=`, and the difference is a real case rather than
-   * pedantry: a 30-day plan paying monthly has exactly one period, and its
-   * boundary lands precisely on the maturity date. With `>=` that plan got no
-   * schedule at all — `next_reward_at` null from the moment the allocation was
-   * created, which is the very null this module exists to stop. The reward is
-   * genuinely due at maturity, so the date is kept; the guard at the top of the
-   * function is what makes it null once the term is actually over.
-   */
-  if (nextRewardAt > investment.maturesAt) {
-    return { nextRewardAt: null, nextRewardAmount: null };
-  }
-
-  return {
-    nextRewardAt,
-    nextRewardAmount: round8(investment.projectedProfit / periods),
-  };
+  return { nextRewardAt: next.dueAt, nextRewardAmount: Number(next.amount) };
 }
 
 /**
@@ -195,16 +263,4 @@ function daysBetween(from: Date, to: Date): number {
 
 function addDays(from: Date, days: number): Date {
   return new Date(from.getTime() + days * MS_PER_DAY);
-}
-
-/**
- * Rounded to the `usdt` column's scale.
- *
- * This is a *forecast* rather than a money movement, so it is computed in
- * JavaScript rather than in Postgres — the rule in CLAUDE.md §17.2 governs
- * amounts that move a balance, and nothing here does. Rounding to the column's
- * eight places keeps the stored value and the displayed value identical.
- */
-function round8(value: number): number {
-  return Number(value.toFixed(8));
 }

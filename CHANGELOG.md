@@ -4,6 +4,258 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-09-06 (The deposit-address pool)
+
+The address half of C6 in `FUTURE_TASKS.md` — "deposit attribution is manual"
+— resolved for a real, if small, subset of deposits: a pool of
+operator-configured TRON addresses, allocated one per user, that the scanner
+now attributes and credits automatically. The legacy single-address, manual
+queue at `/admin/deposits` is untouched and still the path for anything
+outside the pool.
+
+### 1. The pool
+
+- New table `deposit_addresses` (migration `0009_far_solo.sql`): one row per
+  physical address, `status` (`available` / `assigned` / `retired`), the
+  `user_id` it belongs to (nullable), `derivation_index` (nullable, unused
+  today — see §4), `assigned_at` / `released_at`. Unique on
+  `(chain, network, address)`.
+- `getOrCreateDepositAddress(userId, network, actor)` (new,
+  `deposit-address.service.ts`): returns an existing assignment, or claims one
+  `available` row and assigns it. Same user, same address, always. Two
+  concurrent first-time requests for the same user are serialised by a
+  transaction-scoped `pg_advisory_xact_lock`; claiming among several available
+  rows is `SELECT … FOR UPDATE SKIP LOCKED`, so two different users' requests
+  never contend.
+- `releaseDepositAddress` (new): the only way an address returns to the pool.
+  Refuses when any deposit against it has not reached a terminal state
+  (`credited` / `failed` / `ignored`) — an address with unresolved chain
+  activity cannot be handed to someone else. Wired to a new admin action,
+  `releaseDepositAddressAction`.
+- `TRON_DEPOSIT_POOL_ADDRESSES` (new, optional env var): comma-separated
+  additional pool addresses. `TRON_PLATFORM_DEPOSIT_ADDRESS` is always pool
+  member zero, so the pool works today with no new configuration, and grows by
+  editing the env var, not by writing code. `ensureDepositAddressPool`
+  (`@/server/tron/pool.ts`) syncs configured addresses into the table,
+  insert-only, on every allocation request and every scanner pass.
+
+### 2. Attribution and crediting
+
+- `recordObservedDeposit` (`deposits.service.ts`) now resolves a transfer's
+  recipient against `deposit_addresses`. Resolved to an assigned owner: the
+  deposit is credited automatically, in the same transaction, through the
+  same `ensureWallet` + ledger-entry path an operator's manual assignment
+  already used — no second financial mutation path. Unresolved: recorded
+  exactly as before, `user_id` stays `null`, for the manual queue.
+- The scanner (`@/server/tron/scanner.ts`) now watches every address in the
+  pool, not one — `chain_scan_state` already supported a cursor per
+  `(chain, network, address)`, so this reused the existing table rather than
+  inventing a second one. Each address fails and recovers independently: one
+  rate-limited or unreachable address no longer stops the rest of the pool
+  from being scanned in the same pass.
+- `parseTransfer` takes the expected recipient as a parameter instead of
+  reading `config.depositAddress`, since a pass now checks transfers against
+  whichever address the current page of results was requested for.
+
+### 3. The user-facing screen
+
+- Add Funds now shows exactly two network options — **TRC20 USDT** (TRON
+  mainnet, marked unavailable; mainnet stays refused in code regardless) and
+  **Shasta Net USDT** — replacing the old four-network placeholder catalogue
+  (`trc20` / `bep20` / `polygon` / `erc20`, none of which could ever receive
+  anything) and the separate single-shared-address panel that sat above it.
+- The Shasta address shown is the signed-in account's own pool address,
+  resolved server-side (`getMyDepositAddressAction`, which calls
+  `getOrCreateDepositAddress` with a `userId` read from the session) — nothing
+  client-supplied decides whose address is returned. QR code generated
+  server-side from the real address, same as before.
+- The development-only "record a pending deposit" control (exercised the
+  manual-queue path with no chain transfer behind it) was removed from this
+  screen along with the catalogue it belonged to; `recordDepositIntent` and
+  its server action are untouched and still usable directly if that path is
+  needed again.
+
+### 4. What did not change, deliberately — key custody
+
+No mnemonic, seed, extended private key or any signing material was added
+anywhere: not to the browser, not to a database row, not to a log, not to this
+session. Every pool address is **configured** by the operator, from their own
+wallet tooling, exactly as `TRON_PLATFORM_DEPOSIT_ADDRESS` always has been —
+this pass added an allocation and attribution layer on top of that same trust
+model, not a new one. Real BIP-44 derivation (an account-level extended
+*public* key, so addresses could be minted without an operator hand-adding
+each one) and sweeping (consolidating pool balances to a treasury address)
+both remain unimplemented, on purpose: both need key material this project
+has never held and this session was explicitly forbidden from generating.
+`derivation_index` exists as a column for the day an xpub does. See
+CLAUDE.md §18.8.
+
+### 5. The failed test deposit — traced
+
+A real Shasta transfer sent before this pass (`ce34267b…4ddcfdd`, 100 USDT to
+`TRON_PLATFORM_DEPOSIT_ADDRESS`, solidified) had not been recorded.
+`npm run tron:inspect` confirmed the scanner would recognise it correctly; the
+gap was operational, not a code defect — `chain_scan_state` showed the last
+successful scan five days earlier, and `CRON_SECRET` is unset in this local
+environment, so nothing had triggered a pass since. Running `npm run
+tron:scan` recorded it as `dep_mtpm3w21746n3` — confirmed, verified, correctly
+unassigned, since it predates any pool assignment for that address. No code
+change resulted; the finding is recorded here and in `FUTURE_TASKS.md` (H4,
+pre-existing) rather than papered over.
+
+### 6. Tests
+
+New `server/deposit-address.integration.test.ts` (18 tests): first-time
+allocation, same-user reuse, distinct-user distinctness, no client-suppliable
+identity, network-scoped claiming, pool exhaustion, no auto-release ever,
+release refused while unresolved activity exists, automatic attribution and
+crediting, unknown-recipient non-credit, wrong-network non-resolution,
+unconfirmed non-credit, exact-amount crediting, and idempotency under a
+duplicate and under real concurrency (`Promise.all`). `tron/tron.test.ts`
+updated for `parseTransfer`'s new explicit-recipient parameter — no behaviour
+changed, sixteen tests still pass unmodified. `schema.integration.test.ts`,
+`seed.test.ts` and `kyc-storage.integration.test.ts` updated for the new
+table, its two new enums, and the new PostgREST-exposure entry.
+
+---
+
+## 2026-09-06 (The investment earnings engine)
+
+The core gap C2 in `FUTURE_TASKS.md` — "no investment earnings engine" —
+closed. `/api/cron/settle-investments` now credits real, scheduled profit,
+not only principal at maturity.
+
+### 1. The engine
+
+`creditDueEarnings()` (new, `investment-settlement.service.ts`) runs before
+maturity on every settlement pass: for every active fixed-term allocation, it
+computes the plan's own reward schedule (`investment-schedule.ts`'s new
+`earningPeriodsFor`) and credits every period that is due and not yet
+credited, via the already-existing `recordInvestmentEarning()` — which had
+been implemented, transactional and idempotent since before this pass, and
+had no caller. It now has one.
+
+- **The rate is exact, not a projection.** `estimated_return_percent` is what
+  the platform pays. `createInvestment` computes the total scheduled profit
+  once, from the rate in effect at that moment, via a new `applyPercent()` in
+  `@/db/money` (exact `BigInt` arithmetic — no JavaScript float ever touches a
+  money value). Stored as `investments.projected_profit`, a snapshot never
+  recomputed from the plan again.
+- **Reward frequency is read from the plan, not assumed.** `daily` / `weekly`
+  / `monthly` / `on_maturity`, exactly as configured.
+- **Non-compounding.** Every period's share is a fixed fraction of the
+  *original* total; a credited period never enlarges the base later periods
+  are computed from.
+- **Rounding is exact.** New `splitEvenly()` in `@/db/money` divides a total
+  into N shares using `BigInt` arithmetic on the schema's smallest unit; the
+  last share absorbs whatever the others' truncation leaves, so the periods
+  always sum to exactly the total sold.
+- **A whole number of periods**, not the old fractional
+  `durationDays ÷ periodDays`: `ceil(durationDays ÷ periodDays)`, so the
+  term's last few days are a real, paid period rather than an uncovered
+  remainder. The final period's due date is always `maturesAt` itself.
+- **Idempotent and catch-up safe.** The existing unique index on
+  `(investment_id, period_key)` is what makes a replay a no-op; a new
+  `investments.earnings_credited_periods` counter (migration `0008`) is the
+  cursor that keeps a caught-up allocation from being re-attempted every
+  tick. `periodKey` is order-based (`p1`, `p2`, …), not calendar-based, so it
+  does not depend on which wall-clock date the cron happens to run on.
+- **Bounded per pass.** A new `MAX_PERIODS_PER_INVESTMENT` (60) caps how many
+  overdue periods one allocation can be charged in a single pass — found
+  necessary while testing: an allocation with a large historical backlog (the
+  seeded seed data included some) turned one `settleInvestments()` call into
+  hundreds of sequential transactional writes, measured at 400+ seconds for a
+  single call. Bounding it does not change correctness — the cursor picks up
+  the rest on the next tick — only how one request's worst case is spent.
+- **Order matters.** Earnings are credited *before* maturity is checked in
+  the same pass: an allocation's final period is due exactly at `maturesAt`,
+  so it has to be credited while the row is still `active`.
+- **Flexible Reserve is untouched.** The same `duration_days > 0` filter that
+  already excluded it from maturity excludes it from earnings — it has no
+  term for a total profit to be scheduled over.
+
+### 2. Plan rate history
+
+New table `plan_rate_history` (migration `0008`): plan, previous rate, new
+rate, effective timestamp, the operator who changed it, an optional reason.
+`updatePlanAction` writes a row whenever an edit changes
+`estimated_return_percent`; `createPlanAction` writes the opening entry.
+Read-only, append-only, exposed via `listPlanRateHistory()` /
+`getPlanRateHistory()` — no admin UI panel added for it in this pass, only
+the data path.
+
+It does not feed the engine. `investments.projected_profit` is a snapshot
+taken at `createInvestment`, so a rate change reaches only allocations
+created after it; a running allocation's remaining periods, and every period
+already credited, are unaffected. This was a deliberate choice, consistent
+with the existing "the plan reference stays for navigation; the terms are a
+snapshot" rule that already applied to a plan's name and duration — see
+`CLAUDE.md` §10b.
+
+### 3. What did not change
+
+- Referral commission accrual and its trigger were already complete
+  (`accrueReferralCommission`, called from `createInvestment`) — this was not
+  the gap C1 originally described, which predates that work. Release into a
+  wallet remains an operator action; there is still no product rule for
+  exactly when it should happen automatically, now tracked as C1a.
+- Fixed-term early exit remains unimplemented and refused, and the UI
+  already only offers "Return funds" to open-ended allocations — verified,
+  not changed.
+- Withdrawal payout rails, per-user deposit addresses, mainnet, and the
+  service-role key: untouched, as instructed.
+
+### 4. Tests
+
+`server/money-lifecycle.integration.test.ts` gained: daily/weekly/monthly/
+on-maturity exact-sum verification, a missed-cron catch-up test, a
+final-period-at-maturity test, a Flexible-Reserve-exclusion test, and a
+rate-change-does-not-touch-a-sold-allocation test. Its three pre-existing
+maturity tests were updated: they used to backdate only `matures_at`, which
+— now that maturity and the final earning period are the same due date — is
+an inconsistent fixture no production data can produce (`matures_at` before
+`started_at + duration_days`). They now backdate both consistently
+(`backdateToMaturity()`) and assert on the profit that maturing a fully-aged
+allocation now correctly also credits.
+
+`server/writes.integration.test.ts` gained a concurrent-settlement test:
+two simultaneous `recordInvestmentEarning()` calls for the same period, only
+one of which may credit.
+
+`server/kyc-storage.integration.test.ts`'s PostgREST exposure test gained
+`investment_earnings` and `plan_rate_history` to its table list.
+`db/schema.integration.test.ts`'s table/FK counts and `db/seed/seed.test.ts`'s
+operational-tables exemption list were updated for the new table and column.
+
+Two more test fixes, both found by running the full suite rather than one file
+at a time:
+
+- **`data-access.integration.test.ts`'s exact `investments` row count** and
+  **`money-lifecycle.integration.test.ts`'s blanket `errors.length === 0`**
+  both assumed exclusive access to the live database. `settleInvestments()`
+  now runs real allocations through real, multi-second settlement, so a test
+  in one file can catch a scratch allocation another file's test currently has
+  open. Both assertions now scope to what the test actually owns — "at least
+  the seeded rows", and "no error naming *this* allocation" via a new
+  `assertNoErrorsFor()` helper — rather than a fact about the whole shared
+  table. See CLAUDE.md §16.7.
+- **`MAX_PERIODS_PER_INVESTMENT` (60)** was added to `creditDueEarnings()`
+  after a full-suite run measured a single `settleInvestments()` call at
+  400+ seconds: a seeded daily allocation with a large uncredited backlog
+  turned one pass into hundreds of sequential transactional writes. The cap
+  does not change correctness — the cursor picks up the remainder next
+  tick — only how much one request can be asked to do.
+
+### 5. Everything else audited, found already correct
+
+Per CLAUDE.md's existing (extensive) reliability and error-taxonomy work: the
+error classification (`server/errors.ts`), auth-provider-outage handling,
+loading/error boundaries, bounded read retry, and the deposit scanner's
+idempotency model were inspected and found to already satisfy this pass's
+requirements — see the session's final report for specifics. `DATABASE_IDLE_TIMEOUT`
+is unset in `.env.local`; the code's documented default of 30s is what is
+actually in effect.
+
 ## 2026-09-02c (KYC document storage, RLS, Flexible Reserve withdrawal)
 
 ### 0. Every application table was readable by anyone with the anon key

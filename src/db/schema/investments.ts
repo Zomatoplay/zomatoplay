@@ -43,6 +43,19 @@ export const investments = pgTable(
     nextRewardAt: ts("next_reward_at"),
     nextRewardAmount: usdt("next_reward_amount"),
     risk: riskLevelEnum("risk").notNull(),
+    /**
+     * How many scheduled earning periods have actually been credited so far.
+     *
+     * The engine's own cursor, not a display figure: it is what lets a
+     * settlement pass ask "which period is next" instead of re-attempting
+     * every period from the start of the term on every tick. Advanced only by
+     * `recordInvestmentEarning()`, and only up (`greatest(…)`), so two
+     * concurrent settlement attempts that credit different periods out of
+     * order cannot walk it backwards. Zero for an allocation nothing has
+     * credited yet, which is every allocation created before this engine
+     * existed and every one created after it.
+     */
+    earningsCreditedPeriods: integer("earnings_credited_periods").notNull().default(0),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
@@ -63,13 +76,17 @@ export const investments = pgTable(
  * the first. They are written together, in one transaction, and `ledgerTxId`
  * links them.
  *
- * `periodKey` is the idempotency key — `"2026-08-13"` for a daily accrual,
- * `"2026-W33"` for a weekly one. A scheduler that runs twice, or is replayed
- * after a failure, collides on the unique index instead of paying twice.
+ * `periodKey` is the idempotency key — `"p1"`, `"p2"`, … — one per scheduled
+ * period counted from the allocation's own `started_at`, in order, regardless
+ * of the wall-clock date the settlement job happens to run on. A scheduler
+ * that runs twice, or is replayed after a failure, collides on the unique
+ * index instead of paying twice; a scheduler that runs late still produces the
+ * same key for the period it is late for.
  *
- * INTEGRATION POINT: the investment engine writes these. Nothing does yet —
- * the earnings shown in the app are still the modelled series described in
- * CLAUDE.md §16.5.
+ * Written by `/api/cron/settle-investments` via
+ * `creditDueEarnings()` in `investment-settlement.service.ts`, for every
+ * fixed-term allocation on the reward schedule its plan was sold with — see
+ * CLAUDE.md §10a.
  */
 export const investmentEarnings = pgTable(
   "investment_earnings",

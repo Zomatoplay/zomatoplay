@@ -359,14 +359,16 @@ describe("writes", { skip }, () => {
       investmentId,
       userId,
       amount: decimal("1.25"),
-      periodKey: "2026-08-20",
+      periodKey: "p1",
+      periodIndex: 1,
       planName: plan.name,
     });
     const replay = await recordInvestmentEarning({
       investmentId,
       userId,
       amount: decimal("1.25"),
-      periodKey: "2026-08-20",
+      periodKey: "p1",
+      periodIndex: 1,
       planName: plan.name,
     });
 
@@ -376,6 +378,59 @@ describe("writes", { skip }, () => {
     const balance = await balanceOf(userId);
     assert.equal(decimal(balance.available), decimal("1.25"));
     assert.equal(decimal(balance.totalProfit), decimal("1.25"));
+  });
+
+  test("two concurrent settlement attempts for the same period pay once", async () => {
+    /*
+     * Two cron invocations overlapping — a slow instance and a retry, or two
+     * schedulers pointed at the same secret — racing to credit the same
+     * period. The unique index on (investment_id, period_key) is what decides
+     * this, not application logic: both requests reach `INSERT … ON CONFLICT
+     * DO NOTHING` at the database, and only one can win.
+     */
+    const userId = await makeUser();
+    const [plan] = await db.select().from(t.plans).limit(1);
+    const investmentId = newId("inv_test");
+
+    await db.insert(t.investments).values({
+      id: investmentId,
+      userId,
+      planId: plan.id,
+      planName: plan.name,
+      amount: sql`100::numeric`,
+      startedAt: new Date(),
+      maturesAt: new Date(),
+      durationDays: 30,
+      rewardFrequency: "daily",
+      risk: plan.risk,
+    });
+
+    const attempt = () =>
+      recordInvestmentEarning({
+        investmentId,
+        userId,
+        amount: decimal("3.33333333"),
+        periodKey: "p1",
+        periodIndex: 1,
+        planName: plan.name,
+      });
+
+    const [a, b] = await Promise.all([attempt(), attempt()]);
+    const outcomes = [a.credited, b.credited].sort();
+    assert.deepEqual(outcomes, [false, true], "exactly one of the two attempts pays");
+
+    const balance = await balanceOf(userId);
+    assert.equal(
+      decimal(balance.totalProfit),
+      decimal("3.33333333"),
+      "the period is paid once, not twice, however many attempts race for it",
+    );
+
+    const [row] = await db
+      .select({ earningsCreditedPeriods: t.investments.earningsCreditedPeriods })
+      .from(t.investments)
+      .where(eq(t.investments.id, investmentId));
+    assert.equal(row.earningsCreditedPeriods, 1, "the cursor advances once, not twice");
   });
 
   /* ------------------------------------------------------------- account --- */

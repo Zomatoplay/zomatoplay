@@ -376,6 +376,15 @@ describe("postgrest exposure", { skip }, () => {
     "deposits",
     "withdrawals",
     "investments",
+    // The investment engine's own tables (CLAUDE.md §10a): an earning is a
+    // credited amount and a rate change is who-changed-what-when, and neither
+    // belongs on PostgREST any more than a balance does.
+    "investment_earnings",
+    "plan_rate_history",
+    // The deposit-address pool maps a blockchain address to a user — exactly
+    // the kind of row PostgREST must never be able to enumerate, since that
+    // mapping is the entire attribution mechanism (CLAUDE.md §18.8).
+    "deposit_addresses",
     "admin_agents",
     "admin_agent_permissions",
   ];

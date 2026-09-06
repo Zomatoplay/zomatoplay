@@ -9,6 +9,43 @@ import { toAuditLogEntry, toPermissionSet, toPlatformSettings } from "./mappers"
 
 /** Operators, the audit trail and platform configuration. */
 
+/** One recorded change to a plan's profit rate, newest first. */
+export interface PlanRateHistoryEntry {
+  id: string;
+  previousRatePercent: number | null;
+  newRatePercent: number;
+  effectiveAt: string;
+  changedByLabel: string;
+  reason: string | null;
+}
+
+/**
+ * A plan's rate history — every change `updatePlanAction` has recorded,
+ * newest first, plus the opening entry `createPlanAction` wrote.
+ *
+ * Read-only and append-only, like `audit_logs`: nothing in this codebase
+ * updates or deletes a row here (CLAUDE.md §10a — see `db/schema/plans.ts`).
+ */
+export async function listPlanRateHistory(
+  db: Database,
+  planId: string,
+): Promise<PlanRateHistoryEntry[]> {
+  const rows = await db
+    .select({
+      id: schema.planRateHistory.id,
+      previousRatePercent: schema.planRateHistory.previousRatePercent,
+      newRatePercent: schema.planRateHistory.newRatePercent,
+      effectiveAt: schema.planRateHistory.effectiveAt,
+      changedByLabel: schema.planRateHistory.changedByLabel,
+      reason: schema.planRateHistory.reason,
+    })
+    .from(schema.planRateHistory)
+    .where(eq(schema.planRateHistory.planId, planId))
+    .orderBy(desc(schema.planRateHistory.effectiveAt));
+
+  return rows.map((row) => ({ ...row, effectiveAt: row.effectiveAt.toISOString() }));
+}
+
 /**
  * The permission ids, taken from the database enum rather than from
  * `@/constants/admin`.

@@ -99,7 +99,10 @@ export function classifyError(error: unknown): ErrorCategory {
     name === "KycError" ||
     name === "InvestmentError" ||
     name === "WithdrawalError" ||
-    name === "DepositError"
+    name === "DepositError" ||
+    name === "DepositAddressServiceError" ||
+    name === "AddressReleaseError" ||
+    name === "PoolExhaustedError"
   ) {
     return "VALIDATION_ERROR";
   }

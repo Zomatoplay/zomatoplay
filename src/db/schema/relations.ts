@@ -1,6 +1,7 @@
 import { relations } from "drizzle-orm";
 
 import { adminAgentPermissions, adminAgents } from "./admin";
+import { depositAddresses } from "./chain";
 import {
   notificationCategories,
   notifications,
@@ -9,7 +10,7 @@ import {
 import { investments } from "./investments";
 import { kycDocuments, kycNotes, kycSubmissions } from "./kyc";
 import { deposits, transactions, withdrawals } from "./ledger";
-import { plans } from "./plans";
+import { planRateHistory, plans } from "./plans";
 import { commissionEntries, referralAccounts, referrals } from "./referrals";
 import {
   bankAccounts,
@@ -46,6 +47,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   investments: many(investments),
   transactions: many(transactions),
   deposits: many(deposits),
+  depositAddresses: many(depositAddresses),
   withdrawals: many(withdrawals),
   notifications: many(notifications),
   notificationPreferences: many(userNotificationPreferences),
@@ -99,6 +101,11 @@ export const supportTicketsRelations = relations(supportTickets, ({ one }) => ({
 
 export const plansRelations = relations(plans, ({ many }) => ({
   investments: many(investments),
+  rateHistory: many(planRateHistory),
+}));
+
+export const planRateHistoryRelations = relations(planRateHistory, ({ one }) => ({
+  plan: one(plans, { fields: [planRateHistory.planId], references: [plans.id] }),
 }));
 
 export const investmentsRelations = relations(investments, ({ one }) => ({
@@ -112,6 +119,10 @@ export const transactionsRelations = relations(transactions, ({ one }) => ({
 
 export const depositsRelations = relations(deposits, ({ one }) => ({
   user: one(users, { fields: [deposits.userId], references: [users.id] }),
+}));
+
+export const depositAddressesRelations = relations(depositAddresses, ({ one }) => ({
+  user: one(users, { fields: [depositAddresses.userId], references: [users.id] }),
 }));
 
 export const withdrawalsRelations = relations(withdrawals, ({ one }) => ({

@@ -19,47 +19,64 @@ unproven, it says so.
 Security, financial correctness, data integrity, authorization, production
 blockers.
 
-### C1 — Referral commission is recorded but never paid
+### C1 — Referral commission is recorded but never paid *(resolved for accrual; release is still manual, deliberately)*
 
-- **Problem.** Referral *relationships* are now captured and persisted
-  (`referrals`, `users.referred_by_code`, `referral_accounts`). No commission is
-  ever calculated or credited. The user-facing referral screen shows
-  `earnedFromReferral` and a VIP commission percentage that no service computes.
-- **Why it matters.** The product tells a user they earn a percentage. Nothing
-  produces that money. That is a promise the system does not keep.
-- **Current state.** Rates live in `src/data/referrals.ts` as data (VIP 1–3, two
-  tiers). `creditCommission()` exists in `account-write.service.ts` and has no
-  caller.
-- **Recommended solution.** A commission service invoked on the events that earn
-  it (a referred user's first deposit credit, and/or their allocation), writing a
-  `commission_entries` row and a ledger entry in one transaction, with an
-  idempotency key per (referral, triggering event) so a replay cannot pay twice.
-- **Dependencies.** Investment/earnings engine (C2) for the "earns on profit"
-  model; nothing for the "earns on deposit" model.
-- **Complexity.** Medium.
+> **Update 2026-09-06.** Accrual and its trigger are done, and have been since
+> before this note: `createInvestment` calls `accrueReferralCommission` in the
+> same transaction as the allocation, at the beneficiary's current VIP rate,
+> writing a `pending` `commission_entries` row and moving `referral_accounts`'
+> aggregates and level. It credits nobody's wallet — that is deliberate, not
+> the gap this item originally described (see `referrals-write.service.ts`).
+> An operator releases a pending entry into the wallet from
+> `/admin/referrals`, one transaction, guarded so two clicks pay once. What
+> remains is *automatic* release, and it is now blocked on a product decision
+> rather than a missing engine — see the new C1a below.
+
+### C1a — No product rule for when referral commission is automatically payable
+
+- **Problem.** Investment settlement (C2, resolved below) now runs, so
+  `platform_settings.referrals.payoutDelayDays` could in principle be read
+  against something — but nothing in the product's rules says *what* "the
+  allocation settles" means for the purpose of releasing a referrer's
+  commission: at the source allocation's first credited earning, at its
+  maturity, immediately on accrual, or something else.
+- **Why it matters.** Guessing this on the one table that pays a third
+  party's money is worse than leaving it manual — a wrong guess pays the
+  wrong amount at the wrong time and there is no clean way to reverse a
+  released commission a user has already seen.
+- **Current state.** `releaseCommission()` is complete, audited, idempotent,
+  and callable from anywhere once the trigger exists; only `/admin/referrals`
+  calls it today.
+- **Recommended solution.** A product decision, then a one-line change: call
+  `releaseCommission()` from whichever settlement event is chosen, most
+  likely from `creditDueEarnings` or `matureInvestment` in
+  `investment-settlement.service.ts`.
+- **Dependencies.** None technical — a business decision only.
+- **Complexity.** Small, once decided.
 - **Production safety.** Yes — it moves money.
-- **Before launch.** Yes, or the referral programme must be removed from the UI.
+- **Before launch.** No — manual release via the CRM is a complete, safe,
+  audited substitute for as long as this stays undecided.
 
-### C2 — No investment earnings engine
+### C2 — No investment earnings engine *(resolved 2026-09-06)*
 
-- **Problem.** `recordInvestmentEarning()` exists, is transactional and has a
-  unique `(investment_id, period_key)` guard. Nothing schedules it. Investments
-  accrue nothing; the earnings screens report only what has settled, which is
-  currently only seeded rows.
-- **Why it matters.** The core product proposition — allocate, earn on a
-  schedule — is not implemented. Users would see a static balance forever.
-- **Current state.** Plans carry `rewardFrequency` (daily/weekly/monthly/on
-  maturity) and an estimated return range. Maturity (`matureInvestment`) exists
-  and is also unscheduled.
-- **Recommended solution.** A scheduled job (cron/worker) that, per due period,
-  computes the accrual, writes the earning + ledger entry + balance move in one
-  transaction, keyed by `period_key`. It must be safe to run twice and safe to
-  run late.
-- **Dependencies.** A scheduler. Decide compounding vs non-compounding and
-  document it (§ API_DOCUMENTATION "Earnings").
-- **Complexity.** Large.
-- **Production safety.** Yes.
-- **Before launch.** Yes.
+> **Update 2026-09-06.** Implemented. `/api/cron/settle-investments` now
+> credits every due earning period before it matures anything, via
+> `creditDueEarnings()` in `investment-settlement.service.ts`:
+> `recordInvestmentEarning()` — already transactional, already guarded by the
+> unique `(investment_id, period_key)` index described below — is finally
+> called, once per due period, for every active fixed-term allocation.
+> The plan's configured `estimated_return_percent` is the rate actually paid
+> (a deliberate product decision — see `API_DOCUMENTATION.md` "Earnings" and
+> `CLAUDE.md` §10a), non-compounding, split across periods with exact
+> integer arithmetic (`splitEvenly()` in `@/db/money`) so the periods always
+> sum to exactly the total sold. Flexible Reserve is excluded, the same way
+> it was already excluded from maturity. A plan's rate change is recorded in
+> a new `plan_rate_history` table and reaches only allocations created after
+> it — see `CLAUDE.md` §10b. Tested end to end in
+> `server/money-lifecycle.integration.test.ts` (daily/weekly/monthly/
+> on-maturity rounding, missed-cron catch-up, concurrent settlement, final
+> period at maturity, Flexible Reserve exclusion, rate-change isolation) and
+> `server/writes.integration.test.ts` (concurrent crediting of one period).
 
 ### C3 — Withdrawals pay nobody
 
@@ -127,27 +144,45 @@ blockers.
 - **Production safety.** Yes.
 - **Before launch.** Yes.
 
-### C6 — Deposit attribution is manual and unverified against an intent
+### C6 — Deposit attribution is manual and unverified against an intent *(resolved for pool addresses, 2026-09-06)*
 
 - **Problem.** One shared receiving address. A TRC-20 transfer carries a sender
   and nothing else, so an operator decides who it belongs to. There is no
   expected-amount or intent to check the transfer against.
 - **Why it matters.** Crediting the wrong account is a loss, not a display bug.
   The current control is operator care.
-- **Current state.** Deliberately safe: the scanner never sets `user_id`, the
-  CRM offers no "best match", and the assignment is audited. See `CLAUDE.md`
-  §18.4.
-- **Recommended solution.** **Per-user deposit addresses** — the real fix, which
-  makes attribution structural. A `deposit_addresses` table and resolving
-  `to_address` through it at detection. Nothing in the schema blocks it. A
-  deposit-intent system (expected amount + expiry) is a weaker intermediate step
-  and is only safe combined with operator review.
-- **Dependencies.** Address derivation/custody strategy — this is the hard part
-  and it is a key-management decision, not a coding one.
-- **Complexity.** Large.
+- **Current state.** `deposit_addresses` (CLAUDE.md §18.8) now exists: a small,
+  operator-configured pool of addresses, allocated one-per-user on demand
+  (`getOrCreateDepositAddress`), never reassigned automatically, and resolved
+  by the scanner at detection time so a transfer to an assigned pool address
+  credits its owner in the same transaction — no operator step. The Add Funds
+  screen now shows the user their own real pool address for Shasta. The
+  legacy shared address, and any pool address nobody currently holds, still
+  cannot say who paid and still route through the manual queue at
+  `/admin/deposits`, exactly as before.
+- **What is not done, and why — a key-custody decision, not an oversight.**
+  The pool's addresses are **configured**, not derived: an operator generates
+  each one with their own trusted wallet tooling, and only the address string
+  reaches this codebase. True BIP-44 derivation from an account xpub (so the
+  pool could grow itself, without an operator hand-adding each address) needs
+  that xpub to exist first, generated offline by the operator — it does not
+  exist in this project, and building a real one inside this pass would have
+  meant that seed or xpub passing through a coding session, which is exactly
+  what must never happen. See CLAUDE.md §18.8 for the full reasoning. Address
+  the moment an operator supplies an xpub; nothing in the pool schema
+  (`derivation_index` is already a column, unused today) blocks it.
+- **Also not done: sweeping.** Pool addresses accumulate balances; nothing
+  consolidates them to a treasury address. That needs a signing key this
+  application does not hold, a TRX/energy funding policy, and a minimum-sweep
+  threshold — see CLAUDE.md §18.8's closing note. Out of scope for the same
+  custody reason.
+- **Complexity.** Was Large; the address-pool half shipped 2026-09-06. Real
+  derivation and sweeping remain Large, and depend on an operator-provided
+  xpub and a signing-key strategy respectively.
 - **Production safety.** Yes.
-- **Before launch.** Yes for real funds; the current manual flow is acceptable
-  only on testnet.
+- **Before launch.** The pool covers real Shasta usage today. Real funds
+  additionally need mainnet enablement (still refused in code) and a sweeping
+  strategy — neither of which this resolves.
 
 ---
 
@@ -165,14 +200,22 @@ Performance, reliability, blockchain robustness, admin workflows, observability.
   them made while testing "deposits that are not being detected". The scanner
   was correct; the asset was wrong. Nobody could tell, because nothing recorded
   it.
-- **Current state.** The deposit screen now warns prominently against sending
-  TRX (added in this pass). Nothing detects it if a user does anyway.
-- **Recommended solution.** Scan the native-transaction endpoint as well and
-  record wrong-asset arrivals as deposits with `status = 'ignored'` and a
+- **Current state.** The deposit screen warns prominently against sending TRX.
+  Nothing detects it if a user does anyway — and as of 2026-09-06 there are
+  more addresses this applies to: every address in the deposit-address pool
+  (CLAUDE.md §18.8), not just the one legacy address, each of which can
+  independently receive a stray native-TRX transfer invisibly. Considered and
+  deliberately deferred in that pass rather than rushed alongside the pool
+  itself — it touches every watched address, not one, and the pool's own
+  correctness was the priority.
+- **Recommended solution.** Scan the native-transaction endpoint for every
+  address in `deposit_addresses`, not just the legacy one, and record
+  wrong-asset arrivals as deposits with `status = 'ignored'` and a
   `failureReason`, so an operator can see them and arrange a refund. Do **not**
   credit them.
 - **Dependencies.** None — same TronGrid client.
-- **Complexity.** Small.
+- **Complexity.** Small, now scanning N addresses instead of one — still small
+  per address.
 - **Production safety.** No (it only adds visibility).
 - **Before launch.** Yes — otherwise user funds arrive and vanish from view.
 
@@ -448,11 +491,12 @@ extra authenticated renders per screen. Worth measuring, then setting
 `prefetch={false}` on the expensive ones and keeping it for the cheap ones
 (`/wallet/deposit` renders in ~616ms and reads no user data). Small.
 
-### M7 — Referral status never advances
+### M7 — Referral status never advances — **resolved**
 
-New referrals are written with `status = 'registered'` and stay there.
-`'active'` presumably means the referred user has funded or invested; nothing
-sets it. Either drive it from a real event or remove the distinction. Small.
+`accrueReferralCommission` (`referrals-write.service.ts`) moves a direct
+referral from `registered` to `active` on that person's first allocation,
+inside the same transaction as the commission it earns. Not touched in this
+pass; noted here only because this file had not caught up to it.
 
 ---
 
@@ -514,35 +558,42 @@ Things intentionally not solved.
 
 ## Production Readiness Checklist
 
-Status as measured or inspected on 2026-08-24. "No" means not ready, not absent.
+Status as measured or inspected on 2026-08-24, **except the rows marked
+2026-09-06** where the investment earnings engine (C2), referral commission
+accrual (C1) and the deposit-address pool (C6) landed. The rest of this table
+has not been re-verified in this pass and should be read as of the earlier
+date. "No" means not ready, not absent.
 
 | Area | Ready | Notes |
 |---|---|---|
 | **Authentication** | Yes | Supabase Auth; password + optional email code; signup, confirmation callback, password reset all verified working. C5 (outage handling) outstanding. |
-| **Database** | Yes | PostgreSQL 17 via session pooler. 32 tables, 41 enums, 26 FKs, 102 indexes verified against the declared schema. Migrations generated and checked in. |
+| **Database** | Yes | PostgreSQL 17 via session pooler. 34 tables, 43 enums, 28 FKs, 109 indexes verified against the declared schema as of 2026-09-06 (`npm run db:check`). Migrations generated and checked in; RLS re-provisioned via `npm run db:secure` after every migration. |
 | **Authorization** | Yes | User data scoped to the session; no action accepts an identity. Operator permissions graded and enforced server-side. Verified: a customer session is refused by the CRM. |
 | **KYC** | Yes | Full lifecycle persisted and audited; user and CRM read the same row. No provider integration (by design). |
-| **Deposits** | **No** | Detection, verification, finality, idempotency and ledger crediting all work and are proven. Attribution is manual (C6) and wrong-asset arrivals are invisible (H1). Scanner unscheduled (H4). |
+| **Deposits** | Partial *(2026-09-06)* | Detection, verification, finality, idempotency and ledger crediting all work and are proven. A pool of operator-configured addresses now makes attribution and crediting automatic for whichever user each is assigned to (C6, resolved for the pool); the legacy shared address and unassigned pool addresses still route to the manual queue. Wrong-asset arrivals remain invisible, now across every pool address (H1). Scanner unscheduled (H4). |
 | **Withdrawals** | **No** | Request/approval lifecycle correct and audited; balance genuinely held and returned. No payout rail (C3). |
-| **Investments** | Partial | Creation is transactional and correct. No accrual or maturity engine (C2). |
-| **Earnings** | **No** | Reads real ledger rows per account. Nothing generates them (C2). |
-| **Referrals** | Partial | Attribution now captured through signup, immutable, self-referral refused. No commission (C1). |
+| **Investments** | Yes *(2026-09-06)* | Creation, scheduled earnings (daily/weekly/monthly/on-maturity, non-compounding, exact rounding) and maturity are all transactional, idempotent and scheduled via `/api/cron/settle-investments`. Fixed-term early exit remains unimplemented, deliberately (§7 of this pass). |
+| **Earnings** | Yes *(2026-09-06)* | Reads real ledger rows per account, and the settlement engine now writes them on the plan's configured schedule (C2, resolved). |
+| **Referrals** | Partial *(2026-09-06)* | Attribution captured through signup, immutable, self-referral refused. Commission accrues automatically on allocation, at the correct historical VIP rate, and is released to the wallet by an operator (C1, resolved for accrual). Automatic release has no product rule yet (C1a). |
 | **Admin** | Partial | Authenticated, permission-checked, all writes transactional and audited. Provisioning incomplete (H6); dashboard headline metrics are fixtures (M2). |
-| **Blockchain** | Partial | Shasta only, read-only, idempotent, finality-gated. Verified end to end against a real transfer. Unscheduled (H4); wrong-asset blind spot (H1). |
+| **Blockchain** | Partial | Shasta only, read-only, idempotent, finality-gated. Verified end to end against a real transfer, including one traced live during this pass that had gone undetected for several days purely because nothing had run the scanner. Now watches a small address pool rather than one address (C6). Unscheduled (H4); wrong-asset blind spot (H1); no real key derivation or sweeping (C6). |
 | **Logging** | Yes | Correlation-ID traces spanning client → server → database → external → blockchain, buffered and written after the response. Verified: no secrets in the table. Retention missing (H5). |
 | **Security** | Partial | No plaintext credentials anywhere; no service-role key; ledger-only balance changes; idempotency by database constraint. C4 and C5 outstanding. |
 | **Performance** | **No** | 1.6–2.7s warm navigation against a 500–800ms target. Dominated by ~200ms round-trip latency to a distant region (H2). No loading UI (H3). |
 | **Backups / recovery** | **No** | Not configured or tested. Supabase provides automated backups on paid tiers; no restore has ever been rehearsed. Do not launch without a tested restore. |
-| **Testing** | Partial | 107 automated tests pass, including live-database integration. No browser end-to-end coverage (M4); server actions untested directly (M3). |
+| **Testing** | Partial | 183 automated tests pass *(2026-09-06)*, including live-database integration for the investment engine and the deposit-address pool. No browser end-to-end coverage (M4); server actions untested directly (M3). |
 | **Monitoring** | **No** | `pipeline_events` supports diagnosis after the fact. No alerting, no uptime checks, no error aggregation, nothing watching `consecutive_failures`. |
 | **Deployment** | **No** | Never deployed. No CI, no staging environment, no migration-on-deploy step, no rollback procedure. |
 
 **Summary.** The application is coherent and internally consistent: identity,
 authorization, transactional integrity, audit and observability are real and
 verified. It is **not** production-ready, and the blockers are concentrated in
-three places — money that cannot actually move (C2, C3), deposit attribution
-(C6, H1), and the absence of any operational apparatus (backups, monitoring,
-deployment).
+three places — money that cannot actually move (C3, withdrawals), the
+remaining gaps around deposits (wrong-asset visibility — H1; real address
+derivation and sweeping, both deliberate key-custody decisions — C6), and the
+absence of any operational apparatus (backups, monitoring, deployment). The
+investment earnings engine (C2) and the deposit-address pool's attribution
+half (C6) were resolved 2026-09-06.
 
 ---
 

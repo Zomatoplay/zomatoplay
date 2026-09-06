@@ -312,20 +312,43 @@ application read the same `kyc_submissions` row and the same
 TRON Shasta transfer
   → TronGrid                      contract, recipient and direction filtered locally
   → solidified?                   /walletsolidity/getnowblock
-  → deposits row, status=confirmed, user_id NULL          ← unassigned, always
-  → operator assigns in /admin/deposits
-  → ledger entry + wallet balance + status=credited       one transaction
+  → deposits row, status=confirmed
+       ↓
+  recipient resolves in deposit_addresses (assigned + owned)?
+       │                                    │
+      yes                                   no
+       │                                    │
+  ledger entry + wallet balance +   user_id stays NULL — operator
+  status=credited, automatically    assigns in /admin/deposits, then
+  (one transaction)                 the same ledger-entry step
 ```
 
-`user_id` is nullable and the scanner never sets it. One platform address
-receives everything and a TRC-20 transfer carries no account identifier —
-exchanges pay out from shared wallets, and a user can send from an address they
-never mentioned. Attribution is an operator decision, and the CRM offers no
-"best match" because a plausible suggestion is the one most likely to be
-accepted without checking.
+**Getting an address.** `getOrCreateDepositAddress(userId, network, actor)` —
+called only from a server action that resolves `userId` from the session,
+never from a client-supplied value — returns the caller's existing pool
+assignment if one exists, or atomically claims one `available` row from
+`deposit_addresses` and assigns it. Same user, same address, every time it is
+asked; nothing ever reassigns one automatically (not a page close, not a
+session end, not time passing) — only an explicit, guarded operator action
+(`releaseDepositAddressAction`) does, and it refuses while any deposit against
+that address is still unresolved.
+
+**Attribution.** A transfer's recipient address is looked up in
+`deposit_addresses`. Resolved to an `assigned` row with an owner: credited
+immediately, through the same `ensureWallet` + ledger-entry path an operator's
+manual assignment uses — there is one financial mutation path, not two.
+Unresolved (the legacy shared address, or a pool address nobody currently
+holds): recorded exactly as before, `user_id` stays `NULL`, and an operator
+attributes it by hand. The scanner and the attribution step never guess; a
+recipient not in the pool is not credited to anyone.
 
 Idempotency is a unique index on `(chain, tx_hash)`, not a prior `SELECT`. The
-scanner's cursor is an optimisation; losing it is harmless.
+scanner's cursor (one per watched address) is an optimisation; losing it is
+harmless. No mnemonic, seed, extended private key or any signing material is
+generated, derived, stored or logged anywhere in this pipeline — every pool
+address is configured by the operator, from their own wallet tooling; see
+CLAUDE.md §18.8 for the key-custody reasoning and what real address derivation
+would still require.
 
 ### Investment
 
@@ -356,22 +379,50 @@ the hold and its reversal rather than a balance that silently came back.
 Read from the ledger: settled `reward` and `referral` credits, bucketed by the
 day and month they were credited.
 
-- **Rate and basis** — whatever the plan's schedule actually paid. Nothing here
-  computes a rate; it reports rows.
-- **Period** — daily buckets for the seven-day chart, monthly for the six-month
-  series and the breakdown. The week-over-week figure compares the last seven
-  days against the seven before them, both measured.
-- **Rounding** — sums are `numeric` in Postgres; only the finished total is cast
-  to a JavaScript number, and only to be rendered.
-- **Compounding** — none. Rewards credit `available`; they are not re-invested.
+- **Rate and basis** — a plan's `estimatedReturnPercent` is the rate the
+  platform actually pays. `createInvestment` computes the total scheduled
+  profit once, from the plan's rate at the moment the allocation is made, and
+  stores it as `investments.projectedProfit` — a snapshot, not a live formula,
+  so a later edit to the plan's rate never reaches an allocation already sold.
+  Non-compounding: every period's share is a fixed fraction of that original
+  total, never of a principal a previous period enlarged.
+- **Period** — the plan's own `rewardFrequency` (`daily` / `weekly` / `monthly`
+  / `on_maturity`), read by the engine rather than assumed. The number of
+  periods is `ceil(durationDays ÷ periodDays)` — a whole number, so the term's
+  last few days are still a real, paid period rather than a remainder nobody
+  covers — and the final period is always due exactly at `maturesAt`.
+- **Rounding** — `splitEvenly()` (`@/db/money`) divides the total into exact
+  shares using integer arithmetic on the schema's smallest unit (BigInt, no
+  floating point anywhere in the computation); the last period absorbs
+  whatever the others' truncation leaves, so every period sums back to exactly
+  the total sold, to the last decimal place.
+- **Compounding** — none. Rewards credit `available`; they are not re-invested,
+  and the schedule is computed once, from the original principal.
 - **Maturity** — returns the principal from `lockedInInvestments` to
-  `available`, as a ledger entry.
+  `available`, as a ledger entry, after crediting the term's final earning
+  period.
 
-**Rendering a page never creates an earning.** These are reads. Accrual is
-`recordInvestmentEarning()` in `wallet.service`, protected by a unique
-`(investment_id, period_key)` so a replayed scheduler cannot pay twice — there
-is no scheduler yet, which is stated in `CLAUDE.md` §13 rather than papered over
-with a number invented at render time.
+**Rendering a page never creates an earning.** These are reads. Crediting is
+`GET/POST /api/cron/settle-investments`, authorised by `CRON_SECRET` on the
+same schedule as the deposit scanner. Per pass, in order: every fixed-term
+allocation's due-but-uncredited periods are credited via
+`recordInvestmentEarning()` (unique on `(investment_id, period_key)`, so a
+replayed or overlapping run cannot pay twice), then allocations past
+`maturesAt` are matured, then the display schedule (`nextRewardAt` /
+`nextRewardAmount`) is refreshed for everything still running. A missed run is
+safe: each period is selected on its own due date, not on a run having
+happened, so a long gap is caught up in the next pass rather than losing what
+was missed. **Flexible Reserve (`durationDays: 0`) is excluded from this
+engine entirely** — an open-ended allocation has no total profit *over* a
+term, so there is no schedule to credit it against; it remains withdrawable in
+full, on request, exactly as before.
+
+**Plan rate changes are recorded, not silent.** `plan_rate_history` gets a row
+— previous rate, new rate, effective timestamp, the operator who changed it —
+every time `/admin/plans` saves a different `estimatedReturnPercent`. It is an
+audit trail, not an input to the engine: a running allocation reads its own
+`projectedProfit`, never the plan's current rate, so the change reaches only
+allocations created after it.
 
 ---
 

@@ -2,7 +2,7 @@ import "server-only";
 
 import { eq, sql } from "drizzle-orm";
 
-import { compare, decimalFrom, numericValue, type Decimal } from "@/db/money";
+import { applyPercent, compare, decimal, decimalFrom, numericValue, type Decimal } from "@/db/money";
 import * as t from "@/db/schema";
 import { getDb } from "@/db";
 
@@ -85,14 +85,20 @@ export async function createInvestment(
     maturesAt.setUTCDate(maturesAt.getUTCDate() + plan.durationDays);
 
     /*
-     * The projected profit, computed here as well as in the insert below.
+     * The projected profit — the total this allocation will actually be paid,
+     * non-compounding, over its whole term (CLAUDE.md §10a) — computed here as
+     * well as in the insert below.
      *
-     * The column is written by Postgres from exact `numeric` — that is the
+     * The column is written by Postgres from exact `numeric`; that is the
      * value of record. This JavaScript copy exists only to derive the *reward
-     * schedule*, which is a forecast rather than a balance, and the alternative
-     * is a second round trip to read back what was just written.
+     * schedule* stamped onto the same row, and it goes through `applyPercent`
+     * rather than `amount * rate / 100`: that expression is a float64
+     * multiply-then-divide on values that came from exact columns, and the
+     * result is almost never itself exactly representable at the schema's
+     * 8-decimal scale — `decimal()` would correctly refuse most of them
+     * (CLAUDE.md §17.2).
      */
-    const projectedProfit = Number(request.amount) * (plan.estimatedReturnPercent / 100);
+    const projectedProfit = applyPercent(request.amount, decimal(plan.estimatedReturnPercent));
 
     /*
      * The schedule was never stamped, and that was a real gap.
@@ -110,6 +116,7 @@ export async function createInvestment(
         durationDays: plan.durationDays,
         projectedProfit,
         rewardFrequency: plan.rewardFrequency,
+        earningsCreditedPeriods: 0,
       },
       now,
     );
@@ -122,7 +129,10 @@ export async function createInvestment(
       // rewrite what an existing allocation was sold as.
       planName: plan.name,
       amount: numericValue(request.amount),
-      projectedProfit: sql`${request.amount}::numeric * ${plan.estimatedReturnPercent}::numeric / 100`,
+      // The same exact value the reward schedule above was just built from —
+      // one computation, not two that could disagree in the last decimal
+      // place.
+      projectedProfit: numericValue(projectedProfit),
       startedAt: now,
       maturesAt,
       durationDays: plan.durationDays,

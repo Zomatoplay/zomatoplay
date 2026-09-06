@@ -67,27 +67,29 @@ export const transactions = pgTable(
  *
  * ATTRIBUTION — READ THIS BEFORE CHANGING `user_id`
  * ------------------------------------------------
- * `user_id` is **nullable**, and that is the single most important thing about
- * this table.
+ * `user_id` is **nullable**, and it is set two different ways, deliberately
+ * kept separate — see the long note on `recordObservedDeposit` in
+ * `@/server/services/deposits.service`:
  *
- * There is one platform receiving address. A TRC-20 transfer to it carries the
- * sender's address and nothing else — no memo, no invoice id, no link to an
- * account in this system. Two users depositing from the same exchange withdrawal
- * are indistinguishable on-chain. So a detected deposit belongs to *nobody*
- * until an operator says otherwise, and the schema says so instead of guessing.
+ * - **Automatically**, when the recipient address resolves through
+ *   `deposit_addresses` (`@/db/schema/chain.ts`) to a user it is currently
+ *   assigned to. The address *is* the identity there; nothing is guessed.
+ * - **Never automatically otherwise.** A transfer to the legacy shared
+ *   address, or to a pool address nobody currently holds, carries a sender and
+ *   nothing else — no memo, no invoice id, no link to an account in this
+ *   system, and two users paying from the same exchange withdrawal are
+ *   indistinguishable on-chain. That deposit belongs to *nobody* until an
+ *   operator says otherwise, in `/admin/deposits`, and the schema says so
+ *   instead of guessing.
  *
  * Guessing would mean matching on `sender_address`, which is wrong in the ways
  * that matter: exchanges send from shared hot wallets, and a user can pay from
  * an address they have never told us about. Crediting the wrong account is not
  * a display bug, it is a loss.
  *
- * The way out is per-user deposit addresses, at which point attribution is
- * structural rather than clerical. Nothing here blocks that: adding a
- * `deposit_addresses` table and resolving `to_address` through it would make
- * `user_id` derivable at detection time, and every other column stays as it is.
- *
- * INTEGRATION POINT: the scanner in `@/server/tron` writes these rows. It never
- * sets `user_id`.
+ * INTEGRATION POINT: the scanner in `@/server/tron` writes these rows. It sets
+ * `user_id` only through the `deposit_addresses` resolution above — never by
+ * inference from the transfer itself.
  */
 export const deposits = pgTable(
   "deposits",

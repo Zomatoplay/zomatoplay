@@ -14,9 +14,9 @@ import {
  * once per instance on a platform that freezes instances between requests, and
  * once per instance with several instances is several concurrent settlers.
  *
- * **It returns principal, and pays no rewards.** Maturity moves a locked
- * principal back to `available` through the ledger. Crediting profit needs a
- * rule this codebase does not define — see the note at the top of
+ * **It credits every due earning period and returns matured principal**, in
+ * that order — see the module comment on `settleInvestments` for why. Both
+ * halves are idempotent and safe to run late or run twice; see
  * `investment-settlement.service`.
  */
 
@@ -39,6 +39,7 @@ async function run(request: NextRequest) {
     const summary = await settleInvestments();
     return NextResponse.json({
       ok: summary.errors.length === 0,
+      earningsCredited: summary.earningsCredited,
       matured: summary.matured,
       alreadyMatured: summary.alreadyMatured,
       refreshed: summary.refreshed,

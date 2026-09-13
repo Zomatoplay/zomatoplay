@@ -5,13 +5,26 @@ import { isTronAddress } from "./address";
 /**
  * TRON configuration, validated before anything uses it.
  *
- * SHASTA ONLY
- * -----------
- * `TRON_NETWORK` accepts `shasta` and `nile`. Mainnet is refused: this
- * integration credits real balances from observed transfers and has never been
- * run against real money, and the failure mode of getting that wrong is not
- * recoverable. Enabling mainnet should be a deliberate change with its own
- * review, not an environment variable someone flips.
+ * MAINNET IS ENABLED, AND WHAT THAT COST
+ * --------------------------------------
+ * `TRON_NETWORK` accepts `mainnet`, `shasta` and `nile`. Mainnet used to throw
+ * here, on the reasoning that crediting real money from an observed transfer
+ * should be a reviewed code change rather than an environment variable someone
+ * flips. That review has happened; the refusal is gone and two guarantees stand
+ * in its place, because the failure mode is still not recoverable:
+ *
+ * - **The default is still a testnet.** `TRON_NETWORK` unset means `shasta`,
+ *   never mainnet. A deployment reaches real money by naming it.
+ * - **Mainnet may not skip finality.** `TRON_CONFIRMATION_REQUIRED=false` is a
+ *   local-testing escape hatch (§18.3); on mainnet it is refused outright,
+ *   because crediting before solidification means crediting money a re-org can
+ *   take back. That is the one setting that turns this integration into a loss.
+ *
+ * Nothing else about the pipeline changes with the network. Address validation
+ * is base58check and prefix-identical across TRON's networks (see `./address`),
+ * the contract is configuration on every network, and the scanner scopes its
+ * cursor and its address pool by `network` — so mainnet rows and testnet rows
+ * never mix.
  *
  * THE API KEY IS SERVER-ONLY
  * --------------------------
@@ -21,7 +34,22 @@ import { isTronAddress } from "./address";
  * logged.
  */
 
-export type TronNetwork = "shasta" | "nile";
+export type TronNetwork = "mainnet" | "shasta" | "nile";
+
+/**
+ * How each network is named to a person.
+ *
+ * One map, so the deposit screen and the public projection can never disagree
+ * about which chain somebody is being asked to send real money to. `mainnet`
+ * carries no qualifier on purpose — "TRON Mainnet (live)" reads like a status
+ * indicator, and the screens that use this already say plainly that funds are
+ * real.
+ */
+export const TRON_NETWORK_LABELS: Record<TronNetwork, string> = {
+  mainnet: "Mainnet",
+  shasta: "Shasta testnet",
+  nile: "Nile testnet",
+};
 
 export interface TronConfig {
   network: TronNetwork;
@@ -51,9 +79,12 @@ export class TronConfigError extends Error {
 }
 
 const DEFAULT_GRID_URL: Record<TronNetwork, string> = {
+  mainnet: "https://api.trongrid.io",
   shasta: "https://api.shasta.trongrid.io",
   nile: "https://nile.trongrid.io",
 };
+
+const TRON_NETWORKS = Object.keys(DEFAULT_GRID_URL) as TronNetwork[];
 
 /** Whether TRON is configured at all. Everything else stays usable if not. */
 export function isTronConfigured(): boolean {
@@ -73,27 +104,27 @@ export function isTronConfigured(): boolean {
  * nothing. Failing loudly at the point of use is the whole purpose.
  */
 export function getTronConfig(): TronConfig {
+  // Unset means a testnet, deliberately. Reaching real money requires naming
+  // the network — see the header.
   const network = (process.env.TRON_NETWORK ?? "shasta").trim().toLowerCase();
 
-  if (network === "mainnet") {
+  if (!isTronNetwork(network)) {
     throw new TronConfigError(
-      "TRON_NETWORK=mainnet is refused. This integration is testnet-only; " +
-        "enabling mainnet is a code change, not a configuration change.",
-    );
-  }
-  if (network !== "shasta" && network !== "nile") {
-    throw new TronConfigError(
-      `TRON_NETWORK must be "shasta" or "nile", got ${JSON.stringify(network)}.`,
+      `TRON_NETWORK must be one of ${TRON_NETWORKS.join(", ")}, got ` +
+        `${JSON.stringify(network)}.`,
     );
   }
 
-  // Two spellings are accepted for each of the next few. `TRONGRID_*` /
+  // Several spellings are accepted for each of the next few. `TRONGRID_*` /
   // `TRON_DEPOSIT_ADDRESS` are the names the deployment checklist uses;
   // `TRON_GRID_*` / `TRON_PLATFORM_DEPOSIT_ADDRESS` are what this code shipped
-  // with. Accepting both means a rename in one place does not silently disable
-  // deposit detection in the other.
+  // with; `TRON_GRID_API_URL` is the spelling the mainnet migration brief used.
+  // Accepting all of them means a rename in one place does not silently
+  // disable deposit detection in the other — the failure would look like "no
+  // deposits arrived", because a wrong grid URL still answers.
   const gridUrl = (
     process.env.TRONGRID_API_URL ??
+    process.env.TRON_GRID_API_URL ??
     process.env.TRON_GRID_URL ??
     DEFAULT_GRID_URL[network]
   ).trim();
@@ -140,6 +171,35 @@ export function getTronConfig(): TronConfig {
 
   const poolAddresses = parsePoolAddresses(depositAddress);
 
+  /**
+   * Whether a transfer must be solidified before it can be credited.
+   *
+   * Defaults to on. A deposit credited before it is irreversible can be undone
+   * by a re-org, and the money would be gone.
+   *
+   * `TRON_CONFIRMATIONS` is read as a count for compatibility with the
+   * deployment checklist; anything above zero means "wait for finality". TRON's
+   * model is solidification rather than a confirmation count, so the number
+   * itself has no finer meaning here — see §18.3.
+   */
+  const requireConfirmation =
+    process.env.TRON_CONFIRMATIONS !== undefined
+      ? Number(process.env.TRON_CONFIRMATIONS) > 0
+      : process.env.TRON_CONFIRMATION_REQUIRED !== "false";
+
+  if (network === "mainnet" && !requireConfirmation) {
+    // The escape hatch exists so a local test does not wait on solidification.
+    // On mainnet that same setting credits real money a re-org can still take
+    // back, and no test is worth that — so it is refused rather than warned
+    // about. See the header.
+    throw new TronConfigError(
+      "Confirmation cannot be disabled on mainnet. Unset " +
+        "TRON_CONFIRMATION_REQUIRED=false (or set TRON_CONFIRMATIONS to 1 or " +
+        "more): crediting before a block is solidified credits money a re-org " +
+        "can reverse.",
+    );
+  }
+
   return {
     network,
     gridUrl: gridUrl.replace(/\/+$/, ""),
@@ -150,22 +210,15 @@ export function getTronConfig(): TronConfig {
     usdtContract,
     depositAddress,
     poolAddresses,
-    // Defaults to on. A deposit credited before it is irreversible can be
-    // undone by a re-org, and the money would be gone.
-    /**
-     * `TRON_CONFIRMATIONS` is read as a count for compatibility with the
-     * deployment checklist; anything above zero means "wait for finality".
-     * TRON's model is solidification rather than a confirmation count, so the
-     * number itself has no finer meaning here — see §18.3.
-     */
-    requireConfirmation:
-      process.env.TRON_CONFIRMATIONS !== undefined
-        ? Number(process.env.TRON_CONFIRMATIONS) > 0
-        : process.env.TRON_CONFIRMATION_REQUIRED !== "false",
+    requireConfirmation,
     pollIntervalMs: positiveInt(process.env.TRON_POLL_INTERVAL_MS, 30_000),
     lookbackMs: positiveInt(process.env.TRON_LOOKBACK_MS, 24 * 60 * 60 * 1000),
     pageSize: Math.min(positiveInt(process.env.TRON_PAGE_SIZE, 50), 200),
   };
+}
+
+function isTronNetwork(value: string): value is TronNetwork {
+  return (TRON_NETWORKS as string[]).includes(value);
 }
 
 function positiveInt(value: string | undefined, fallback: number): number {

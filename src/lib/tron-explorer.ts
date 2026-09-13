@@ -11,9 +11,12 @@ import type { ChainNetwork } from "@/types/admin";
 const EXPLORERS: Record<ChainNetwork, string | null> = {
   shasta: "https://shasta.tronscan.org/#",
   nile: "https://nile.tronscan.org/#",
-  // Deliberately null. Mainnet is refused by the integration, so a mainnet
-  // link would imply support that does not exist.
-  mainnet: null,
+  // Live since the mainnet migration. This used to be null on the grounds that
+  // the integration refused mainnet, so a link would imply support that did
+  // not exist; it does now, and an operator crediting real money is exactly
+  // who most needs to open the transfer on a block explorer and check it
+  // against the row in front of them.
+  mainnet: "https://tronscan.org/#",
 };
 
 export function transactionUrl(

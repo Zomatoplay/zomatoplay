@@ -75,9 +75,11 @@ a server action → service → one transaction → audit entry → revalidation
 operator decision, a detected deposit, an allocation, a withdrawal request, a
 notification preference and a second-factor toggle are all rows.
 
-**Deposits are detected on TRON Shasta** by a server-side scanner (§18). They
-are recorded automatically and attributed to an account manually — one platform
-address cannot tell you whose money arrived (§18.4).
+**Deposits are detected on TRON** — mainnet or a testnet, whichever
+`TRON_NETWORK` names — by a server-side scanner (§18). A transfer to an address
+assigned to a user is attributed and credited automatically; a transfer to the
+shared legacy address is attributed by an operator, because one platform address
+cannot tell you whose money arrived (§18.4).
 
 **Every mutation is traceable.** `pipeline_events` records what the machinery
 did, with timings and a correlation id per request, and `/admin/system-logs`
@@ -91,7 +93,9 @@ scoped reads and every write refuse instead, which is deliberate — see §16.3.
 
 - **Outbound** blockchain: no signing, no key material, no sending. Deposits are
   read from the chain; nothing is ever written to it (§18).
-- TRON **mainnet** — refused in code, not merely unconfigured (§18.1).
+- TRON mainnet **outbound**. Mainnet *reads* are enabled (§18.1) and the
+  scanner credits real TRC-20 USDT transfers; nothing is ever signed or sent in
+  either direction.
 - Real withdrawals or a payment gateway. Withdrawal records exist and hold a
   balance; nothing pays anyone (§17.4).
 - **Server-side session revocation.** The CRM marks a device session revoked;
@@ -676,8 +680,12 @@ Ordered roughly by dependency.
    swap the manual review for the provider SDK and drive `kycStatus` from their
    webhook. `liveness_check_passed` stays `false` until something can actually
    set it (§23).
-4. **Deposit service** — per-user addresses, a real chain watcher feeding the
-   `DepositFlowStage` states, removal of the demo simulation control.
+4. **Deposit service** — the chain watcher is done and runs against **mainnet**
+   (§18). What remains is a deposit-address pool big enough for real usage
+   (§18.8 — today it holds one address, so the first account to open the
+   deposit screen claims it and the next gets `PoolExhaustedError`), a
+   scheduler tighter than one pass a day (§18.5), and removal of the demo
+   simulation control.
 5. **Withdrawal / payout rails** — real INR payouts and status transitions.
 6. **Rates API** — replace `getUsdtInrRate()`.
 7. **Investment engine — done.** `/api/cron/settle-investments` credits every
@@ -1411,8 +1419,23 @@ the seeded rows.
 `npm test` runs `node:test` through `tsx`, with `--conditions=react-server` so
 `server-only` modules resolve the way Next resolves them. Tests that need a
 database skip themselves when `DATABASE_URL` is unset, so the suite stays green
-on a fresh clone. **183 tests with a database configured**, all passing as of
-2026-09-06.
+on a fresh clone. **194 tests with a database configured** as of 2026-09-13;
+**189 pass and 5 do not** — see the known failure below.
+
+**Known red: `money-lifecycle` picks its plan by physical row order.** Its
+`before()` does `plans.find((plan) => plan.durationDays > 0)` over a `select`
+with **no `ORDER BY`**, so which fixed-term plan the whole file tests is
+whatever Postgres returns first. Every allocation anywhere updates the plan row
+(`investments-write.service.ts` bumps the plan's totals), and an `UPDATE` can
+move a row in the heap — so after enough earlier files have run, `find` returns
+Balanced Growth (minimum 250 USDT) instead of Starter Plan (minimum 50), and
+the five tests that allocate 200 fail with *"Balanced Growth has a minimum of
+250 USDT."* The file passes 14/14 on its own, which is what makes this look
+like flakiness rather than the fixture bug it is. The fix is an explicit
+`orderBy`, or picking the plan by its minimum rather than by position. It is
+the same family as the two rules below and the shared-database note at the end
+of this section: **assert on, and select by, the property the test owns — never
+a fact about the physical table.**
 
 **Do not assert exact row counts against the live database.** Four assertions
 did, and all four broke the first time a real person registered and submitted
@@ -1636,12 +1659,30 @@ of itself.
 
 ## 18. TRON integration
 
-Read-only, Shasta only. `@/server/tron/`.
+Read-only. Mainnet, Shasta and Nile. `@/server/tron/`.
 
 ### 18.1 Rules
 
-- **Testnet only.** `TRON_NETWORK=mainnet` throws. Enabling mainnet should be a
-  reviewed code change, not an environment variable someone flips.
+- **Mainnet is enabled, and the default is still a testnet.** `TRON_NETWORK`
+  accepts `mainnet`, `shasta` and `nile`; **unset means `shasta`**. Mainnet used
+  to throw here on the reasoning that crediting real money should be a reviewed
+  code change rather than a variable someone flips. That review happened; the
+  refusal is gone and two guarantees replaced it, because the failure mode is
+  still not recoverable:
+  - reaching real money requires *naming* the network, and
+  - **mainnet may not skip finality.** `TRON_CONFIRMATION_REQUIRED=false` /
+    `TRON_CONFIRMATIONS=0` is a local-testing escape hatch (§18.3); on mainnet
+    `getTronConfig` refuses it outright, because crediting before
+    solidification credits money a re-org can take back. That is the one
+    setting that turns this integration into a loss rather than a delay. There
+    is a test for it; do not make it pass by deleting it.
+
+  Nothing else in the pipeline is network-aware. Address validation is
+  base58check and prefix-identical across TRON's networks, the contract is
+  configuration everywhere, and the scanner scopes its cursor
+  (`chain_scan_state`) and its address pool (`deposit_addresses`) by `network` —
+  so mainnet rows and testnet rows never mix, and switching networks starts a
+  fresh cursor rather than inheriting a stale one.
 - **Nothing is ever signed or sent.** No private key, no seed phrase, no
   broadcasting. `tronweb` is deliberately not a dependency: base58check
   validation is forty lines, and a library that *can* sign is one that can be
@@ -1683,7 +1724,10 @@ where TronGrid was asked to do it:
 
 Token decimals are read from the response, never assumed: TRC-20 USDT is six
 decimals on TRON and eighteen elsewhere, and guessing scales every amount by a
-million. (Verified against Shasta: the contract reports `decimals: 6`.)
+million. (Verified against Shasta and against mainnet Tether
+`TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`: both report `decimals: 6`. The value is
+still read per transfer rather than pinned — it is the token's property, not
+the network's.)
 
 ### 18.3 Confirmation
 
@@ -1781,6 +1825,26 @@ concurrent scanners.
 > same URL from any external scheduler — nothing about the route is
 > Vercel-specific.
 
+**The deposit screen triggers a pass too, and it is not the scheduler.** While
+`/wallet/deposit` is open with a real address on it, `DepositWatcher` calls
+`checkForDepositsAction` **every five seconds**; that action asks
+`triggerDepositScan()` (`@/server/tron/scan-trigger.ts`) for a pass and then
+reads the caller's own deposits back. It exists because a daily cron makes
+watching a transfer arrive impossible — it is a **temporary,
+user-active-page mechanism**, and a transfer arriving after the tab closes is
+still found by the cron pass and by nothing else. Two in-process limits keep it
+from being a second scanner in disguise: single-flight, so concurrent callers
+join the pass already running, and a **4-second** floor between passes, so a
+crowd of open screens is not a crowd of scans. **The floor and the client
+cadence move together** — a floor at or above the cadence means most ticks
+return `throttled` and the screen updates no faster than the floor allows,
+which is how a "5-second" watcher silently becomes a 20-second one. In-process
+means per instance, which
+is safe for the same reason two hand-run scans always were — recording is
+idempotent on `(chain, tx_hash)` and the cursor only moves forward. Do not grow
+this into the scheduler; the paragraph above says why a timer in the server
+process is the wrong shape.
+
 **A deposit older than the first-ever scan is invisible until you widen the
 window.** With no cursor, a pass looks back `TRON_LOOKBACK_MS` (default 24h).
 The cursor is only advanced when transfers were actually seen, so nothing is
@@ -1791,20 +1855,24 @@ will report nothing until `TRON_LOOKBACK_MS` covers it.
 
 | Variable | Meaning |
 |---|---|
-| `TRON_NETWORK` | `shasta` or `nile`. `mainnet` throws. |
-| `TRON_GRID_URL` | Must be https. |
-| `TRON_GRID_API_KEY` | Optional; without it, a much lower rate limit. Server-only. |
-| `TRON_USDT_CONTRACT` | The only contract that counts as a deposit. |
+| `TRON_NETWORK` | `mainnet`, `shasta` or `nile`. **Unset means `shasta`.** |
+| `TRON_GRID_URL` | Must be https. Also spelled `TRONGRID_API_URL` / `TRON_GRID_API_URL`. Defaults per network (`https://api.trongrid.io` for mainnet). |
+| `TRON_GRID_API_KEY` | Optional; without it, a much lower rate limit. Get one for mainnet. Server-only. |
+| `TRON_USDT_CONTRACT` | The only contract that counts as a deposit. Mainnet USDT is `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`. |
 | `TRON_PLATFORM_DEPOSIT_ADDRESS` | The legacy single receiving address — always pool member zero (§18.8). |
 | `TRON_DEPOSIT_POOL_ADDRESSES` | Optional. Comma-separated additional pool addresses. |
-| `TRON_CONFIRMATION_REQUIRED` | Wait for solidification. Default on. |
+| `TRON_CONFIRMATION_REQUIRED` | Wait for solidification. Default on. **Refused on mainnet when off** (§18.1). |
 | `TRON_POLL_INTERVAL_MS` | Scanner interval. Default 30000. |
 | `TRON_LOOKBACK_MS` | First-run window. Default 24h. |
 
 Leaving the contract and address unset disables the integration; nothing else in
 the application is affected.
 
-### 18.7 Shasta workflow
+### 18.7 End-to-end workflow
+
+The steps below are written against a testnet, because that is where you should
+rehearse them. **They are identical on mainnet** — same commands, same screens —
+except that the funds are real and the faucet in step 1 is your own wallet.
 
 ```bash
 npm run tron:inspect          # read the chain, last 24h (TRON_PLATFORM_DEPOSIT_ADDRESS only)
@@ -1827,8 +1895,10 @@ path — §18.4):
    audit log records who assigned it.
 
 End-to-end, through a real user's own pool address, credits automatically at
-step 3 with no operator step at all: sign in, open **Add funds → Shasta Net
-USDT**, send test USDT to the address shown, then `npm run tron:scan`.
+step 3 with no operator step at all: sign in, open **Add funds → USDT
+(TRC-20)**, send USDT to the address shown, and watch it arrive — the deposit
+screen runs a pass itself every five seconds while it is open (§18.5), so
+`npm run tron:scan` is not needed for this path.
 
 **Check the lookback before concluding anything.** `tron:inspect` defaults to
 24 hours and passes it to TronGrid as `min_timestamp`, so an older transfer is
@@ -2275,8 +2345,16 @@ is the detail.
   pays a third party's money is worse than leaving it manual. Commission
   release remains an operator action (§10) until that rule is actually
   written down as a product decision.
-- **Per-user deposit addresses**, which is what would make attribution automatic
-  (§18.4).
+- **A deposit-address pool with more than one address in it.** The mechanism is
+  built and works (§18.8): a transfer to an address assigned to a user is
+  attributed and credited automatically, no operator involved. What is missing
+  is *addresses* — `TRON_DEPOSIT_POOL_ADDRESSES` is unset, so the pool holds
+  only `TRON_PLATFORM_DEPOSIT_ADDRESS`. The first account to open the deposit
+  screen claims it; the next gets `PoolExhaustedError` and sees "could not get
+  your deposit address". Growing the pool is configuration, not code — the
+  operator generates addresses with their own wallet tooling and lists them —
+  and deriving them from an xpub instead is the key-custody decision §18.8
+  explains.
 - **Operator credential provisioning from the CRM** (§20.3).
 - **Phone/SMS codes; username sign-in.**
 - **The CRM dashboard's headline metrics and chart series**, still on

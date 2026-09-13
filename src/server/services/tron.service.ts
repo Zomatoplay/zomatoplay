@@ -1,6 +1,12 @@
 import "server-only";
 
-import { describeTronConfig, getTronConfig, isTronConfigured } from "../tron/config";
+import {
+  describeTronConfig,
+  getTronConfig,
+  isTronConfigured,
+  TRON_NETWORK_LABELS,
+  type TronNetwork,
+} from "../tron/config";
 
 /**
  * What the user application is allowed to know about the chain integration.
@@ -12,7 +18,7 @@ import { describeTronConfig, getTronConfig, isTronConfigured } from "../tron/con
  */
 export interface PublicDepositTarget {
   configured: boolean;
-  network: "shasta" | "nile" | null;
+  network: TronNetwork | null;
   networkLabel: string;
   chain: "TRON";
   token: "USDT";
@@ -23,11 +29,6 @@ export interface PublicDepositTarget {
   /** True while pointed at a testnet, so the UI can say so plainly. */
   isTestnet: boolean;
 }
-
-const NETWORK_LABELS = {
-  shasta: "Shasta testnet",
-  nile: "Nile testnet",
-} as const;
 
 export async function getPublicDepositTarget(): Promise<PublicDepositTarget> {
   if (!isTronConfigured()) {
@@ -41,6 +42,9 @@ export async function getPublicDepositTarget(): Promise<PublicDepositTarget> {
       contract: null,
       address: null,
       requiresConfirmation: true,
+      // Nothing is configured, so nothing can be sent anywhere. Reported as a
+      // testnet because that is the direction that cannot lose money by being
+      // believed.
       isTestnet: true,
     };
   }
@@ -52,15 +56,17 @@ export async function getPublicDepositTarget(): Promise<PublicDepositTarget> {
   return {
     configured: true,
     network: described.network,
-    networkLabel: NETWORK_LABELS[described.network],
+    networkLabel: TRON_NETWORK_LABELS[described.network],
     chain: "TRON",
     token: "USDT",
     tokenStandard: "TRC-20",
     contract: described.usdtContract,
     address: described.depositAddress,
     requiresConfirmation: described.requireConfirmation,
-    // Mainnet is refused by `getTronConfig`, so anything that gets here is a
-    // testnet. Stated as a field anyway rather than assumed by the component.
-    isTestnet: true,
+    // Derived, not assumed. This used to be a hard-coded `true` resting on
+    // `getTronConfig` refusing mainnet; that refusal is gone, and a screen
+    // telling somebody their real USDT is test funds is the worst sentence
+    // this projection could produce.
+    isTestnet: described.network !== "mainnet",
   };
 }

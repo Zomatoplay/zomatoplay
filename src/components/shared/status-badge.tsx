@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import type { AdminDepositStatus } from "@/types/admin";
 import type {
   InvestmentStatus,
   KycStatus,
@@ -52,6 +53,24 @@ const kycDescriptors: Record<KycStatus, Descriptor> = {
   rejected: { label: "Action needed", variant: "negative", icon: XCircle },
 };
 
+/**
+ * A deposit, as the person who sent it reads it.
+ *
+ * The same seven states the CRM shows, worded for the sender rather than for
+ * an operator: "credited" is the moment the money is theirs, and "ignored" —
+ * an operator's judgement that a transfer was not a platform deposit — is
+ * stated as its consequence rather than as the internal decision.
+ */
+const depositDescriptors: Record<AdminDepositStatus, Descriptor> = {
+  pending: { label: "Pending", variant: "warning", icon: Clock },
+  detected: { label: "Detected", variant: "info", icon: Loader2 },
+  confirming: { label: "Confirming", variant: "info", icon: Loader2 },
+  confirmed: { label: "Confirmed", variant: "info", icon: CheckCircle2 },
+  credited: { label: "Credited", variant: "positive", icon: CheckCircle2 },
+  failed: { label: "Failed", variant: "negative", icon: XCircle },
+  ignored: { label: "Not credited", variant: "outline", icon: AlertCircle },
+};
+
 const referralDescriptors: Record<ReferralStatus, Descriptor> = {
   active: { label: "Active", variant: "positive" },
   registered: { label: "Registered", variant: "info" },
@@ -63,7 +82,8 @@ export type StatusKind =
   | { kind: "investment"; status: InvestmentStatus }
   | { kind: "plan"; status: PlanStatus }
   | { kind: "kyc"; status: KycStatus }
-  | { kind: "referral"; status: ReferralStatus };
+  | { kind: "referral"; status: ReferralStatus }
+  | { kind: "deposit"; status: AdminDepositStatus };
 
 function resolve(props: StatusKind): Descriptor {
   switch (props.kind) {
@@ -77,6 +97,8 @@ function resolve(props: StatusKind): Descriptor {
       return kycDescriptors[props.status];
     case "referral":
       return referralDescriptors[props.status];
+    case "deposit":
+      return depositDescriptors[props.status];
   }
 }
 

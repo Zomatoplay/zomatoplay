@@ -4,7 +4,8 @@ loadEnv({ path: ".env.local", quiet: true });
 loadEnv({ path: ".env", quiet: true });
 
 /**
- * Reads Shasta and reports what the scanner would make of it.
+ * Reads the configured TRON network and reports what the scanner would make
+ * of it.
  *
  *   npm run tron:inspect          the last 24 hours
  *   npm run tron:inspect -- 336   …looking back two weeks

@@ -4,6 +4,233 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-09-13 (TRON mainnet)
+
+USDT deposits now run against TRON **mainnet**. The deposit pipeline itself did
+not change — detection, filtering, finality, idempotency, recording and
+crediting are the same code that ran against Shasta — because none of it was
+ever network-aware. What changed is the gate in front of it, the labels around
+it, and the cadence the deposit screen checks at.
+
+### The gate
+
+`getTronConfig()` refused `TRON_NETWORK=mainnet` outright, on the reasoning that
+crediting real money from an observed transfer should be a reviewed code change
+rather than an environment variable someone flips. That review has happened. The
+refusal is gone and two guarantees replaced it:
+
+- **Unset still means `shasta`.** Reaching real money requires naming the
+  network. Defaulting the other way would mean a misconfigured deployment
+  crediting real transfers by accident, which is the direction that cannot be
+  undone.
+- **Mainnet may not skip finality.** `TRON_CONFIRMATION_REQUIRED=false` /
+  `TRON_CONFIRMATIONS=0` is a local-testing escape hatch; on mainnet it is now
+  refused by `getTronConfig` rather than warned about, because crediting before
+  a block is solidified credits money a re-org can take back. It stays available
+  on a testnet, where the only cost is a slower test.
+
+`TronNetwork` widened to include `mainnet`, `DEFAULT_GRID_URL` gained
+`https://api.trongrid.io`, and an unknown value is now rejected by name against
+the list rather than by a two-way comparison.
+
+### The things that were hard-coded to a testnet
+
+Each of these compiled and ran perfectly well while mainnet was impossible, and
+each would have told somebody something false the moment it was not:
+
+- `PublicDepositTarget.isTestnet` was the literal `true`, commented as safe
+  *because* mainnet was refused. It is now `network !== "mainnet"`.
+- The deposit screen's network label was a two-way ternary — `shasta ? "Shasta
+  testnet" : "Nile testnet"` — so mainnet would have been labelled **Nile
+  testnet**. Both it and `tron.service` now read one map,
+  `TRON_NETWORK_LABELS`, so the two can never disagree about which chain
+  somebody is being asked to send real money to.
+- The deposit screen showed *"This is a test network. Send test USDT only — real
+  USDT sent here is permanently lost"* unconditionally. On mainnet that is the
+  worst sentence the page could print, so it is now a branch, with a mainnet
+  counterpart that says funds are real and a transfer cannot be reversed.
+- `tron-explorer` mapped `mainnet` to `null`, so a mainnet deposit row had no
+  block-explorer link — for the operator who most needs to open the transfer and
+  check it against the row in front of them. It now points at `tronscan.org`.
+- `recordDepositIntent` (the development-only fixture) wrote
+  `chainNetwork: "shasta"` literally, which in a mainnet deployment would show
+  an operator a testnet row that never existed on any chain.
+- The CRM's deposits banner claimed every detected deposit was a Shasta testnet
+  transfer.
+
+### The deposit page
+
+- **The TRC-20 USDT option is enabled**, and it is the only entry. It was a
+  two-row list whose mainnet row sat permanently disabled behind a "Coming soon"
+  badge; the row's chain label and its test-network badge are now derived from
+  what the server is actually configured for, and arrive on
+  `DepositAddressResult` rather than being guessed in the browser. Listing
+  options that cannot receive anything was the old shape, and a disabled row is
+  still a row somebody reads as a promise.
+- The QR is generated server-side from the address the server issued, and
+  carries **the bare address and nothing else** — no amount, no token parameter,
+  no URI scheme. A `tron:` URI is the tempting alternative and is worse: wallets
+  disagree about whether they understand one, and a wallet that does not simply
+  refuses to scan, which reads as a broken deposit screen. The bare address is
+  also exactly the string `CopyField` shows underneath, so the two cannot
+  disagree. (This was already the behaviour; it is now written down, because it
+  is a decision rather than an omission.)
+- The select → show flow is kept even with one option: it is the only place the
+  "USDT (TRC-20) only, never TRX" warning is guaranteed to be read before an
+  address is on screen.
+
+### Five-second checking
+
+`DepositWatcher` polled every 30 seconds and `DEPOSIT_SCAN_MIN_INTERVAL_MS` —
+the server-side floor between scanner passes — was 20 seconds. The watcher now
+polls every **5 seconds** and the floor is **4 seconds**.
+
+**The two have to move together.** A floor at or above the client cadence means
+three ticks in four are answered `throttled` and the screen updates no faster
+than the floor allows — a "5-second" watcher that is silently a 20-second one.
+Everything that made the old cadence safe is unchanged and is what bounds the
+new one: single-flight on the server so concurrent callers join the pass already
+running, the `busy` ref on the client so a slow cycle is never overlapped by the
+next tick, `document.hidden` so a background tab spends no quota, and
+`clearInterval` on unmount so nothing polls once the screen is gone. The floor
+still caps one instance at fifteen passes a minute however many screens are
+open.
+
+### What did not change, deliberately
+
+Detection is still TRC-20 *transfer* records from TronGrid — never a balance
+comparison — filtered on contract, recipient and direction, with decimals read
+from the response rather than assumed. Finality is still solidification against
+`/walletsolidity/getnowblock`. Idempotency is still the unique index on
+`(chain, tx_hash)` plus status-asserting `WHERE` clauses, not a prior `SELECT`.
+Crediting is still one `mutate()` transaction containing the ledger row, the
+balance move and the audit entry. Attribution is still never guessed: the
+recipient address resolves an owner through `deposit_addresses`, or the deposit
+waits in the operator queue.
+
+No migration was needed — the `chain_network` enum has carried `mainnet` since
+the chain tables were created, and the scanner already scoped its cursor and its
+address pool by network, so mainnet and testnet rows cannot mix and switching
+networks starts a fresh cursor rather than inheriting a stale one.
+
+### Verified
+
+TronGrid mainnet was probed directly with the configured credentials: the
+solidified block height reads, the scanner's exact transfer query for the
+configured deposit address answers `200 / success: true`, and a read-only
+constant call to `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t` reports `symbol: USDT`
+and `decimals: 6`.
+
+### Checks
+
+`npm run typecheck`, `npm run lint` and `npm run build` are clean. The suite is
+**189/194** with a database configured and **67/67** on the no-database path.
+
+The six failures this migration caused were in
+`deposit-address.integration.test.ts`, and they were the migration working:
+every fixture named `shasta` while the environment had become `mainnet`, so
+`getOrCreateDepositAddress` correctly refused to issue an address on a network
+nothing is scanning. The tests now read the network from `getTronConfig()`
+rather than naming it — `LIVE` for the configured one, `ISOLATED` for a
+deliberately-not-configured namespace — so they follow a migration instead of
+being broken by one. All 18 pass.
+
+The **five that remain red are pre-existing and unrelated**, in
+`money-lifecycle.integration.test.ts`: its `before()` selects a plan with an
+unordered `find`, so once earlier files have updated plan rows it tests
+Balanced Growth (minimum 250) while allocating 200. The file passes 14/14 in
+isolation. Nothing in this change writes to `plans`. Documented in CLAUDE.md
+§16.7 and deliberately not fixed here — it is an investments fixture, not a
+deposit one.
+
+### Files
+
+- `src/server/tron/config.ts` — mainnet accepted, network list validated by
+  name, `TRON_NETWORK_LABELS`, the mainnet finality guard, `TRON_GRID_API_URL`
+  accepted as a third spelling of the grid URL.
+- `src/server/tron/scan-trigger.ts` — floor 20s → 4s.
+- `src/server/services/tron.service.ts` — network union widened, `isTestnet`
+  derived, local label map removed in favour of the shared one.
+- `src/server/services/deposit-address.service.ts` — `network` parameter widened
+  to `TronNetwork`.
+- `src/server/services/deposits.service.ts` — `recordDepositIntent` reads the
+  configured network.
+- `src/app/(app)/wallet/deposit/actions.ts` — label from the shared map,
+  `network` and `isTestnet` on `DepositAddressResult`.
+- `src/app/(app)/wallet/deposit/page.tsx` — prop renamed `shasta` → `deposit`.
+- `src/components/wallet/deposit-network-select.tsx` — one enabled TRC-20 USDT
+  option, server-driven labels, branched testnet/mainnet warning.
+- `src/components/wallet/deposit-watcher.tsx` — 30s → 5s.
+- `src/components/admin/money/deposits-view.tsx` — operator banner.
+- `src/lib/tron-explorer.ts` — mainnet explorer base URL.
+- `src/server/tron/tron.test.ts` — the "refuses mainnet outright" test replaced
+  by four: mainnet accepted with the right default endpoint, finality refused on
+  mainnet and permitted on a testnet, unknown networks rejected, and the mainnet
+  USDT contract checksum-valid.
+- `src/server/deposit-address.integration.test.ts` — network read from config
+  (`LIVE` / `ISOLATED`) instead of hard-coded `shasta` / `nile`.
+- `src/db/scripts/tron-inspect.ts` — header comment.
+- `.env.example`, `CLAUDE.md` §2/§13/§16.7/§18/§23.
+
+---
+
+## 2026-09-08 (The deposit screen checks for itself)
+
+A person who has just sent test USDT to their Shasta address had no way to see
+it arrive: the only production trigger for the scanner is
+`/api/cron/scan-deposits`, which runs once a day on the Hobby plan, so the
+screen sat unchanged until somebody typed `npm run tron:scan` and the page was
+reloaded by hand. The deposit screen now asks for a pass itself, roughly every
+thirty seconds, while it is open.
+
+**This is a testing / user-active-page mechanism, not the scheduler.** It runs
+only while somebody is looking at the screen. A transfer that lands after the
+tab closes is still found by the cron pass and by nothing else, and the
+background scanner remains the thing that has to exist for deposits to work
+when nobody is watching.
+
+### What was added
+
+- `triggerDepositScan()` (new, `@/server/tron/scan-trigger.ts`): the existing
+  `scanDeposits()` behind two in-process limits — single-flight, so concurrent
+  callers join the pass already running, and a 20-second floor between passes,
+  so a crowd of open screens cannot become a crowd of scans. Never throws: a
+  scan failure is an outcome (`failed`), because the caller's real job is
+  reading the deposit state. No second scanner, and no chain access outside the
+  existing one.
+- `checkForDepositsAction()` (new, `(app)/wallet/deposit/actions.ts`): takes no
+  arguments, resolves the account from the session, triggers the scan, then
+  reads that account's deposits back. Revalidates `/wallet` and
+  `/wallet/deposit` only when the pass actually recorded or updated something.
+- `listDepositActivityForUser()` (new, `deposits.service.ts`): the caller's own
+  deposits, scoped by `user_id` **or** by the recipient address being one
+  currently assigned to them in `deposit_addresses` — the same mapping
+  `recordObservedDeposit` uses to decide ownership, read in the other
+  direction. The second clause is what shows a transfer that has been seen but
+  is still waiting for its block to solidify, before anything is attributed.
+  Nothing here matches on amount or timing, and nothing here credits.
+- `DepositWatcher` (new, `components/wallet/deposit-watcher.tsx`): mounted only
+  once a supported network's real address is on screen. Checks on mount and
+  every 30s, skips a tick while the tab is hidden, refuses to overlap itself,
+  and clears the interval on unmount. Calls `router.refresh()` only when a
+  deposit's status actually changed, so the wallet balance and transaction list
+  catch up without a manual reload.
+- `StatusBadge` gained a `deposit` kind, so the screen uses the shared status
+  vocabulary rather than inventing labels and colours inline.
+
+### Tests
+
+`src/server/deposit-check.test.ts` — the trigger's single-flight, floor and
+failure behaviour (no database, no chain); the action refusing an
+unauthenticated caller and having no parameter that could name a different one;
+and, against the database, that two accounts polling at once each see only
+their own deposit, that an unattributed transfer is visible to the owner of the
+address it was sent to and to nobody else, and that repeated checks show one
+deposit credited once. Crediting-once itself stays where it already was, in
+`deposit-address.integration.test.ts`.
+
+---
+
 ## 2026-09-06 (The deposit-address pool)
 
 The address half of C6 in `FUTURE_TASKS.md` — "deposit attribution is manual"

@@ -1,15 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, ChevronRight, Loader2 } from "lucide-react";
+import { AlertTriangle, ChevronRight } from "lucide-react";
 
 import { CopyField } from "@/components/shared/copy-field";
 import { InfoRow } from "@/components/shared/info-row";
 import { QrCode } from "@/components/shared/qr-code";
+import { DepositWatcher } from "@/components/wallet/deposit-watcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
 import type { DepositAddressResult } from "@/app/(app)/wallet/deposit/actions";
 
 /**
@@ -19,11 +19,22 @@ import type { DepositAddressResult } from "@/app/(app)/wallet/deposit/actions";
  * WHAT THIS REPLACED
  * -------------------
  * A four-network catalogue (`trc20` / `bep20` / `polygon` / `erc20`) of
- * placeholder addresses nobody could send to, sat above a separate panel
- * showing the one real Shasta address the whole platform shared. Two networks
- * are supported at all — TRON mainnet (not yet enabled) and TRON's Shasta
- * testnet — and only one of those two can actually receive anything today, so
- * that is exactly what this shows: two options, one of them working.
+ * placeholder addresses nobody could send to, and then a two-entry list whose
+ * second entry — TRC-20 on TRON mainnet — was permanently disabled behind a
+ * "Coming soon" badge while the integration refused mainnet.
+ *
+ * ONE NETWORK, BECAUSE THERE IS ONE
+ * ---------------------------------
+ * Nanotron accepts USDT on TRON, as TRC-20, and nothing else. Which TRON
+ * network that is — mainnet now, a testnet in a development environment — is
+ * a server-side fact this component is *told*, never one it chooses: it
+ * arrives on `DepositAddressResult` alongside the address the server issued.
+ * Listing options that cannot receive anything was the old shape, and a
+ * disabled row is still a row a person reads as a promise.
+ *
+ * The two-stage select → show flow is kept even with one option. It is the
+ * only place the "USDT (TRC-20) only, never TRX" warning is guaranteed to be
+ * read before an address is on screen.
  *
  * WHY THE ADDRESS ARRIVES AS A PROP, NOT A CLIENT FETCH
  * --------------------------------------------------------
@@ -34,32 +45,21 @@ import type { DepositAddressResult } from "@/app/(app)/wallet/deposit/actions";
  * decides whose address comes back. This component only decides what to show.
  */
 
-type NetworkId = "trc20_mainnet" | "shasta";
-
-const NETWORK_COPY: Record<
-  NetworkId,
-  { label: string; chainLabel: string; available: boolean }
-> = {
-  trc20_mainnet: {
-    label: "TRC20 USDT",
-    chainLabel: "TRON mainnet",
-    available: false,
-  },
-  shasta: {
-    label: "Shasta Net USDT",
-    chainLabel: "TRON Shasta testnet",
-    available: true,
-  },
-};
+/** The one asset Nanotron accepts, on the one chain it scans. */
+const TOKEN_LABEL = "USDT (TRC-20)";
 
 export function DepositNetworkSelect({
-  shasta,
+  deposit,
 }: {
   /** Already resolved server-side for this account — see the page. */
-  shasta: DepositAddressResult;
+  deposit: DepositAddressResult;
 }) {
   const [stage, setStage] = useState<"select" | "show">("select");
-  const [networkId, setNetworkId] = useState<NetworkId>("shasta");
+
+  // `networkLabel` is absent only when the server could not resolve an address
+  // at all, and the error card below is what that case renders.
+  const chainLabel = `TRON ${deposit.networkLabel ?? "network"}`;
+  const isTestnet = deposit.isTestnet ?? true;
 
   if (stage === "select") {
     return (
@@ -67,62 +67,39 @@ export function DepositNetworkSelect({
         <div>
           <h2 className="text-base font-semibold tracking-tight">Select network</h2>
           <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            Deposits are accepted in USDT only. TRC20 USDT and Shasta Net USDT are
-            different networks — sending to the wrong one loses the funds.
+            Deposits are accepted in USDT on the TRON network only. USDT sent over
+            any other network — BEP20, ERC20, Polygon — cannot be detected or
+            credited, and is lost.
           </p>
         </div>
 
-        <div className="space-y-3">
-          {(Object.entries(NETWORK_COPY) as [NetworkId, (typeof NETWORK_COPY)[NetworkId]][]).map(
-            ([id, copy]) => (
-              <button
-                key={id}
-                type="button"
-                disabled={!copy.available}
-                onClick={() => setNetworkId(id)}
-                aria-pressed={networkId === id}
-                className={cn(
-                  "flex w-full items-center justify-between gap-3 rounded-2xl border p-4 text-left transition-colors",
-                  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-                  !copy.available && "cursor-not-allowed opacity-60",
-                  networkId === id && copy.available
-                    ? "border-brand bg-brand-soft"
-                    : "border-border bg-card enabled:hover:bg-secondary/50",
-                )}
-              >
-                <span className="min-w-0">
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-foreground">
-                      {copy.label}
-                    </span>
-                    {!copy.available ? <Badge variant="outline">Coming soon</Badge> : null}
-                  </span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">
-                    {copy.chainLabel}
-                  </span>
-                </span>
-                <span
-                  className={cn(
-                    "flex size-5 shrink-0 items-center justify-center rounded-full border-2",
-                    networkId === id && copy.available ? "border-brand bg-brand" : "border-border",
-                  )}
-                >
-                  {networkId === id && copy.available ? (
-                    <span className="size-1.5 rounded-full bg-brand-foreground" />
-                  ) : null}
-                </span>
-              </button>
-            ),
-          )}
+        {/*
+          Not a button, deliberately.
+
+          With one network there is nothing to choose, and a control that
+          re-selects the only already-selected option is a control that does
+          nothing — worse than no control, because it invites a tap that has no
+          effect. It is rendered as the selected row it is; `Continue` is the
+          action. When a second network is genuinely supported this becomes a
+          list of real buttons again.
+        */}
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-brand bg-brand-soft p-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-foreground">{TOKEN_LABEL}</span>
+              {isTestnet ? <Badge variant="outline">Test network</Badge> : null}
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">{chainLabel}</p>
+          </div>
+          <span
+            className="flex size-5 shrink-0 items-center justify-center rounded-full border-2 border-brand bg-brand"
+            aria-hidden
+          >
+            <span className="size-1.5 rounded-full bg-brand-foreground" />
+          </span>
         </div>
 
-        <Button
-          variant="brand"
-          size="lg"
-          block
-          disabled={!NETWORK_COPY[networkId].available}
-          onClick={() => setStage("show")}
-        >
+        <Button variant="brand" size="lg" block onClick={() => setStage("show")}>
           Continue
           <ChevronRight className="size-4" />
         </Button>
@@ -130,28 +107,26 @@ export function DepositNetworkSelect({
     );
   }
 
-  const copy = NETWORK_COPY[networkId];
-
   return (
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold tracking-tight">{copy.label}</h2>
-          <p className="text-xs text-muted-foreground">{copy.chainLabel}</p>
+          <h2 className="text-base font-semibold tracking-tight">{TOKEN_LABEL}</h2>
+          <p className="text-xs text-muted-foreground">{chainLabel}</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => setStage("select")}>
           Change
         </Button>
       </div>
 
-      {!shasta.ok ? (
+      {!deposit.ok ? (
         <Card className="p-5">
           <div className="flex items-start gap-2.5">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
             <div className="min-w-0 space-y-1">
               <h3 className="text-sm font-semibold">Could not get your deposit address</h3>
               <p className="text-sm leading-relaxed text-muted-foreground">
-                {shasta.message ?? "Something went wrong. Try again shortly."}
+                {deposit.message ?? "Something went wrong. Try again shortly."}
               </p>
             </div>
           </div>
@@ -159,32 +134,58 @@ export function DepositNetworkSelect({
       ) : (
         <>
           <Card className="space-y-4 p-5">
-            {shasta.qrSvg ? (
+            {/*
+              Generated server-side from the address the server issued, and
+              carrying that address and nothing else — no amount, no token
+              parameter, no URI scheme. See `getMyDepositAddressAction`, which
+              is also the reason the QR and the copyable text below it cannot
+              disagree: they are the same string.
+            */}
+            {deposit.qrSvg ? (
               <QrCode
-                svg={shasta.qrSvg}
-                label={`QR code for your ${copy.label} deposit address`}
+                svg={deposit.qrSvg}
+                label={`QR code for your ${TOKEN_LABEL} deposit address on ${chainLabel}`}
               />
             ) : null}
             <CopyField
               label="Deposit address"
-              value={shasta.address ?? ""}
+              value={deposit.address ?? ""}
               successMessage="Deposit address copied"
             />
           </Card>
 
           <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
-            <InfoRow label="Network" value={`TRON · ${shasta.networkLabel ?? copy.chainLabel}`} />
-            <InfoRow label="Token" value="USDT (TRC-20)" />
+            <InfoRow label="Network" value={chainLabel} />
+            <InfoRow label="Token" value={TOKEN_LABEL} />
             <InfoRow label="This address belongs to" value="Your account only" />
           </div>
 
-          <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
-            <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
-            <span>
-              This is a <strong className="font-medium text-foreground">test network</strong>.
-              Send test USDT only — real USDT sent here is permanently lost.
-            </span>
-          </p>
+          {isTestnet ? (
+            <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
+              <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
+              <span>
+                This is a <strong className="font-medium text-foreground">test network</strong>.
+                Send test USDT only — real USDT sent here is permanently lost.
+              </span>
+            </p>
+          ) : (
+            /*
+              The mainnet counterpart, and the reason the testnet notice is now
+              a branch rather than a constant: this screen used to say "this is
+              a test network" unconditionally, resting on the integration
+              refusing mainnet. Telling somebody their real USDT is test funds
+              is the worst sentence this page could print.
+            */
+            <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
+              <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
+              <span>
+                This is the{" "}
+                <strong className="font-medium text-foreground">TRON main network</strong>. Funds
+                sent here are real, and a transfer on a blockchain cannot be reversed — check the
+                address before you send.
+              </span>
+            </p>
+          )}
 
           {/*
             The mistake this exists to prevent, stated first and plainly.
@@ -204,17 +205,12 @@ export function DepositNetworkSelect({
             </span>
           </p>
 
-          <Card className="p-5">
-            <div className="flex items-center gap-2.5">
-              <Loader2 className="size-4 shrink-0 animate-spin text-brand" aria-hidden />
-              <p className="text-sm font-medium">Watching this address</p>
-            </div>
-            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground" aria-live="polite">
-              This address belongs only to your account. A transfer to it is detected
-              on-chain, finalised, and credited to your balance automatically — no
-              further action needed here, and this page does not decide it.
-            </p>
-          </Card>
+          {/*
+            Mounted here and nowhere else: the polling cycle exists only while
+            a real, supported deposit address is on screen, and unmounts with
+            it. See `DepositWatcher`.
+          */}
+          <DepositWatcher />
         </>
       )}
     </div>

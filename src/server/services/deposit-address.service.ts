@@ -10,7 +10,7 @@ import {
   type PoolTarget,
 } from "../repositories/deposit-address.repository";
 import { ensureDepositAddressPool } from "../tron/pool";
-import { getTronConfig, isTronConfigured } from "../tron/config";
+import { getTronConfig, isTronConfigured, type TronNetwork } from "../tron/config";
 import { mutate, type Actor } from "../write";
 
 /**
@@ -61,7 +61,7 @@ export class DepositAddressServiceError extends Error {
  */
 export async function getOrCreateDepositAddress(
   userId: string,
-  network: "shasta" | "nile",
+  network: TronNetwork,
   actor: Actor,
 ): Promise<PublicDepositAddress> {
   if (!isTronConfigured()) {

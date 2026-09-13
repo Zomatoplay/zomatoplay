@@ -1,14 +1,17 @@
 import "server-only";
 
-import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, exists, isNull, ne, or, sql } from "drizzle-orm";
+
+import { unstable_noStore as noStore } from "next/cache";
 
 import { decimalFrom, isPositive, numericValue, type Decimal } from "@/db/money";
 import * as t from "@/db/schema";
-import type { Tx } from "@/db";
+import { getDb, isDatabaseConfigured, type Tx } from "@/db";
 
 import { findOwnerOfAddress } from "../repositories/deposit-address.repository";
+import { getTronConfig, isTronConfigured } from "../tron/config";
 import { applyLedgerEntry, ensureWallet } from "../repositories/wallet.repository";
-import { fromDatabase } from "../database";
+import { fromDatabase, resilientRead } from "../database";
 import { mutate, newId, withReason, SYSTEM_ACTOR, type Actor } from "../write";
 
 /**
@@ -361,7 +364,10 @@ export async function recordDepositIntent(
       userId: request.userId,
       amountUsdt: numericValue(request.amount),
       chain: "tron",
-      chainNetwork: "shasta",
+      // Whatever this environment is pointed at, so a dev fixture in a mainnet
+      // deployment does not show an operator a `shasta` row that never existed
+      // on any chain. It still describes no transfer either way.
+      chainNetwork: isTronConfigured() ? getTronConfig().network : "shasta",
       network: "trc20",
       walletAddress: "(not a chain transfer)",
       // Prefixed so it can never be mistaken for a transaction hash, and never
@@ -625,4 +631,80 @@ export async function getRecentChainDeposits(limit = 5) {
         .limit(limit),
     () => [],
   );
+}
+
+/**
+ * What the signed-in account should see on its own deposit screen.
+ *
+ * SCOPED BY IDENTITY, NEVER BY RESEMBLANCE
+ * ----------------------------------------
+ * Two clauses, and both are the same fact stated at two moments in a deposit's
+ * life:
+ *
+ * - `user_id` — set once the deposit was credited, either automatically
+ *   through the address pool or by an operator.
+ * - the recipient address being one currently assigned to this account in
+ *   `deposit_addresses` — which is what shows a transfer that has been seen
+ *   but is still waiting for its block to solidify, before anything has been
+ *   attributed or credited.
+ *
+ * The second clause is the *same* lookup `recordObservedDeposit` uses to
+ * decide ownership, read in the other direction; it is not a guess. Nothing
+ * here matches on amount, on timing, or on who happens to be looking — the
+ * things §18.4 refuses — and nothing here credits anything. It is a read.
+ */
+export interface UserDepositActivity {
+  id: string;
+  amountUsdt: number;
+  status: (typeof t.depositStatusEnum.enumValues)[number];
+  txHash: string;
+  detectedAt: Date | null;
+  /** Null while the deposit is still unattributed. */
+  userId: string | null;
+}
+
+export async function listDepositActivityForUser(
+  userId: string,
+  limit = 5,
+): Promise<UserDepositActivity[]> {
+  if (!isDatabaseConfigured()) {
+    throw new DepositError(
+      "No DATABASE_URL is configured, so there is no deposit state to read.",
+    );
+  }
+  noStore();
+
+  return resilientRead(async () => {
+    const db = getDb();
+    return db
+      .select({
+        id: t.deposits.id,
+        amountUsdt: t.deposits.amountUsdt,
+        status: t.deposits.status,
+        txHash: t.deposits.txHash,
+        detectedAt: t.deposits.detectedAt,
+        userId: t.deposits.userId,
+      })
+      .from(t.deposits)
+      .where(
+        or(
+          eq(t.deposits.userId, userId),
+          exists(
+            db
+              .select({ one: sql<number>`1` })
+              .from(t.depositAddresses)
+              .where(
+                and(
+                  eq(t.depositAddresses.userId, userId),
+                  eq(t.depositAddresses.status, "assigned"),
+                  eq(t.depositAddresses.chain, t.deposits.chain),
+                  eq(t.depositAddresses.address, t.deposits.walletAddress),
+                ),
+              ),
+          ),
+        ),
+      )
+      .orderBy(desc(t.deposits.createdAt))
+      .limit(limit);
+  });
 }

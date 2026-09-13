@@ -23,6 +23,7 @@ import {
   releaseDepositAddress,
 } from "./services/deposit-address.service";
 import { recordObservedDeposit } from "./services/deposits.service";
+import { getTronConfig } from "./tron/config";
 import { mutate, newId, type Actor } from "./write";
 
 /**
@@ -32,11 +33,13 @@ import { mutate, newId, type Actor } from "./write";
  *
  *  - **Allocation** — `getOrCreateDepositAddress`, the real service, forced by
  *    `getTronConfig()` to operate on whichever network this environment is
- *    actually configured for (Shasta, here). Its pool is shared with whatever
- *    else uses this database, so these tests never assume *which* address gets
- *    handed out — only the properties that must hold regardless: the same
- *    user gets the same one back, two different users get two different ones,
- *    and nothing here ever hands one back to a browser-supplied identity.
+ *    actually configured for. `LIVE` below is read from that config rather than
+ *    named, so these tests follow a migration instead of being broken by one.
+ *    Its pool is shared with whatever else uses this database, so these tests
+ *    never assume *which* address gets handed out — only the properties that
+ *    must hold regardless: the same user gets the same one back, two different
+ *    users get two different ones, and nothing here ever hands one back to a
+ *    browser-supplied identity.
  *
  *  - **Attribution and crediting** — `recordObservedDeposit`'s automatic-credit
  *    path. These tests seed a `deposit_addresses` row already `assigned`
@@ -44,13 +47,11 @@ import { mutate, newId, type Actor } from "./write";
  *    fully isolated from whatever else the shared pool contains.
  *
  * The pool-mechanics tests that genuinely need an empty pool to observe
- * exhaustion (and the network-scoping guarantee) run against `network: "nile"`
- * through the repository functions directly, bypassing the service's
- * config-match guard. Nothing in this codebase or this environment ever
- * writes a `nile` row — `TRON_NETWORK=shasta` here, and the pool sync only
- * ever seeds the configured network — so it is a namespace nothing real can
- * ever collide with, unlike `shasta`, which the live scanner and real users
- * share.
+ * exhaustion (and the network-scoping guarantee) run against `ISOLATED` —
+ * whichever network is *not* the configured one — through the repository
+ * functions directly, bypassing the service's config-match guard. The pool
+ * sync only ever seeds the configured network, so nothing real can collide
+ * with it, unlike `LIVE`, which the live scanner and real users share.
  */
 
 const skip = isDatabaseConfigured() ? false : "no DATABASE_URL configured";
@@ -62,8 +63,33 @@ const OPERATOR: Actor = {
   role: "master_admin",
 };
 
-const SHASTA: PoolTarget = { chain: "tron", network: "shasta", asset: "usdt" };
-const NILE: PoolTarget = { chain: "tron", network: "nile", asset: "usdt" };
+/**
+ * The network this environment is actually configured for.
+ *
+ * Read from `getTronConfig()` rather than named, because
+ * `getOrCreateDepositAddress` refuses any network but the configured one — a
+ * deposit address on a chain nothing is scanning is an address nothing can
+ * ever credit. Hard-coding `shasta` here is what broke every allocation test
+ * the moment `TRON_NETWORK` became `mainnet`, and it would break them again
+ * on the next migration.
+ */
+const LIVE: PoolTarget = {
+  chain: "tron",
+  network: getTronConfig().network,
+  asset: "usdt",
+};
+
+/**
+ * A network this environment is *not* configured for, used as a collision-free
+ * namespace by the tests that need an empty pool (see the header). Derived the
+ * same way and for the same reason: the property that matters is "not the live
+ * one", not the word "nile".
+ */
+const ISOLATED: PoolTarget = {
+  chain: "tron",
+  network: LIVE.network === "nile" ? "shasta" : "nile",
+  asset: "usdt",
+};
 
 describe("deposit address pool", { skip }, () => {
   let db: Database;
@@ -137,7 +163,7 @@ describe("deposit address pool", { skip }, () => {
    * need an exact, known address-to-user mapping and no dependency on which
    * physical address the shared pool's claim mechanism happens to pick.
    */
-  async function seedAssignedAddress(userId: string, target: PoolTarget = SHASTA) {
+  async function seedAssignedAddress(userId: string, target: PoolTarget = LIVE) {
     const id = newId("dpa_test");
     const address = fixtureAddress();
     const now = new Date();
@@ -175,7 +201,7 @@ describe("deposit address pool", { skip }, () => {
     overrides: Partial<{
       amount: Decimal;
       confirmed: boolean;
-      network: "shasta" | "nile" | "mainnet";
+      network: PoolTarget["network"];
       txHash: string;
     }> = {},
   ) {
@@ -188,7 +214,12 @@ describe("deposit address pool", { skip }, () => {
       amount: overrides.amount ?? decimal("10"),
       blockNumber: BigInt(60_000_000),
       blockTimestamp: new Date(),
-      network: overrides.network ?? ("shasta" as const),
+      // The configured network by default, so a transfer lines up with the
+      // addresses `seedAssignedAddress` writes. Ownership is scoped by network
+      // as well as by address, so a mismatch here credits nobody — which is
+      // exactly what test I asserts on purpose, and what every other test here
+      // would have hit by accident.
+      network: overrides.network ?? LIVE.network,
       confirmed: overrides.confirmed ?? true,
       confirmationsRequired: 1,
     };
@@ -197,10 +228,10 @@ describe("deposit address pool", { skip }, () => {
   /* --------------------------------------------------------- allocation -- */
 
   test("A — first-time allocation claims an address from the pool", async () => {
-    await seedAvailableAddress(SHASTA); // headroom — the shared pool may have its own
+    await seedAvailableAddress(LIVE); // headroom — the shared pool may have its own
     const userId = await makeUser();
 
-    const result = await getOrCreateDepositAddress(userId, "shasta", OPERATOR);
+    const result = await getOrCreateDepositAddress(userId, LIVE.network, OPERATOR);
 
     assert.equal(result.status, "assigned");
     assert.ok(result.address.length > 0);
@@ -215,11 +246,11 @@ describe("deposit address pool", { skip }, () => {
   });
 
   test("B — the same user gets the same address on a later request", async () => {
-    await seedAvailableAddress(SHASTA);
+    await seedAvailableAddress(LIVE);
     const userId = await makeUser();
 
-    const first = await getOrCreateDepositAddress(userId, "shasta", OPERATOR);
-    const second = await getOrCreateDepositAddress(userId, "shasta", OPERATOR);
+    const first = await getOrCreateDepositAddress(userId, LIVE.network, OPERATOR);
+    const second = await getOrCreateDepositAddress(userId, LIVE.network, OPERATOR);
 
     assert.equal(first.address, second.address);
 
@@ -231,13 +262,13 @@ describe("deposit address pool", { skip }, () => {
   });
 
   test("C — two different users get two different addresses", async () => {
-    await seedAvailableAddress(SHASTA);
-    await seedAvailableAddress(SHASTA);
+    await seedAvailableAddress(LIVE);
+    await seedAvailableAddress(LIVE);
     const userA = await makeUser();
     const userB = await makeUser();
 
-    const a = await getOrCreateDepositAddress(userA, "shasta", OPERATOR);
-    const b = await getOrCreateDepositAddress(userB, "shasta", OPERATOR);
+    const a = await getOrCreateDepositAddress(userA, LIVE.network, OPERATOR);
+    const b = await getOrCreateDepositAddress(userB, LIVE.network, OPERATOR);
 
     assert.notEqual(a.address, b.address);
   });
@@ -252,13 +283,13 @@ describe("deposit address pool", { skip }, () => {
      * back to back, never see each other's allocation — an id is not a hint
      * the pool uses to guess with, it is the entire key.
      */
-    await seedAvailableAddress(SHASTA);
-    await seedAvailableAddress(SHASTA);
+    await seedAvailableAddress(LIVE);
+    await seedAvailableAddress(LIVE);
     const legitimateUser = await makeUser();
     const anotherUser = await makeUser();
 
-    const legit = await getOrCreateDepositAddress(legitimateUser, "shasta", OPERATOR);
-    const forgedAttempt = await getOrCreateDepositAddress(anotherUser, "shasta", OPERATOR);
+    const legit = await getOrCreateDepositAddress(legitimateUser, LIVE.network, OPERATOR);
+    const forgedAttempt = await getOrCreateDepositAddress(anotherUser, LIVE.network, OPERATOR);
 
     assert.notEqual(legit.address, forgedAttempt.address);
 
@@ -270,13 +301,13 @@ describe("deposit address pool", { skip }, () => {
   });
 
   test("two concurrent first-time requests for the same user never claim two addresses", async () => {
-    await seedAvailableAddress(SHASTA);
-    await seedAvailableAddress(SHASTA);
+    await seedAvailableAddress(LIVE);
+    await seedAvailableAddress(LIVE);
     const userId = await makeUser();
 
     const [a, b] = await Promise.all([
-      getOrCreateDepositAddress(userId, "shasta", OPERATOR),
-      getOrCreateDepositAddress(userId, "shasta", OPERATOR),
+      getOrCreateDepositAddress(userId, LIVE.network, OPERATOR),
+      getOrCreateDepositAddress(userId, LIVE.network, OPERATOR),
     ]);
 
     assert.equal(a.address, b.address, "one user, one address, even racing");
@@ -289,15 +320,15 @@ describe("deposit address pool", { skip }, () => {
   });
 
   test("P — an address is never reassigned merely by asking again", async () => {
-    await seedAvailableAddress(SHASTA);
+    await seedAvailableAddress(LIVE);
     const userId = await makeUser();
 
-    const first = await getOrCreateDepositAddress(userId, "shasta", OPERATOR);
+    const first = await getOrCreateDepositAddress(userId, LIVE.network, OPERATOR);
     // Nothing resembling "the page closed" or "the session ended" exists as an
     // input to this function — asking again, any number of times, later, is
     // the only thing being simulated, and it is a no-op on the assignment.
     for (let i = 0; i < 3; i += 1) {
-      const again = await getOrCreateDepositAddress(userId, "shasta", OPERATOR);
+      const again = await getOrCreateDepositAddress(userId, LIVE.network, OPERATOR);
       assert.equal(again.address, first.address);
     }
 
@@ -314,22 +345,22 @@ describe("deposit address pool", { skip }, () => {
   test("pool exhaustion is refused loudly, not silently handed out twice", async () => {
     const userId = await makeUser();
     await assert.rejects(
-      () => mutate(OPERATOR, ({ tx, now }) => claimAvailableAddress(tx, userId, NILE, now)),
+      () => mutate(OPERATOR, ({ tx, now }) => claimAvailableAddress(tx, userId, ISOLATED, now)),
       PoolExhaustedError,
     );
   });
 
   test("claiming is scoped by network — an available address on one network is invisible to another", async () => {
-    const shastaSeed = await seedAvailableAddress(SHASTA);
-    const nileSeed = await seedAvailableAddress(NILE);
+    const liveSeed = await seedAvailableAddress(LIVE);
+    const nileSeed = await seedAvailableAddress(ISOLATED);
     const userId = await makeUser();
 
     const claimed = await mutate(OPERATOR, ({ tx, now }) =>
-      claimAvailableAddress(tx, userId, NILE, now),
+      claimAvailableAddress(tx, userId, ISOLATED, now),
     );
 
     assert.equal(claimed.address, nileSeed.address);
-    assert.notEqual(claimed.address, shastaSeed.address);
+    assert.notEqual(claimed.address, liveSeed.address);
   });
 
   /* --------------------------------------------------------- attribution -- */
@@ -365,11 +396,13 @@ describe("deposit address pool", { skip }, () => {
 
   test("I — the same physical address on a different network resolves to nobody", async () => {
     const userId = await makeUser();
-    const { address } = await seedAssignedAddress(userId, SHASTA);
+    const { address } = await seedAssignedAddress(userId, LIVE);
 
-    // Same string, observed on Nile instead of Shasta — ownership is scoped by
-    // network, not by address text alone.
-    const { depositId } = await recordObservedDeposit(transferTo(address, { network: "nile" }));
+    // Same string, observed on a network this environment is not configured
+    // for — ownership is scoped by network, not by address text alone.
+    const { depositId } = await recordObservedDeposit(
+      transferTo(address, { network: ISOLATED.network }),
+    );
     createdDeposits.push(depositId);
 
     const [row] = await db.select().from(t.deposits).where(eq(t.deposits.id, depositId));

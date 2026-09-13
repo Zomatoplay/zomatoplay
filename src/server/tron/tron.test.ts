@@ -19,6 +19,14 @@ const DEPOSIT = "TZ4UXDV5ZhNW7fb2AMSbgfAEZ7hWsnYS2g";
 const CONTRACT = "TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs";
 const SENDER = "TVj7RNVHy6thbM7BWdSe9G6gXwKhjhdNZS";
 
+/** Tether's TRC-20 contract on TRON mainnet. Also a public identifier. */
+const MAINNET_USDT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+
+/**
+ * The baseline environment every test starts from: a testnet, because that is
+ * what `TRON_NETWORK` unset means and what most of these assertions are about.
+ * The mainnet tests opt in explicitly and reset to this.
+ */
 function config() {
   process.env.TRON_NETWORK = "shasta";
   process.env.TRON_GRID_URL = "https://api.shasta.trongrid.io";
@@ -73,11 +81,71 @@ test("compares base58 and hex notations of the same address", () => {
 /* Configuration                                                               */
 /* -------------------------------------------------------------------------- */
 
-test("refuses mainnet outright", () => {
+test("accepts mainnet, and defaults its grid URL to the mainnet endpoint", () => {
   config();
   process.env.TRON_NETWORK = "mainnet";
+  process.env.TRON_USDT_CONTRACT = MAINNET_USDT;
+  // All three accepted spellings, so the default for the network is what gets
+  // exercised rather than whatever the shell happens to carry.
+  delete process.env.TRON_GRID_URL;
+  delete process.env.TRON_GRID_API_URL;
+  delete process.env.TRONGRID_API_URL;
+
+  const resolved = getTronConfig();
+  assert.equal(resolved.network, "mainnet");
+  assert.equal(resolved.gridUrl, "https://api.trongrid.io");
+  assert.equal(resolved.usdtContract, MAINNET_USDT);
+
+  config();
+});
+
+/**
+ * The guard that replaced the blanket mainnet refusal.
+ *
+ * Crediting before solidification is the one setting that turns this
+ * integration into a loss rather than a delay, so on mainnet it is refused
+ * rather than warned about. It stays available on a testnet, where the only
+ * cost is a slower test.
+ */
+test("refuses to skip confirmation on mainnet, but allows it on a testnet", () => {
+  config();
+  process.env.TRON_NETWORK = "mainnet";
+  process.env.TRON_USDT_CONTRACT = MAINNET_USDT;
+
+  process.env.TRON_CONFIRMATION_REQUIRED = "false";
   assert.throws(() => getTronConfig(), TronConfigError);
+
+  // The count spelling has to be refused too, or the guard is one rename away
+  // from being bypassed.
+  delete process.env.TRON_CONFIRMATION_REQUIRED;
+  process.env.TRON_CONFIRMATIONS = "0";
+  assert.throws(() => getTronConfig(), TronConfigError);
+
+  delete process.env.TRON_CONFIRMATIONS;
+  assert.equal(getTronConfig().requireConfirmation, true);
+
   process.env.TRON_NETWORK = "shasta";
+  process.env.TRON_CONFIRMATION_REQUIRED = "false";
+  assert.equal(getTronConfig().requireConfirmation, false);
+
+  delete process.env.TRON_CONFIRMATION_REQUIRED;
+  config();
+});
+
+test("refuses a network that is not a TRON network", () => {
+  config();
+  for (const bad of ["", "main", "tron", "ethereum"]) {
+    process.env.TRON_NETWORK = bad;
+    assert.throws(() => getTronConfig(), TronConfigError, `${bad} should be refused`);
+  }
+  process.env.TRON_NETWORK = "shasta";
+});
+
+test("the configured mainnet USDT contract is a real TRON address", () => {
+  // A checksum check, not a lookup: it is the one thing that can be verified
+  // without a network, and a mistyped contract matches no transfer at all —
+  // which looks exactly like "nobody has deposited yet".
+  assert.ok(isTronAddress(MAINNET_USDT));
 });
 
 test("refuses a mistyped contract or deposit address", () => {

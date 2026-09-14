@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
 import { config as loadEnv } from "dotenv";
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, lte } from "drizzle-orm";
 
 loadEnv({ path: ".env.local", quiet: true });
 loadEnv({ path: ".env", quiet: true });
@@ -50,16 +50,51 @@ describe("referral commission", { skip }, () => {
   let planId: string;
   const createdUsers: string[] = [];
 
+  /**
+   * The smallest allocation any test in this file makes.
+   *
+   * The plan chosen below has to accept it, and `SMALLEST_ALLOCATION` is what
+   * says so — rather than the file quietly depending on whichever plan the
+   * catalogue happens to list first.
+   */
+  const SMALLEST_ALLOCATION = 200;
+
   before(async () => {
     db = createAdminDb();
-    // Any open plan will do; the test asserts the commission against whatever
-    // this plan's terms are rather than assuming a particular one exists.
+
+    /*
+     * ORDERED, AND SELECTED BY THE PROPERTY THIS FILE ACTUALLY NEEDS.
+     *
+     * This used to be `where(status = 'open').limit(1)` with no `ORDER BY`,
+     * which means physical row order — and **every allocation anywhere updates
+     * the plan row** (`investments-write.service` bumps its totals), which can
+     * move it in the heap. Run alone the file passed 9/9; run after enough
+     * other files it started returning Balanced Growth (minimum 250) instead
+     * of Starter (minimum 50), and the test that allocates 200 failed with
+     * *"Balanced Growth has a minimum of 250 USDT."*
+     *
+     * Exactly the fixture bug M11 fixed in `money-lifecycle.integration.test`,
+     * which was left standing here. The rule from CLAUDE.md §16.7: select by,
+     * and assert on, the property the test owns — never a fact about the
+     * physical table. So this asks for a plan that can accept this file's
+     * smallest allocation, lowest minimum first, deterministically.
+     */
     const [plan] = await db
-      .select({ id: t.plans.id, min: t.plans.minInvestment })
+      .select({ id: t.plans.id, name: t.plans.name, min: t.plans.minInvestment })
       .from(t.plans)
-      .where(eq(t.plans.status, "open"))
+      .where(
+        and(
+          eq(t.plans.status, "open"),
+          lte(t.plans.minInvestment, SMALLEST_ALLOCATION),
+        ),
+      )
+      .orderBy(asc(t.plans.minInvestment), asc(t.plans.id))
       .limit(1);
-    assert.ok(plan, "the catalogue has at least one active plan");
+
+    assert.ok(
+      plan,
+      `the catalogue has an open plan accepting ${SMALLEST_ALLOCATION} USDT`,
+    );
     planId = plan.id;
   });
 

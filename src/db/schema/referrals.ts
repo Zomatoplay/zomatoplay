@@ -106,10 +106,40 @@ export const commissionEntries = pgTable(
     sourcePlanName: text("source_plan_name").notNull(),
     createdAt: ts("created_at").notNull(),
     status: commissionStatusEnum("status").notNull().default("pending"),
+
+    /**
+     * When this entry becomes payable, computed once at accrual.
+     *
+     * WHY A COLUMN AND NOT A RULE APPLIED AT RELEASE TIME
+     * ---------------------------------------------------
+     * The delay is `platform_settings.referrals.payoutDelayDays`, which an
+     * operator can change. If the scheduler applied it at release time, an
+     * operator lengthening the delay would push back commission that had
+     * already been promised a date — and shortening it would pay out entries
+     * accrued under different terms. Stamping it at accrual means every entry
+     * carries the schedule it was accrued under, the same snapshot rule
+     * `investments` follows for a plan's rate.
+     *
+     * Null on entries accrued before this column existed; the release job
+     * treats a null as "not scheduled" and leaves it to an operator, because
+     * inventing a date for a historical entry is inventing a payment date.
+     */
+    releaseAt: ts("release_at"),
+    /**
+     * When it was actually paid. Set in the same transaction as the ledger
+     * entry and the status change, by `releaseCommission` — the only function
+     * that moves this money, whether an operator or the scheduler called it.
+     */
+    releasedAt: ts("released_at"),
   },
   (table) => [
     index("commission_entries_beneficiary_idx").on(table.beneficiaryUserId),
     index("commission_entries_created_idx").on(table.createdAt),
     index("commission_entries_status_idx").on(table.status),
+    /**
+     * The release job's own index: "pending entries whose time has come".
+     * Without it the nightly pass sequentially scans the whole ledger.
+     */
+    index("commission_entries_release_idx").on(table.status, table.releaseAt),
   ],
 );

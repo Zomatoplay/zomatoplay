@@ -98,6 +98,33 @@ export interface Plan {
   /** Whether early exit is permitted, and on what terms. */
   earlyExit: string;
   popular?: boolean;
+  /**
+   * The plan's amount-banded rate ladder, lowest band first.
+   *
+   * Empty when the plan has no ladder, in which case
+   * `estimatedReturnPercent` above is the rate every allocation is sold at.
+   * A band's rate carries the same meaning as that field — projected **total**
+   * return over the plan's whole term, never a periodic rate. See
+   * `plan_rate_tiers` in the schema.
+   *
+   * Present on the public type because the plan screens show the ladder and
+   * the invest sheet shows which band an amount falls into. That display is
+   * an affordance only: `createInvestment` resolves the band again server-side
+   * against the rows Postgres holds, and never trusts a rate from a browser.
+   */
+  rateTiers: PlanRateTierView[];
+}
+
+/** One band of a plan's rate ladder, as a screen reads it. */
+export interface PlanRateTierView {
+  id: string;
+  /** Inclusive lower bound, in USDT. */
+  minAmountUsdt: number;
+  /** Exclusive upper bound. `null` on the open-ended top band. */
+  maxAmountUsdt: number | null;
+  /** Projected total return over the term for allocations in this band. */
+  ratePercent: number;
+  active: boolean;
 }
 
 /* -------------------------------------------------------------------------- */

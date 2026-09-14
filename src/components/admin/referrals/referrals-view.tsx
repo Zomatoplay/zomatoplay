@@ -44,6 +44,8 @@ import type {
 } from "@/types/admin";
 import type { VipLevelId } from "@/types";
 import { formatDate } from "@/utils/format";
+import { cn } from "@/lib/utils";
+import { formatBusinessDateTime } from "@/lib/business-time";
 
 /**
  * Referral programme administration.
@@ -292,6 +294,12 @@ function ReferralsBrowser() {
       ),
     },
     {
+      id: "schedule",
+      header: "Release",
+      hideBelow: "lg",
+      cell: (entry) => <ReleaseCell entry={entry} />,
+    },
+    {
       id: "release",
       header: "Action",
       cell: (entry) =>
@@ -343,7 +351,9 @@ function ReferralsBrowser() {
           label="Commission pending"
           amount={pendingCommission}
           tone={pendingCommission > 0 ? "warning" : "default"}
-          hint={`Released ${settings.referrals.payoutDelayDays} days after the allocation settles`}
+          hint={`Released automatically at 00:00 IST, ${settings.referrals.payoutDelayDays} day${
+            settings.referrals.payoutDelayDays === 1 ? "" : "s"
+          } after the allocation`}
         />
       </AdminStatGrid>
 
@@ -572,5 +582,51 @@ function ReferralsBrowser() {
         }}
       />
     </AdminSection>
+  );
+}
+
+/**
+ * When a commission entry is due, or when it was paid.
+ *
+ * Three states, and they are deliberately distinguishable at a glance:
+ *
+ * - **credited** — the date it was actually paid. Never shown for anything
+ *   still pending: a screen that displayed a release date as though it were a
+ *   payment would tell an operator money had moved when it had not.
+ * - **pending, due** — the release time has passed and the nightly job has not
+ *   run since. Marked, because that combination means something is wrong with
+ *   the scheduler rather than with the entry.
+ * - **pending, scheduled** — the date it will be released on.
+ *
+ * `formatBusinessDateTime` writes the zone out. A release date is exactly the
+ * value an operator compares against their own watch, and an unlabelled clock
+ * in a zone that is not theirs is the mistake the system log already made
+ * (CLAUDE.md §11).
+ */
+function ReleaseCell({ entry }: { entry: AdminCommissionEntry }) {
+  if (entry.status === "credited") {
+    return (
+      <span className="text-xs text-muted-foreground">
+        {entry.releasedAt ? formatBusinessDateTime(entry.releasedAt) : "Paid"}
+      </span>
+    );
+  }
+  if (entry.status === "reversed") {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+  if (!entry.releaseAt) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        Not scheduled · release by hand
+      </span>
+    );
+  }
+
+  const due = new Date(entry.releaseAt).getTime() <= Date.now();
+  return (
+    <span className={cn("text-xs", due ? "text-warning" : "text-muted-foreground")}>
+      {due ? "Due · " : ""}
+      {formatBusinessDateTime(entry.releaseAt)}
+    </span>
   );
 }

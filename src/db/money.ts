@@ -280,6 +280,57 @@ export function applyPercent(amount: Decimal, percent: Decimal): Decimal {
   return fromUnits(resultUnits);
 }
 
+/**
+ * Exact addition and subtraction.
+ *
+ * Both sides are converted to integer units at the schema's scale, added there
+ * and converted back, so no binary float is ever involved. `0.1 + 0.2` through
+ * these is `0.30000000` and not `0.30000000000000004`.
+ *
+ * These exist because the withdrawal quote did its fee arithmetic in
+ * JavaScript numbers — `flatFee + (amount * percent) / 100`, then
+ * `amount - totalFee` — and rounded the result afterwards. Rounding a wrong
+ * number does not make it right, and that quote is what a customer is told
+ * they will be paid.
+ */
+export function add(a: Decimal, b: Decimal): Decimal {
+  return fromUnits(toUnits(a) + toUnits(b));
+}
+
+export function subtract(a: Decimal, b: Decimal): Decimal {
+  return fromUnits(toUnits(a) - toUnits(b));
+}
+
+/**
+ * An exact amount converted at an exact rate — USDT to INR, here.
+ *
+ * Distinct from `applyPercent` because a rate is not a percentage: it is a
+ * multiplier with its own scale (`rate` columns are `numeric(18,6)`), and
+ * dividing by 100 would be wrong.
+ *
+ * Truncated toward zero at `scale`, the same rule `applyPercent` and
+ * `splitEvenly` use. The caller names the scale because the destination column
+ * decides it: INR is stored `numeric(20,2)`, so a fraction of a paisa has
+ * nowhere to go and must not be carried around pretending it does.
+ */
+export function multiplyByRate(
+  amount: Decimal,
+  rate: Decimal,
+  scale: number,
+): Decimal {
+  if (!Number.isInteger(scale) || scale < 0 || scale > MAX_SCALE) {
+    throw new MoneyError(`Scale must be an integer between 0 and ${MAX_SCALE}.`);
+  }
+
+  // amount and rate are both held as integer units at MAX_SCALE, so their
+  // product carries 2 * MAX_SCALE implied decimals. Reduce to `scale`, then
+  // pad back out so the result is a well-formed Decimal at MAX_SCALE.
+  const product = toUnits(amount) * toUnits(rate);
+  const divisor = BigInt(10) ** BigInt(2 * MAX_SCALE - scale);
+  const truncated = product / divisor;
+  return fromUnits(truncated * BigInt(10) ** BigInt(MAX_SCALE - scale));
+}
+
 /** The inverse of `toUnits`. */
 function fromUnits(units: bigint): Decimal {
   const negative = units < BigInt(0);

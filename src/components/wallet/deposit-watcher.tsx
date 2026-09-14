@@ -5,39 +5,39 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, Loader2, RadioTower } from "lucide-react";
 
 import { CurrencyDisplay } from "@/components/shared/currency-display";
+import { DepositConfirmation } from "@/components/wallet/deposit-confirmation";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Card } from "@/components/ui/card";
 import {
   checkForDepositsAction,
   type DepositActivityItem,
+  type NewDepositView,
 } from "@/app/(app)/wallet/deposit/actions";
 
 /**
  * Watches for the caller's own deposits while the deposit screen is open.
  *
- * WHAT IT DOES, AND IN WHICH ORDER
- * --------------------------------
- * One server action per cycle, which does two things server-side in sequence:
- * asks the existing TRON scanner for a pass, then reads this account's deposit
- * state back. The browser gets a list it can render and nothing else — no
- * address, no chain call, no credential, and no say in whose deposits come
- * back. See `checkForDepositsAction`.
+ * TWO CADENCES, NOT ONE
+ * ---------------------
+ * Every cycle calls one server action, and that action does two separable
+ * things: read this account's deposits (cheap — a single indexed query), and
+ * optionally ask the TRON scanner for a pass (expensive — measured p50
+ * 3,891 ms of chain calls and cursor writes).
  *
- * WHY A TIMER, AND WHY FIVE SECONDS
- * ---------------------------------
- * This deployment's scheduled scan runs once a day on the Hobby plan (§18.5),
- * so somebody who has just sent USDT would otherwise sit on a screen that
- * could not update for hours. Five seconds is faster than TRON's ~3-second
- * block time matters for — the wait is solidification, not block inclusion —
- * and it is what the migration brief asked for so a real transfer can be
- * watched arriving.
+ * - **Cheap, every 5 s.** Keeps the screen live: the moment the scanner or the
+ *   cron credits something, this is what puts it on screen.
+ * - **Expensive, every 60 s.** A transfer cannot be credited until its block
+ *   solidifies, which on TRON is ~19 blocks — about 57 s. Polling the chain
+ *   faster than that cannot produce an earlier answer; it only spends TronGrid
+ *   quota and holds connections out of a five-connection pool (§16.1a).
  *
- * It is not free, and the cost is stated rather than hidden: each cycle is one
- * server action, which asks for a scanner pass and then reads this account's
- * deposits from a five-connection pool (§16.1a). Two things keep that bounded
- * — `busy` below, so a slow cycle is never overlapped by the next tick, and
- * the floor in `triggerDepositScan`, so the passes themselves are rate-limited
- * server-side however many screens are open.
+ * The two were one call at 5 s, which drove a chain scan roughly every 9 s for
+ * as long as the page was open. That is the regression this split undoes.
+ *
+ * The browser gets a list it can render and nothing else — no address, no chain
+ * call, no credential, and no say in whose deposits come back. Asking for a
+ * scan grants nothing either: `triggerDepositScan` applies its own server-side
+ * floor and single-flight regardless of who asked. See `checkForDepositsAction`.
  *
  * **Temporary, and page-scoped on purpose.** The interval is cleared on
  * unmount, so nothing keeps polling once the screen is gone — which also means
@@ -45,12 +45,41 @@ import {
  * nothing else. This does not replace that scheduler.
  */
 
-/** Matches the cadence the copy promises the person reading the screen. */
+/**
+ * The cheap tick: read this account's deposits. One indexed query.
+ *
+ * Matches the cadence the copy promises the person reading the screen.
+ */
 const POLL_INTERVAL_MS = 5_000;
+
+/**
+ * The expensive tick: ask the scanner to walk the chain.
+ *
+ * Measured 2026-09-13: a real pass costs p50 3,891 ms (a solidified-block
+ * call, a TRC-20 query per watched address, a transaction-info call per
+ * candidate, and a cursor read and write each). At the 5-second cadence that
+ * ran essentially back to back for as long as the page was open.
+ *
+ * Sixty seconds, because that is what the chain actually allows: TRON
+ * solidifies ~19 blocks behind — about 57 s — and nothing is credited before
+ * its block solidifies. A faster chain poll cannot produce an earlier answer,
+ * it can only spend more TronGrid quota and hold more of a five-connection
+ * pool. The cheap tick above is what keeps the screen feeling live.
+ */
+const SCAN_INTERVAL_MS = 60_000;
 
 export function DepositWatcher() {
   const router = useRouter();
   const [deposits, setDeposits] = useState<DepositActivityItem[] | null>(null);
+  /*
+   * The confirmation's own state, from the same poll.
+   *
+   * Server-decided: these are rows that are `credited` and not yet
+   * acknowledged. The component below renders them and nothing here judges
+   * whether a deposit is "new" — see `DepositConfirmation`.
+   */
+  const [newDeposits, setNewDeposits] = useState<NewDepositView[]>([]);
+  const [availableUsdt, setAvailableUsdt] = useState<number | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,23 +93,41 @@ export function DepositWatcher() {
    */
   const busy = useRef(false);
   const signature = useRef<string | null>(null);
+  /**
+   * When this screen last asked for a chain scan.
+   *
+   * `0` rather than `Date.now()`, so the first tick after the screen opens does
+   * request one — somebody who has just sent a transfer and opened this page is
+   * exactly who should get a pass immediately.
+   */
+  const lastScanAt = useRef(0);
 
   const check = useCallback(async () => {
     if (busy.current) return;
     busy.current = true;
     setChecking(true);
+
+    // Decided here, not on the server: the server applies its own floor and
+    // single-flight to whatever it is asked (see `triggerDepositScan`), so this
+    // is a cadence choice, never a privilege.
+    const now = Date.now();
+    const requestScan = now - lastScanAt.current >= SCAN_INTERVAL_MS;
+    if (requestScan) lastScanAt.current = now;
+
     try {
-      const result = await checkForDepositsAction();
+      const result = await checkForDepositsAction({ requestScan });
       if (!result.ok) {
         setError(result.message ?? "Could not check for deposits.");
         return;
       }
       setError(null);
       setDeposits(result.deposits);
+      setNewDeposits(result.newDeposits);
+      setAvailableUsdt(result.availableUsdt);
 
       // A status change is money moving — the balance on `/wallet` and the
       // transaction list are now stale. Refreshed only on an actual change, so
-      // an idle screen re-renders nothing every thirty seconds.
+      // an idle screen re-renders nothing however often it polls.
       const next = result.deposits.map((d) => `${d.id}:${d.status}`).join("|");
       if (signature.current !== null && signature.current !== next) {
         router.refresh();
@@ -122,7 +169,19 @@ export function DepositWatcher() {
   }, [check]);
 
   return (
-    <Card className="space-y-4 p-5">
+    <>
+      {/*
+        Above the watcher, because a confirmed arrival is the answer to the
+        question the watcher is asking. It renders nothing when there is
+        nothing unacknowledged, which is the ordinary case.
+      */}
+      <DepositConfirmation
+        deposits={newDeposits}
+        availableUsdt={availableUsdt}
+        className="mb-5"
+      />
+
+      <Card className="space-y-4 p-5">
       <div className="flex items-start gap-2.5">
         {checking ? (
           <Loader2 className="mt-px size-4 shrink-0 animate-spin text-brand" aria-hidden />
@@ -135,8 +194,10 @@ export function DepositWatcher() {
           </p>
           <p className="text-xs leading-relaxed text-muted-foreground" aria-live="polite">
             This address belongs only to your account. A transfer to it is detected
-            on-chain, finalised and credited automatically — this screen checks every
-            5 seconds while it is open, so there is nothing to refresh.
+            on-chain, finalised and credited automatically — this screen checks for
+            updates every few seconds while it is open, so there is nothing to
+            refresh. A transfer needs about a minute on the network to become
+            final before it can be credited.
           </p>
         </div>
       </div>
@@ -169,6 +230,7 @@ export function DepositWatcher() {
           No deposits to this address yet.
         </p>
       ) : null}
-    </Card>
+      </Card>
+    </>
   );
 }

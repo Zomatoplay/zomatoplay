@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
 import { config as loadEnv } from "dotenv";
-import { and, eq, gt } from "drizzle-orm";
+import { and, asc, eq, gt } from "drizzle-orm";
 
 loadEnv({ path: ".env.local", quiet: true });
 loadEnv({ path: ".env", quiet: true });
@@ -59,19 +59,51 @@ describe("money lifecycle", { skip }, () => {
   before(async () => {
     db = createAdminDb();
     const plans = await db
-      .select({ id: t.plans.id, durationDays: t.plans.durationDays })
+      .select({
+        id: t.plans.id,
+        durationDays: t.plans.durationDays,
+        minInvestment: t.plans.minInvestment,
+      })
       .from(t.plans)
-      .where(eq(t.plans.status, "open"));
+      .where(eq(t.plans.status, "open"))
+      /*
+       * ORDERED, and that is load-bearing.
+       *
+       * Chosen by term, not by `limit 1`: the catalogue's first open plan
+       * happens to be Flexible Reserve, which has no term at all, so an
+       * unordered `limit 1` silently made this whole file a test of the
+       * open-ended path while claiming to test maturity.
+       *
+       * Ordering by minimum on top of that is what stops it being flaky.
+       * Without an `ORDER BY`, "first" is physical row order — and every
+       * allocation anywhere updates the plan row (`investments-write.service`
+       * bumps the plan's totals), which can move it in the heap. After enough
+       * earlier test files had run, `find` started returning Balanced Growth
+       * (minimum 250) instead of Starter (minimum 50), and the five tests here
+       * that allocate 200 failed with "Balanced Growth has a minimum of 250
+       * USDT." Observed failing on two consecutive full runs and passing on the
+       * third, with no code change in between.
+       *
+       * Cheapest qualifying plan first, so the amounts below are always valid
+       * for whichever plan this picks.
+       */
+      .orderBy(asc(t.plans.minInvestment), asc(t.plans.id));
 
-    /*
-     * Chosen by term, not by `limit 1`.
-     *
-     * The catalogue's first open plan happens to be Flexible Reserve, which has
-     * no term at all — so an unordered `limit 1` silently made this whole file
-     * a test of the open-ended path while claiming to test maturity.
-     */
     const fixed = plans.find((plan) => plan.durationDays > 0);
     assert.ok(fixed, "the catalogue has at least one open fixed-term plan");
+    /*
+     * Fail here, once and legibly, rather than five times downstream.
+     *
+     * Every allocation in this file is between 100 and 400 USDT. If the
+     * catalogue ever changes so the cheapest fixed-term plan will not accept
+     * that, the previous failure mode was five unrelated-looking tests dying on
+     * "…has a minimum of 250 USDT" with nothing pointing at the fixture.
+     */
+    assert.ok(
+      fixed.minInvestment <= 100,
+      `this file allocates from 100 USDT; the cheapest open fixed-term plan ` +
+        `(${fixed.id}) has a minimum of ${fixed.minInvestment}`,
+    );
     planId = fixed.id;
     openEndedPlanId = plans.find((plan) => plan.durationDays === 0)?.id ?? null;
   });

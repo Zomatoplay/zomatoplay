@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import { readFile } from "node:fs/promises";
 
 import { config as loadEnv } from "dotenv";
 import { eq } from "drizzle-orm";
@@ -150,13 +151,87 @@ describe("the deposit check action", () => {
     );
   });
 
-  test("takes no argument, so nothing in the browser can name a user", async () => {
+  test("takes no required argument, so nothing in the browser can name a user", async () => {
     const { checkForDepositsAction } = await import(
       "@/app/(app)/wallet/deposit/actions"
     );
-    // The identity is `getAuthenticatedAccount()` and there is no parameter to
-    // override it with — the same property the other deposit actions have.
+    /*
+     * The identity is `getAuthenticatedAccount()` and there is no parameter to
+     * override it with — the same property the other deposit actions have.
+     *
+     * The action does take one *optional* options object now (`requestScan`),
+     * so `.length` still reads 0 because a parameter with a default does not
+     * count. That flag decides cadence, never identity and never privilege:
+     * `triggerDepositScan()` applies its own floor and single-flight to whoever
+     * asks, so a browser setting it on every call gains nothing.
+     */
     assert.equal(checkForDepositsAction.length, 0);
+  });
+});
+
+/**
+ * The cheap read and the expensive chain scan are separate cadences.
+ *
+ * Measured 2026-09-13: a real pass costs p50 3,891 ms, and at one scan per
+ * 5-second tick the deposit screen drove a chain scan roughly every 9 s for as
+ * long as it was open — to find transfers that cannot be credited until their
+ * block solidifies ~57 s later. These tests pin the split so it cannot quietly
+ * collapse back into one call.
+ */
+describe("the deposit screen's two cadences", () => {
+  test("the client's scan interval stays above the server's floor, and its poll below", async () => {
+    const { DEPOSIT_SCAN_MIN_INTERVAL_MS } = await import(
+      "@/server/tron/scan-trigger"
+    );
+
+    // Read out of the component so the two cannot drift apart unnoticed.
+    const source = await readFile(
+      new URL("../components/wallet/deposit-watcher.tsx", import.meta.url),
+      "utf8",
+    );
+    const poll = Number(
+      /const POLL_INTERVAL_MS = ([\d_]+)/.exec(source)?.[1].replace(/_/g, ""),
+    );
+    const scan = Number(
+      /const SCAN_INTERVAL_MS = ([\d_]+)/.exec(source)?.[1].replace(/_/g, ""),
+    );
+
+    assert.ok(Number.isFinite(poll) && Number.isFinite(scan), "both intervals found");
+
+    assert.ok(
+      poll < DEPOSIT_SCAN_MIN_INTERVAL_MS,
+      `the cheap poll (${poll}ms) must be faster than the scan floor ` +
+        `(${DEPOSIT_SCAN_MIN_INTERVAL_MS}ms) — that is the whole point of splitting them`,
+    );
+    assert.ok(
+      scan > DEPOSIT_SCAN_MIN_INTERVAL_MS,
+      `the scan request interval (${scan}ms) must clear the server floor ` +
+        `(${DEPOSIT_SCAN_MIN_INTERVAL_MS}ms), or a screen's own request is refused`,
+    );
+    assert.ok(
+      scan >= 57_000,
+      `a chain scan more often than ~57s cannot produce an earlier answer: ` +
+        `nothing is credited before its block solidifies (got ${scan}ms)`,
+    );
+  });
+
+  test("a tick that does not request a scan runs none", async () => {
+    let passes = 0;
+    const { createScanTrigger } = await import("@/server/tron/scan-trigger");
+    const trigger = createScanTrigger(async () => {
+      passes += 1;
+      return {
+        scanned: 0, created: 0, updated: 0, unchanged: 0, pending: 0,
+        rejected: {}, solidBlock: null, errors: [],
+      };
+    });
+
+    // The action skips `triggerDepositScan` entirely when `requestScan` is
+    // false; this asserts the trigger's own contract that nothing runs unless
+    // it is called.
+    assert.equal(passes, 0, "no pass before anyone asks");
+    await trigger();
+    assert.equal(passes, 1, "and exactly one when a slow tick does ask");
   });
 });
 

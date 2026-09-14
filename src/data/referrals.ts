@@ -229,7 +229,16 @@ export const referralSteps = [
   },
   {
     title: "You earn commission",
+    /*
+     * "Once their allocation settles" described a settlement step that does not
+     * decide this, and left the customer with no idea when they would be paid.
+     * Release is now a date: the platform's configured delay after the
+     * allocation, credited at midnight. Deliberately not restating the number
+     * of days here — that is `platform_settings.referrals.payoutDelayDays` and
+     * an operator can change it, so a figure typed into this copy would be one
+     * more place for the product to contradict itself.
+     */
     description:
-      "Commission is credited to your available balance once their allocation settles.",
+      "Commission is credited to your available balance automatically, a few days after their allocation.",
   },
 ];

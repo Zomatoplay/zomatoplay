@@ -142,6 +142,28 @@ export const deposits = pgTable(
     /** Set when the funds reached a user's wallet. */
     creditedAt: ts("credited_at"),
 
+    /**
+     * When the owning account was shown the "deposit confirmed" state and
+     * dismissed it.
+     *
+     * WHY THIS IS A DATABASE COLUMN AND NOT `localStorage`
+     * ----------------------------------------------------
+     * "Has this person seen that their money arrived" is a fact about an
+     * account, not about a browser. Kept client-side it would re-announce a
+     * three-week-old deposit on every new device, every cleared cache and
+     * every private window — which is the defect this closes: the deposit
+     * screen listed recent deposits, so a historical one read as a fresh
+     * arrival on every visit.
+     *
+     * Null means "credited and not yet acknowledged", which is exactly the
+     * query the confirmation state runs. Only ever set — never cleared — so
+     * the transition is one-way and re-announcing is structurally impossible.
+     * It decides *presentation only*: nothing about whether money moved
+     * depends on it, and the deposit stays in wallet history for ever either
+     * way.
+     */
+    acknowledgedAt: ts("acknowledged_at"),
+
     confirmationsCurrent: integer("confirmations_current").notNull().default(0),
     confirmationsRequired: integer("confirmations_required").notNull(),
 
@@ -160,6 +182,12 @@ export const deposits = pgTable(
     index("deposits_created_idx").on(table.createdAt),
     index("deposits_unassigned_idx").on(table.status, table.userId),
     index("deposits_sender_idx").on(table.senderAddress),
+    /** "This account's credited deposits it has not acknowledged yet." */
+    index("deposits_unacknowledged_idx").on(
+      table.userId,
+      table.status,
+      table.acknowledgedAt,
+    ),
   ],
 );
 

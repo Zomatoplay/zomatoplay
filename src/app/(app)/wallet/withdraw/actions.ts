@@ -1,6 +1,16 @@
 "use server";
 
-import { decimal, MoneyError, type Decimal } from "@/db/money";
+import {
+  add,
+  applyPercent,
+  compare,
+  decimal,
+  isPositive,
+  MoneyError,
+  multiplyByRate,
+  subtract,
+  type Decimal,
+} from "@/db/money";
 import {
   MIN_WITHDRAWAL_USDT,
   WITHDRAWAL_FEE_PERCENT,
@@ -37,10 +47,8 @@ export interface WithdrawResult {
   withdrawalId?: string;
 }
 
-/** Rounds to the scale the `numeric(20, 8)` / `numeric(20, 2)` columns store. */
-function money(value: number, scale: number): Decimal {
-  return decimal(value.toFixed(scale));
-}
+/** INR is stored `numeric(20, 2)`; there is no such thing as a fraction of a paisa. */
+const INR_SCALE = 2;
 
 export async function requestWithdrawalAction(input: {
   amount: string;
@@ -59,34 +67,55 @@ async function runRequestWithdrawal(input: {
   const account = await getAuthenticatedAccount();
   if (!account) return { ok: false, message: "Not signed in." };
 
-  const amountNumber = Number.parseFloat(input.amount);
-  if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+  /*
+   * EXACT FROM HERE DOWN — NO JAVASCRIPT NUMBER TOUCHES A MONEY VALUE.
+   *
+   * This used to parse the amount with `Number.parseFloat`, compute the fees
+   * and the net with `*`, `/` and `-`, and round the results afterwards. That
+   * breaks the rule CLAUDE.md §17.2 calls the most important one, on the one
+   * screen that quotes a customer what they will be paid — and rounding a
+   * wrong number does not make it right. The amount is parsed straight into a
+   * `Decimal`, which validates it, and every figure below is derived with the
+   * exact-integer helpers in `@/db/money`.
+   */
+  let amount: Decimal;
+  try {
+    amount = decimal(input.amount.trim());
+  } catch {
     return { ok: false, message: "Enter a valid amount." };
   }
-  if (amountNumber < MIN_WITHDRAWAL_USDT) {
+  if (!isPositive(amount)) {
+    return { ok: false, message: "Enter a valid amount." };
+  }
+
+  const minimum = decimal(MIN_WITHDRAWAL_USDT);
+  if (compare(amount, minimum) < 0) {
     return {
       ok: false,
       message: `The minimum withdrawal is ${MIN_WITHDRAWAL_USDT} USDT.`,
     };
   }
 
-  const payoutRate = getUsdtInrPayoutRate().rate;
-  const percentFee = (amountNumber * WITHDRAWAL_FEE_PERCENT) / 100;
-  const totalFee = WITHDRAWAL_FEE_USDT + percentFee;
-  const netUsdt = Math.max(amountNumber - totalFee, 0);
+  const payoutRate = decimal(getUsdtInrPayoutRate().rate);
+  const flatFee = decimal(WITHDRAWAL_FEE_USDT);
+  const percentFee = applyPercent(amount, decimal(WITHDRAWAL_FEE_PERCENT));
+  const totalFee = add(flatFee, percentFee);
+  const netUsdt = subtract(amount, totalFee);
 
-  if (netUsdt <= 0) {
+  // Not `Math.max(…, 0)`: a fee larger than the amount is a refusal, not a
+  // zero. Clamping it would have quoted a payout of ₹0 as if it were valid.
+  if (!isPositive(netUsdt)) {
     return { ok: false, message: "Fees exceed the amount requested." };
   }
 
   try {
     const quote = {
-      amountUsdt: money(amountNumber, 8),
-      payoutRate: money(payoutRate, 6),
-      flatFeeUsdt: money(WITHDRAWAL_FEE_USDT, 8),
-      percentFeeUsdt: money(percentFee, 8),
-      totalFeeUsdt: money(totalFee, 8),
-      netInr: money(netUsdt * payoutRate, 2),
+      amountUsdt: amount,
+      payoutRate,
+      flatFeeUsdt: flatFee,
+      percentFeeUsdt: percentFee,
+      totalFeeUsdt: totalFee,
+      netInr: multiplyByRate(netUsdt, payoutRate, INR_SCALE),
     };
 
     const actor: Actor = {
@@ -103,7 +132,8 @@ async function runRequestWithdrawal(input: {
           message: "User requested a payout; balance held",
           userId: account.userId,
           actor,
-          metadata: { amountUsdt: amountNumber, netInr: netUsdt * payoutRate },
+          // Exact strings, not recomputed floats — the same values the row stores.
+          metadata: { amountUsdt: quote.amountUsdt, netInr: quote.netInr },
         },
       () =>
         requestWithdrawal(

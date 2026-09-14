@@ -6,6 +6,7 @@ import { notFound } from "next/navigation";
 import { CircleCheck, Info } from "lucide-react";
 
 import { PageContainer } from "@/components/navigation/app-shell";
+import { AllocationReadiness } from "@/components/plans/allocation-readiness";
 import { InvestSheet } from "@/components/plans/invest-sheet";
 import { RiskIndicator } from "@/components/plans/risk-indicator";
 import { InfoRow } from "@/components/shared/info-row";
@@ -81,9 +82,23 @@ export default async function PlanDetailPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
+  /*
+   * `profile` as well as `balance`, because `InvestSheet` reads both.
+   *
+   * The slice list is a page's declaration of what its whole subtree consumes,
+   * and it had been trimmed to `balance` alone while the sheet still read
+   * `isVerified` — which resolves through `profile`. The store refuses an
+   * unprovided slice rather than defaulting it (see `missing()` in
+   * `prototype-store`), so every plan detail page threw on render. That refusal
+   * is correct and stays: a fabricated verification state on the screen that
+   * takes money is worse than a crash. What was wrong was the declaration.
+   *
+   * Both are read in the same wave as the plan, so this costs no extra round
+   * trip — `getUserSlices` resolves its loaders with `Promise.all`.
+   */
   const [plan, slices] = await Promise.all([
     getPlanBySlug(slug),
-    getUserSlices(["balance"] as const),
+    getUserSlices(["balance", "profile"] as const),
   ]);
   if (!plan) notFound();
 
@@ -180,6 +195,67 @@ export default async function PlanDetailPage({
             </div>
           </section>
 
+          {/* What this account can actually do with the plan */}
+          <AllocationReadiness />
+
+          {/* Rate tiers */}
+          {plan.rateTiers.length > 0 ? (
+            <section className="space-y-3">
+              <h2 className="text-base font-semibold tracking-tight">
+                Rate by allocation amount
+              </h2>
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                The projected return depends on how much you allocate. The rate
+                that applies is the one whose band your amount falls into — the
+                lower figure is included, the upper one is not, so exactly{" "}
+                {formatUsdt(plan.rateTiers[0].maxAmountUsdt ?? plan.minInvestment, {
+                  withSymbol: false,
+                })}{" "}
+                USDT falls into the next band up. Every figure is an estimated
+                total return over the plan&rsquo;s term and is not guaranteed.
+              </p>
+              {/*
+                A real table, inside its own horizontal scroll container. Three
+                columns fit at 360px; the container is what guarantees a longer
+                ladder never makes the page itself scroll sideways (§7).
+              */}
+              <div className="no-scrollbar overflow-x-auto rounded-2xl border border-border bg-card">
+                <table className="w-full min-w-[18rem] text-sm">
+                  <caption className="sr-only">
+                    Projected total return by allocation amount for {plan.name}
+                  </caption>
+                  <thead>
+                    <tr className="border-b border-border text-left">
+                      <th scope="col" className="px-4 py-3 text-xs font-medium text-muted-foreground">
+                        Allocation
+                      </th>
+                      <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-muted-foreground">
+                        Estimated return
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {plan.rateTiers.map((tier) => (
+                      <tr key={tier.id}>
+                        <th
+                          scope="row"
+                          className="tabular px-4 py-3 text-left font-medium"
+                        >
+                          {tier.maxAmountUsdt === null
+                            ? `${formatUsdt(tier.minAmountUsdt, { withSymbol: false })} USDT and above`
+                            : `${formatUsdt(tier.minAmountUsdt, { withSymbol: false })} – under ${formatUsdt(tier.maxAmountUsdt, { withSymbol: false })} USDT`}
+                        </th>
+                        <td className="tabular px-4 py-3 text-right font-semibold text-positive">
+                          {tier.ratePercent}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
+
           {/* How it works */}
           <section className="space-y-3">
             <h2 className="text-base font-semibold tracking-tight">How it works</h2>
@@ -219,11 +295,21 @@ export default async function PlanDetailPage({
                 <Bullets items={plan.riskNotes} />
               </div>
             </div>
+            {/*
+              This said "This is a demo build. No investment is actually created
+              and no funds are moved." That stopped being true when the
+              investment engine landed: allocating debits a real available
+              balance, writes a real ledger entry and locks real principal. A
+              screen that tells somebody their money is not moving while it
+              moves their money is the most damaging sentence this page could
+              carry, so it says what actually happens instead.
+            */}
             <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
               <Info className="mt-px size-3 shrink-0" aria-hidden />
               <span>
-                This is a demo build. No investment is actually created and no funds
-                are moved.
+                Allocating moves real funds: your available balance is debited and the
+                principal is locked for the plan&rsquo;s term. Returns are estimates, not
+                guarantees.
               </span>
             </p>
           </section>

@@ -10,6 +10,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/scripts/migrate.ts",
     "db:seed": "tsx src/db/scripts/seed.ts",
+    "db:backfill-tiers": "tsx src/db/scripts/backfill-plan-tiers.ts",
     "db:check": "tsx src/db/scripts/check.ts",
     "db:studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit",

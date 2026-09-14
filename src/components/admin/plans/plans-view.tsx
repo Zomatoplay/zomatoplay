@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Layers, PencilLine, Plus, Power, PowerOff } from "lucide-react";
+import { Layers, PencilLine, Plus, Power, PowerOff, SlidersHorizontal } from "lucide-react";
 
 import { AdminHeader } from "@/components/admin/layout/admin-header";
 import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
@@ -9,6 +9,7 @@ import { AdminStatusBadge } from "@/components/admin/shared/admin-status-badge";
 import { ConfirmActionDialog } from "@/components/admin/shared/confirm-action-dialog";
 import { PermissionGate } from "@/components/admin/shared/permission-gate";
 import { PlanFormSheet } from "@/components/admin/plans/plan-form-sheet";
+import { PlanTiersSheet } from "@/components/admin/plans/plan-tiers-sheet";
 import { EmptyState } from "@/components/shared/empty-state";
 import { RiskNote } from "@/components/shared/notices";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ import { useAdminStore } from "@/lib/admin-store";
 import { useAdminAction } from "@/components/admin/shared/use-admin-action";
 import {
   createPlanAction,
+  savePlanTiersAction,
   setPlanDisabledAction,
   updatePlanAction,
 } from "@/app/admin/actions";
@@ -54,10 +56,22 @@ export function PlansView() {
 
 function PlansManager() {
   const store = useAdminStore();
-  const { run } = useAdminAction();
+  const { run, pending } = useAdminAction();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<AdminPlan | null>(null);
+  const [tiering, setTiering] = useState<AdminPlan | null>(null);
   const [toggling, setToggling] = useState<AdminPlan | null>(null);
+
+  /*
+   * Re-read from the store rather than holding the plan the button captured.
+   *
+   * `router.refresh()` after a save hands the page a new `plans` array, and a
+   * sheet still holding the old object would show the ladder as it was before
+   * the save — which reads as the save having failed.
+   */
+  const tieringPlan = tiering
+    ? (store.plans.find((plan) => plan.id === tiering.id) ?? tiering)
+    : undefined;
 
   const allowed = canManage(store.session, "plans");
 
@@ -96,6 +110,7 @@ function PlansManager() {
                 plan={plan}
                 allowed={allowed}
                 onEdit={() => setEditing(plan)}
+                onTiers={() => setTiering(plan)}
                 onToggle={() => setToggling(plan)}
               />
             </li>
@@ -121,6 +136,19 @@ function PlansManager() {
           if (!editing) return;
           run(() => updatePlanAction({ planId: editing.id, plan: draft }), {
             onSuccess: () => setEditing(null),
+          });
+        }}
+      />
+
+      <PlanTiersSheet
+        plan={tieringPlan}
+        open={tiering !== null}
+        onOpenChange={(open) => !open && setTiering(null)}
+        pending={pending}
+        onSubmit={({ tiers, reason }) => {
+          if (!tiering) return;
+          run(() => savePlanTiersAction({ planId: tiering.id, tiers, reason }), {
+            onSuccess: () => setTiering(null),
           });
         }}
       />
@@ -184,11 +212,13 @@ function PlanCard({
   plan,
   allowed,
   onEdit,
+  onTiers,
   onToggle,
 }: {
   plan: AdminPlan;
   allowed: boolean;
   onEdit: () => void;
+  onTiers: () => void;
   onToggle: () => void;
 }) {
   const disabled = plan.status === "disabled";
@@ -245,6 +275,47 @@ function PlanCard({
         </div>
       ) : null}
 
+      {/*
+        The ladder, on the card. An operator deciding whether to edit a plan's
+        rates needs to see what they currently are, and a card that showed only
+        the headline percentage made a three-band plan look like a one-rate
+        one. Inactive bands are shown too, marked — they are configuration that
+        still exists.
+      */}
+      <div className="mt-3 border-t border-border pt-3">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          Rate tiers
+        </p>
+        {plan.rateTiers.length === 0 ? (
+          <p className="mt-1 text-xs text-muted-foreground">
+            None — every allocation is priced at {plan.estimatedReturnPercent}%.
+          </p>
+        ) : (
+          <ul className="mt-1.5 space-y-1">
+            {plan.rateTiers.map((tier) => (
+              <li
+                key={tier.id}
+                className="tabular flex items-baseline justify-between gap-3 text-xs"
+              >
+                <span className={cn("text-muted-foreground", !tier.active && "line-through")}>
+                  {tier.maxAmountUsdt === null
+                    ? `${formatUsdt(tier.minAmountUsdt, { withSymbol: false, compact: true })}+ USDT`
+                    : `${formatUsdt(tier.minAmountUsdt, { withSymbol: false, compact: true })}–${formatUsdt(tier.maxAmountUsdt, { withSymbol: false, compact: true })} USDT`}
+                </span>
+                <span className="font-medium">
+                  {tier.ratePercent}%
+                  {tier.active ? null : (
+                    <span className="ml-1 font-normal text-muted-foreground">
+                      inactive
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
       <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-border pt-3 text-xs text-muted-foreground">
         <span>
           <span className="tabular font-medium text-foreground">
@@ -272,7 +343,8 @@ function PlanCard({
         </span>
       </div>
 
-      <div className="mt-4 flex gap-2 pt-1">
+      {/* Wraps at 360px rather than squeezing three controls onto one row. */}
+      <div className="mt-4 flex flex-wrap gap-2 pt-1">
         <Button
           variant="outline"
           size="sm"
@@ -282,6 +354,16 @@ function PlanCard({
         >
           <PencilLine className="size-4" />
           Edit
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="flex-1"
+          disabled={!allowed}
+          onClick={onTiers}
+        >
+          <SlidersHorizontal className="size-4" />
+          Tiers
         </Button>
         <Button
           variant={disabled ? "brand" : "ghost"}

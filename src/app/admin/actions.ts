@@ -31,7 +31,17 @@ import {
   ignoreDeposit,
   reopenDeposit,
 } from "@/server/services/deposits.service";
-import { releaseDepositAddress } from "@/server/services/deposit-address.service";
+import {
+  addDepositAddress,
+  releaseDepositAddress,
+  retireDepositAddress,
+} from "@/server/services/deposit-address.service";
+import {
+  previewPlanRate,
+  savePlanRateTiers,
+  type TierDraft,
+  type TierPreview,
+} from "@/server/services/plan-tiers-write.service";
 import {
   approveWithdrawal,
   markWithdrawalPaid,
@@ -390,6 +400,34 @@ export async function releaseDepositAddressAction(input: {
     return { ok: true, message: "Address released back to the pool." };
   } catch (error) {
     return failed(error, "The address was not released.");
+  }
+}
+
+/**
+ * Retires a deposit address: out of rotation permanently, never claimable
+ * again, never deleted.
+ *
+ * The operation for replacing a receiving address. Releasing one instead looks
+ * right and is not: release returns it to `available`, and the pool is claimed
+ * in `createdAt` order, so the address being replaced is older than its
+ * replacement and gets handed straight back to the person who was supposed to
+ * stop using it.
+ *
+ * Same permission and same refusals as release — `manage` over `deposits`, and
+ * the service refuses any address with deposit activity still in flight.
+ */
+export async function retireDepositAddressAction(input: {
+  addressId: string;
+  reason: string;
+}): Promise<AdminActionResult> {
+  try {
+    const operator = await requirePermission("deposits");
+    const reason = requireReason(input.reason, "retire a deposit address");
+    await retireDepositAddress({ addressId: input.addressId, reason }, operator.actor);
+    revalidate("/admin/deposits", "/admin");
+    return { ok: true, message: "Address retired from rotation." };
+  } catch (error) {
+    return failed(error, "The address was not retired.");
   }
 }
 
@@ -1423,4 +1461,129 @@ export async function releaseCommissionAction(input: {
       }
     },
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Plan rate tiers                                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Saves a plan's whole rate ladder.
+ *
+ * `manage` over `plans`, the same grant that edits the plan itself — a band's
+ * percentage is the plan's commercial terms by another name, and splitting the
+ * two permissions would let somebody without plan access reprice every
+ * allocation made from tomorrow.
+ *
+ * The ladder is validated server-side in `savePlanRateTiers`, not here and not
+ * in the form: the form's checks are an affordance, and this action is the
+ * boundary an operator with a REST client would otherwise walk straight past.
+ */
+export async function savePlanTiersAction(input: {
+  planId: string;
+  tiers: TierDraft[];
+  reason?: string;
+}): Promise<AdminActionResult> {
+  try {
+    const operator = await requirePermission("plans");
+    const { saved } = await savePlanRateTiers(
+      { planId: input.planId, tiers: input.tiers, reason: input.reason },
+      operator.actor,
+    );
+
+    revalidate("/admin/plans", "/admin", "/plans");
+    // The public catalogue is cached across requests by tag, which a path
+    // revalidation does not reach (CLAUDE.md §16.9). Without this an operator's
+    // tier edit sits invisible to customers behind the 300s TTL.
+    revalidateCatalogue();
+    return {
+      ok: true,
+      message:
+        saved === 0
+          ? "Tiers removed. The plan is priced at its own estimated return."
+          : `${saved} tier${saved === 1 ? "" : "s"} saved. Existing allocations keep the rate they were sold at.`,
+    };
+  } catch (error) {
+    return failed(error, "The tiers were not saved.");
+  }
+}
+
+export interface TierPreviewResult {
+  ok: boolean;
+  message?: string;
+  preview?: TierPreview;
+}
+
+/**
+ * "What would this amount be sold at?" — answered by the pricing function
+ * itself.
+ *
+ * `view` is enough: it reads configuration and computes, and changes nothing.
+ * It deliberately calls `previewPlanRate`, which calls the same
+ * `resolveRateForAmount` an allocation goes through — a preview computed in the
+ * form would be a second implementation of the rule, and the only reason to
+ * have a preview is to see what the *real* one does.
+ */
+export async function previewPlanTierAction(input: {
+  planId: string;
+  amount: string;
+}): Promise<TierPreviewResult> {
+  try {
+    await requirePermission("plans", "view");
+    const preview = await previewPlanRate(input.planId, input.amount.trim());
+    return { ok: true, preview };
+  } catch (error) {
+    return {
+      ok: false,
+      message:
+        error instanceof Error ? error.message : "Could not price that amount.",
+    };
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Deposit addresses                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Adds an operator-provided receiving address to the pool.
+ *
+ * WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT
+ * ---------------------------------------------
+ * It writes one row to `deposit_addresses`. It is **not** an environment
+ * editor: `TRON_NETWORK`, the grid URL, the API key and `CRON_SECRET` are
+ * deployment configuration and no UI in this application reads or writes them.
+ * The address *pool* is the runtime-editable part, it has always been database-
+ * backed, and this is the missing write for it.
+ *
+ * It also never generates an address. Nothing in this codebase holds a private
+ * key, a seed or an xpub, and an address it generated would be one it could
+ * sign for — CLAUDE.md §18.8 for why that line is where it is. The operator
+ * produces the address with their own wallet tooling and pastes it here; only
+ * the address string ever arrives.
+ *
+ * The checksum is verified before the row exists. A mistyped address usually
+ * still looks like one — 34 characters starting with T — and a pool entry that
+ * can never receive anything is a customer sending real USDT into nothing.
+ */
+export async function addDepositAddressAction(input: {
+  address: string;
+  note?: string;
+}): Promise<AdminActionResult> {
+  try {
+    const operator = await requirePermission("deposits");
+    const result = await addDepositAddress(
+      { address: input.address.trim(), note: input.note },
+      operator.actor,
+    );
+    revalidate("/admin/deposits", "/admin/deposits/addresses", "/admin");
+    return {
+      ok: true,
+      message: result.created
+        ? "Address added to the pool. The scanner watches it from its next pass."
+        : "That address is already in the pool; nothing was changed.",
+    };
+  } catch (error) {
+    return failed(error, "The address was not added.");
+  }
 }

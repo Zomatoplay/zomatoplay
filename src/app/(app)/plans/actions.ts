@@ -37,6 +37,15 @@ export interface InvestResult {
   ok: boolean;
   message: string;
   investmentId?: string;
+  /**
+   * The rate the *server* resolved and actually applied, so the receipt shows
+   * what was charged rather than what the sheet had computed for display.
+   *
+   * It travels back, never in: there is no rate parameter on the way to
+   * `createInvestment`, which resolves the plan's ladder itself inside the
+   * allocation's transaction.
+   */
+  appliedRatePercent?: number;
 }
 
 export async function createInvestmentAction(input: {
@@ -69,7 +78,7 @@ export async function createInvestmentAction(input: {
     { name: "investment.create", actorType: "user", pipeline: "investment" },
     async () => {
     try {
-      const { investmentId } = await trackPipeline(
+      const { investmentId, appliedRatePercent } = await trackPipeline(
         {
           pipeline: "investment",
           operation: "investment.create.write",
@@ -86,7 +95,12 @@ export async function createInvestmentAction(input: {
           ),
       );
       revalidate("/", "/plans", "/wallet", "/settings/investments");
-      return { ok: true, message: "Investment created.", investmentId };
+      return {
+        ok: true,
+        message: "Investment created.",
+        investmentId,
+        appliedRatePercent,
+      };
     } catch (error) {
       return {
         ok: false,

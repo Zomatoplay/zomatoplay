@@ -1,6 +1,6 @@
 import "server-only";
 
-import { eq, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 
 import { applyPercent, compare, decimal, decimalFrom, numericValue, type Decimal } from "@/db/money";
 import * as t from "@/db/schema";
@@ -9,6 +9,11 @@ import { getDb } from "@/db";
 import { applyLedgerEntry, readBalance } from "../repositories/wallet.repository";
 import { accrueReferralCommission } from "./referrals-write.service";
 import { elapsedDaysFor, isOpenEnded, rewardScheduleFor } from "./investment-schedule";
+import {
+  PlanTierError,
+  resolveRateForAmount,
+  type PlanRateTier,
+} from "./plan-tiers";
 import { mutate, newId, withReason, SYSTEM_ACTOR, type Actor } from "../write";
 
 /**
@@ -31,7 +36,7 @@ export class InvestmentError extends Error {
 export async function createInvestment(
   request: { userId: string; planId: string; amount: Decimal },
   actor: Actor = SYSTEM_ACTOR,
-): Promise<{ investmentId: string; ledgerTxId: string }> {
+): Promise<{ investmentId: string; ledgerTxId: string; appliedRatePercent: number }> {
   return mutate(actor, async ({ tx, now, audit }) => {
     const [plan] = await tx
       .select()
@@ -85,6 +90,48 @@ export async function createInvestment(
     maturesAt.setUTCDate(maturesAt.getUTCDate() + plan.durationDays);
 
     /*
+     * THE RATE, RESOLVED SERVER-SIDE FROM THE PLAN'S OWN LADDER.
+     *
+     * Read inside this transaction, after the amount has been validated
+     * against the plan's limits, and never taken from the caller. The invest
+     * sheet shows a rate and a band while somebody types; that display is an
+     * affordance, and this is the boundary. A browser posting
+     * `amount=50, rate=99` supplies no rate at all — `createInvestment` takes
+     * a plan id and an amount, and there is no third parameter to lie in.
+     *
+     * A plan with no ladder resolves to its own `estimated_return_percent`,
+     * which is exactly what every allocation did before the ladder existed.
+     * A plan *with* a ladder and no band covering the amount is refused rather
+     * than quietly sold at the headline rate — see `resolveRateForAmount`.
+     */
+    const tierRows = await tx
+      .select()
+      .from(t.planRateTiers)
+      .where(eq(t.planRateTiers.planId, plan.id))
+      .orderBy(asc(t.planRateTiers.minAmountUsdt));
+
+    const tiers: PlanRateTier[] = tierRows.map((tier) => ({
+      id: tier.id,
+      minAmountUsdt: tier.minAmountUsdt,
+      maxAmountUsdt: tier.maxAmountUsdt,
+      ratePercent: tier.ratePercent,
+      active: tier.active,
+    }));
+
+    let resolvedRate;
+    try {
+      resolvedRate = resolveRateForAmount(plan, tiers, request.amount);
+    } catch (error) {
+      // The ladder's own refusal, re-thrown as the error type this service's
+      // callers already handle, so a configuration gap reads to the customer
+      // as a plain message rather than an unhandled failure.
+      if (error instanceof PlanTierError) {
+        throw new InvestmentError(error.message);
+      }
+      throw error;
+    }
+
+    /*
      * The projected profit — the total this allocation will actually be paid,
      * non-compounding, over its whole term (CLAUDE.md §10a) — computed here as
      * well as in the insert below.
@@ -98,7 +145,10 @@ export async function createInvestment(
      * 8-decimal scale — `decimal()` would correctly refuse most of them
      * (CLAUDE.md §17.2).
      */
-    const projectedProfit = applyPercent(request.amount, decimal(plan.estimatedReturnPercent));
+    const projectedProfit = applyPercent(
+      request.amount,
+      decimal(resolvedRate.ratePercent),
+    );
 
     /*
      * The schedule was never stamped, and that was a real gap.
@@ -142,6 +192,19 @@ export async function createInvestment(
       nextRewardAt: schedule.nextRewardAt,
       nextRewardAmount: schedule.nextRewardAmount,
       risk: plan.risk,
+      /*
+       * Which band priced this allocation, copied onto the row.
+       *
+       * `projected_profit` already records *what* it will be paid; these say
+       * *why*. A band can be edited, deactivated or deleted afterwards, so a
+       * join at read time would answer the question differently next month —
+       * which is the whole failure mode §10b exists to prevent, applied to
+       * the ladder. See the column comments in `db/schema/investments.ts`.
+       */
+      appliedTierId: resolvedRate.tierId,
+      appliedTierMinUsdt: resolvedRate.minAmountUsdt,
+      appliedTierMaxUsdt: resolvedRate.maxAmountUsdt,
+      appliedRatePercent: resolvedRate.ratePercent,
       createdAt: now,
       updatedAt: now,
     });
@@ -191,14 +254,28 @@ export async function createInvestment(
       action: "user_updated",
       target: { type: "user", id: request.userId, label: request.userId },
       details:
-        accruals.length > 0
-          ? `Allocated ${request.amount} USDT to ${plan.name}. Accrued pending referral ` +
-            `commission for ${accruals.length} beneficiar${accruals.length === 1 ? "y" : "ies"}.`
-          : `Allocated ${request.amount} USDT to ${plan.name}.`,
+        `Allocated ${request.amount} USDT to ${plan.name} at ` +
+        `${resolvedRate.ratePercent}% (${describeResolvedRate(resolvedRate)}).` +
+        (accruals.length > 0
+          ? ` Accrued pending referral commission for ${accruals.length} ` +
+            `beneficiar${accruals.length === 1 ? "y" : "ies"}.`
+          : ""),
     });
 
-    return { investmentId, ledgerTxId };
+    return { investmentId, ledgerTxId, appliedRatePercent: resolvedRate.ratePercent };
   });
+}
+
+/** `tier 50–100 USDT` / `the plan rate`. For audit prose only. */
+function describeResolvedRate(resolved: {
+  source: "tier" | "plan";
+  minAmountUsdt: number | null;
+  maxAmountUsdt: number | null;
+}): string {
+  if (resolved.source === "plan") return "the plan's own rate, no tier ladder";
+  return resolved.maxAmountUsdt === null
+    ? `tier ${resolved.minAmountUsdt}+ USDT`
+    : `tier ${resolved.minAmountUsdt}–${resolved.maxAmountUsdt} USDT`;
 }
 
 /**

@@ -230,6 +230,7 @@ async function clear(db: Database) {
   await db.delete(t.notificationCategories);
   await db.delete(t.vipLevels);
   await db.delete(t.depositNetworks);
+  await db.delete(t.planRateTiers);
   await db.delete(t.plans);
 }
 
@@ -290,6 +291,27 @@ export async function seedDatabase(db: Database): Promise<SeedReport> {
         updatedAt: admin ? date(admin.updatedAt) : new Date(),
       };
     }),
+  );
+
+  /*
+   * The rate ladders, derived in `@/data/plans` from each plan's own published
+   * range rather than typed out here — see `seedRateTiers` for why, and for
+   * what a band's percentage means (total return over the term, never a
+   * periodic rate).
+   */
+  report.plan_rate_tiers = await insertAll(
+    db,
+    t.planRateTiers,
+    catalogue.flatMap((plan) =>
+      plan.rateTiers.map((tier) => ({
+        id: tier.id,
+        planId: plan.id,
+        minAmountUsdt: tier.minAmountUsdt,
+        maxAmountUsdt: tier.maxAmountUsdt,
+        ratePercent: tier.ratePercent,
+        active: tier.active,
+      })),
+    ),
   );
 
   report.deposit_networks = await insertAll(

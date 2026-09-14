@@ -8,6 +8,10 @@
     {
       "path": "/api/cron/settle-investments",
       "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/release-commissions",
+      "schedule": "30 18 * * *"
     }
   ]
 }

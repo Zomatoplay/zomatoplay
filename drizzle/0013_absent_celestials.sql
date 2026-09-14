@@ -1,0 +1,1 @@
+ALTER TYPE "public"."audit_action" ADD VALUE 'deposit_address_added' BEFORE 'deposit_address_released';

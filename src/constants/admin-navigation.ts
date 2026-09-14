@@ -3,6 +3,7 @@ import {
   Banknote,
   BellRing,
   ClipboardList,
+  KeyRound,
   LayoutDashboard,
   Layers,
   ScrollText,
@@ -73,6 +74,13 @@ export const ADMIN_NAV: AdminNavItem[] = [
     href: "/admin/deposits",
     label: "Deposits",
     icon: Wallet,
+    permission: "deposits",
+    group: "Operations",
+  },
+  {
+    href: "/admin/deposits/addresses",
+    label: "Deposit addresses",
+    icon: KeyRound,
     permission: "deposits",
     group: "Operations",
   },
@@ -156,5 +164,21 @@ export const ADMIN_NAV_GROUPS = [
 /** True when `pathname` should highlight `item` in the admin navigation. */
 export function isAdminNavItemActive(item: AdminNavItem, pathname: string) {
   if (item.href === "/admin") return pathname === "/admin";
-  return pathname === item.href || pathname.startsWith(`${item.href}/`);
+  if (pathname === item.href) return true;
+  if (!pathname.startsWith(`${item.href}/`)) return false;
+
+  /*
+   * The most specific entry wins, and only it.
+   *
+   * `/admin/deposits/addresses` is a prefix match for `/admin/deposits` as
+   * well as for itself, so a plain `startsWith` lights two sidebar entries at
+   * once — and `aria-current="page"` on two links tells a screen-reader user
+   * they are in two places. Only the longest matching destination is current.
+   */
+  return !ADMIN_NAV.some(
+    (other) =>
+      other.href !== item.href &&
+      other.href.length > item.href.length &&
+      (pathname === other.href || pathname.startsWith(`${other.href}/`)),
+  );
 }

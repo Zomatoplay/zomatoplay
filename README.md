@@ -26,12 +26,17 @@ PostgreSQL 14+, local or managed.
 ```bash
 cp .env.example .env.local     # then set DATABASE_URL
 npm run db:migrate             # apply drizzle/*.sql
+npm run db:secure              # RLS + the KYC document bucket — run after every migration
 npm run db:seed                # load the development data
 npm run db:check               # connected? migrated? seeded?
 ```
 
-Reads then come from PostgreSQL. Writes are deliberately not implemented — see
-CLAUDE.md §2 and §16.
+Reads **and writes** both go to PostgreSQL — see CLAUDE.md §2, §16 and §17.
+
+On a database that has been migrated but not reseeded,
+`npm run db:backfill-tiers` gives each seeded plan the rate ladder from
+`@/data/plans`. It is idempotent and never touches a plan that already has
+one.
 
 `.env.local` is git-ignored. Never put a connection string in source.
 

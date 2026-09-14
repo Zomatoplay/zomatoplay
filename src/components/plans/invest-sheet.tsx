@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Loader2, ShieldAlert } from "lucide-react";
+import { ArrowDownToLine, CheckCircle2, Loader2, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { InfoRow } from "@/components/shared/info-row";
@@ -59,10 +59,48 @@ export function InvestSheet({
   const [stage, setStage] = useState<Stage>("amount");
   const [rawAmount, setRawAmount] = useState("");
   const [confirmedAmount, setConfirmedAmount] = useState(0);
+  const [confirmedRate, setConfirmedRate] = useState<number | null>(null);
   const [pending, startTransition] = useTransition();
 
   const amount = Number.parseFloat(rawAmount);
   const maxAllowed = Math.min(plan.maxInvestment, balance.available);
+
+  /*
+   * Which band the typed amount falls into, for display only.
+   *
+   * The rule is the same half-open `[min, max)` one the server applies, so the
+   * figure shown and the figure charged agree — but this is an affordance and
+   * not an authority. `createInvestment` reads the ladder from `plan_rate_tiers`
+   * inside its own transaction and resolves the band again; the browser sends
+   * a plan id and an amount and has no field in which to name a rate. A person
+   * editing this component's state, or posting the action by hand, changes
+   * what they are *shown* and nothing about what they are charged.
+   */
+  const tier = useMemo(() => {
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    return (
+      plan.rateTiers.find(
+        (candidate) =>
+          candidate.active &&
+          amount >= candidate.minAmountUsdt &&
+          (candidate.maxAmountUsdt === null || amount < candidate.maxAmountUsdt),
+      ) ?? null
+    );
+  }, [amount, plan.rateTiers]);
+
+  const hasLadder = plan.rateTiers.some((candidate) => candidate.active);
+  // No ladder → the plan's own headline rate, exactly as the server resolves it.
+  const applicableRate = tier ? tier.ratePercent : hasLadder ? null : plan.estimatedReturnPercent;
+
+  /**
+   * Not enough funds, specifically — kept apart from the other errors because
+   * it is the only one with an action attached. A person 5 USDT short needs a
+   * way to deposit, not a red sentence.
+   */
+  const shortfall =
+    Number.isFinite(amount) && amount > 0 && amount > balance.available
+      ? amount - balance.available
+      : null;
 
   const error = useMemo(() => {
     if (rawAmount.trim() === "") return null;
@@ -71,13 +109,25 @@ export function InvestSheet({
       return `Minimum allocation is ${formatUsdt(plan.minInvestment)}.`;
     if (amount > plan.maxInvestment)
       return `Maximum allocation is ${formatUsdt(plan.maxInvestment)}.`;
-    if (amount > balance.available)
-      return `You only have ${formatUsdt(balance.available)} available.`;
+    if (amount > balance.available) return "Insufficient USDT balance.";
+    // A ladder that cannot price the amount is a refusal the server will make
+    // too; saying so here means nobody reaches the confirm step to find out.
+    if (hasLadder && !tier)
+      return `No rate tier covers ${formatUsdt(amount)} for this plan.`;
     return null;
-  }, [rawAmount, amount, plan.minInvestment, plan.maxInvestment, balance.available]);
+  }, [
+    rawAmount,
+    amount,
+    plan.minInvestment,
+    plan.maxInvestment,
+    balance.available,
+    hasLadder,
+    tier,
+  ]);
 
   const valid = rawAmount.trim() !== "" && error === null;
-  const projectedProfit = valid ? (amount * plan.estimatedReturnPercent) / 100 : 0;
+  const projectedProfit =
+    valid && applicableRate !== null ? (amount * applicableRate) / 100 : 0;
 
   const maturity = useMemo(() => {
     if (plan.durationDays === 0) return null;
@@ -90,6 +140,7 @@ export function InvestSheet({
     setStage("amount");
     setRawAmount("");
     setConfirmedAmount(0);
+    setConfirmedRate(null);
   }
 
   function handleOpenChange(next: boolean) {
@@ -114,9 +165,12 @@ export function InvestSheet({
         return;
       }
 
-      // The receipt reads from what was sent, not from the store: the store is
-      // a snapshot from before this write and only catches up on the refresh.
+      // The receipt reads from what was sent and from what the *server*
+      // resolved, not from the store: the store is a snapshot from before this
+      // write, and the rate shown here should be the one actually applied
+      // rather than the one this component computed for display.
       setConfirmedAmount(requested);
+      setConfirmedRate(result.appliedRatePercent ?? null);
       setStage("done");
       toast.success("Investment created", {
         description: `${formatUsdt(requested)} allocated to ${plan.name}.`,
@@ -214,6 +268,47 @@ export function InvestSheet({
                 </p>
               </div>
 
+              {/*
+                The insufficient-balance state, with the one action that
+                resolves it.
+
+                Nothing is debited, no allocation is created and no commission
+                accrues — the confirm button is disabled and the server refuses
+                the same case independently (`readBalance` inside
+                `createInvestment`'s transaction, compared as exact decimals).
+                This only makes the shortfall legible and offers the deposit
+                screen instead of leaving somebody to find it.
+              */}
+              {shortfall !== null ? (
+                <div className="space-y-3 rounded-xl border border-warning/40 bg-warning/8 p-4">
+                  <p className="text-sm font-medium">Insufficient USDT balance</p>
+                  <dl className="space-y-1 text-xs">
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted-foreground">Available</dt>
+                      <dd className="tabular font-medium">
+                        {formatUsdt(balance.available)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted-foreground">Required</dt>
+                      <dd className="tabular font-medium">{formatUsdt(amount)}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted-foreground">Short by</dt>
+                      <dd className="tabular font-medium text-destructive">
+                        {formatUsdt(shortfall)}
+                      </dd>
+                    </div>
+                  </dl>
+                  <Button asChild variant="outline" size="sm" block>
+                    <Link href="/wallet/deposit">
+                      <ArrowDownToLine className="size-4" aria-hidden />
+                      Deposit USDT
+                    </Link>
+                  </Button>
+                </div>
+              ) : null}
+
               <div className="flex flex-wrap gap-2">
                 {QUICK_FRACTIONS.map((fraction) => {
                   const value = Math.floor(maxAllowed * fraction * 100) / 100;
@@ -233,10 +328,26 @@ export function InvestSheet({
               </div>
 
               <div className="divide-y divide-border rounded-xl border border-border px-4">
+                {hasLadder ? (
+                  <InfoRow
+                    label="Applicable tier"
+                    value={tier ? describeTier(tier) : "—"}
+                    hint={
+                      tier
+                        ? undefined
+                        : "Enter an amount inside one of the plan's tiers."
+                    }
+                  />
+                ) : null}
                 <InfoRow
-                  label="Estimated return"
-                  value={`${plan.estimatedReturnPercent}%`}
-                  hint={`Range ${plan.estimatedReturnRange[0]}%–${plan.estimatedReturnRange[1]}%`}
+                  label={hasLadder ? "Rate for this amount" : "Estimated return"}
+                  value={applicableRate !== null ? `${applicableRate}%` : "—"}
+                  hint={
+                    // The projected range stays adjacent to every rate figure:
+                    // a single percentage with no range beside it reads as a
+                    // promise, which is exactly what CLAUDE.md §10 forbids.
+                    `Estimated total return over the term · range ${plan.estimatedReturnRange[0]}%–${plan.estimatedReturnRange[1]}%`
+                  }
                 />
                 <InfoRow
                   label="Projected profit"
@@ -297,6 +408,12 @@ export function InvestSheet({
 
               <div className="divide-y divide-border rounded-xl border border-border px-4">
                 <InfoRow label="Plan" value={plan.name} />
+                {tier ? <InfoRow label="Applicable tier" value={describeTier(tier)} /> : null}
+                <InfoRow
+                  label="Rate"
+                  value={applicableRate !== null ? `${applicableRate}%` : "—"}
+                  hint={`Estimated, not guaranteed · range ${plan.estimatedReturnRange[0]}%–${plan.estimatedReturnRange[1]}%`}
+                />
                 <InfoRow
                   label="Term"
                   value={
@@ -375,6 +492,13 @@ export function InvestSheet({
                   value={formatUsdt(confirmedAmount)}
                   hint={formatUsdtAsInr(confirmedAmount)}
                 />
+                {confirmedRate !== null ? (
+                  <InfoRow
+                    label="Rate applied"
+                    value={`${confirmedRate}%`}
+                    hint="Estimated total return over the term, not guaranteed"
+                  />
+                ) : null}
                 {maturity ? (
                   <InfoRow label="Matures" value={formatDate(maturity)} />
                 ) : null}
@@ -394,4 +518,14 @@ export function InvestSheet({
       </SheetContent>
     </Sheet>
   );
+}
+
+/** `50–100 USDT` / `100+ USDT`. The band, as a person reads it. */
+function describeTier(tier: Plan["rateTiers"][number]): string {
+  return tier.maxAmountUsdt === null
+    ? `${formatUsdt(tier.minAmountUsdt, { withSymbol: false })}+ USDT`
+    : `${formatUsdt(tier.minAmountUsdt, { withSymbol: false })}–${formatUsdt(
+        tier.maxAmountUsdt,
+        { withSymbol: false },
+      )} USDT`;
 }

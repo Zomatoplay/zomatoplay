@@ -54,6 +54,7 @@ type Row<T extends { $inferSelect: unknown }> = T["$inferSelect"];
 type UserRow = Row<typeof schema.users>;
 type WalletRow = Row<typeof schema.walletBalances>;
 type PlanRow = Row<typeof schema.plans>;
+type PlanRateTierRow = Row<typeof schema.planRateTiers>;
 type InvestmentRow = Row<typeof schema.investments>;
 type TransactionRow = Row<typeof schema.transactions>;
 type DepositRow = Row<typeof schema.deposits>;
@@ -177,8 +178,35 @@ export function toDepositNetwork(network: DepositNetworkRow): DepositNetwork {
  * those rows out rather than translating them, because "disabled" means
  * withdrawn from the app entirely, not closed to new money.
  */
-export function toPlan(plan: PlanRow): Plan {
+/** One rate band, as both applications' screens read it. */
+export function toPlanRateTierView(tier: PlanRateTierRow) {
   return {
+    id: tier.id,
+    minAmountUsdt: tier.minAmountUsdt,
+    maxAmountUsdt: tier.maxAmountUsdt,
+    ratePercent: tier.ratePercent,
+    active: tier.active,
+  };
+}
+
+/**
+ * A plan, with its rate ladder attached.
+ *
+ * The ladder arrives as a second argument rather than being joined into the
+ * row: `plans` is read four different ways (public catalogue, CRM catalogue,
+ * a single plan inside `createInvestment`'s transaction) and only two of them
+ * want the bands. Defaulting to an empty ladder is what keeps every existing
+ * caller correct — a plan with no bands is priced by its own rate, which is
+ * exactly the behaviour every plan had before the ladder existed.
+ */
+export function toPlan(plan: PlanRow, tiers: PlanRateTierRow[] = []): Plan {
+  return {
+    // Inactive bands are filtered out here and not in the query: the CRM reads
+    // the same rows and needs them. A customer has no use for a band that
+    // cannot price their money.
+    rateTiers: tiers
+      .filter((tier) => tier.active)
+      .map(toPlanRateTierView),
     id: plan.id,
     slug: plan.slug,
     name: plan.name,
@@ -371,8 +399,13 @@ export function toAdminUser(user: UserRow, wallet: WalletRow | null): AdminUser 
   };
 }
 
-export function toAdminPlan(plan: PlanRow): AdminPlan {
+export function toAdminPlan(
+  plan: PlanRow,
+  tiers: PlanRateTierRow[] = [],
+): AdminPlan {
   return {
+    // Every band, inactive included: an operator edits what is there.
+    rateTiers: tiers.map(toPlanRateTierView),
     id: plan.id,
     slug: plan.slug,
     name: plan.name,
@@ -580,6 +613,8 @@ export function toAdminCommissionEntry(
     sourcePlanName: entry.sourcePlanName,
     createdAt: iso(entry.createdAt),
     status: entry.status,
+    releaseAt: entry.releaseAt ? iso(entry.releaseAt) : null,
+    releasedAt: entry.releasedAt ? iso(entry.releasedAt) : null,
   };
 }
 

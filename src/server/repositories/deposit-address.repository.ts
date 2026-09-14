@@ -3,16 +3,25 @@ import "server-only";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 
 import * as t from "@/db/schema";
-import type { Tx } from "@/db";
+import type { Database, Tx } from "@/db";
 
 /**
  * The deposit-address pool's data access.
  *
- * Everything here runs inside the caller's transaction (`Tx`, not `Database`)
- * because allocation has to be atomic with the decision that preceded it —
- * "does this user already have one" and "claim one for them" must happen as a
- * single unit, or two concurrent requests for the same new user can each pass
- * the first check and each claim a different address.
+ * Everything that *changes* anything runs inside the caller's transaction
+ * (`Tx`, not `Database`) because allocation has to be atomic with the decision
+ * that preceded it — "does this user already have one" and "claim one for
+ * them" must happen as a single unit, or two concurrent requests for the same
+ * new user can each pass the first check and each claim a different address.
+ *
+ * `findAssignedAddress` is the one exception, and it takes `Tx | Database`
+ * rather than widening the rule. It is a pure read of a fact that, once true,
+ * is only ever changed by an explicit operator release or retirement — so
+ * asking it outside a transaction cannot race anything. The service uses that
+ * to answer the overwhelmingly common "this user already has an address" case
+ * in one round trip instead of four; see the fast path in
+ * `getOrCreateDepositAddress`. It is still called *again* inside the
+ * transaction, under the advisory lock, on the path that actually claims.
  */
 
 export type DepositAddressRow = typeof t.depositAddresses.$inferSelect;
@@ -23,9 +32,14 @@ export interface PoolTarget {
   asset: (typeof t.depositAssetEnum.enumValues)[number];
 }
 
-/** The user's current active address for this chain/network/asset, if any. */
+/**
+ * The user's current active address for this chain/network/asset, if any.
+ *
+ * Accepts a plain `Database` as well as a `Tx` — see the note at the top of
+ * this file for why that is safe for this read and this read only.
+ */
 export async function findAssignedAddress(
-  tx: Tx,
+  tx: Tx | Database,
   userId: string,
   target: PoolTarget,
 ): Promise<DepositAddressRow | null> {
@@ -182,20 +196,7 @@ export async function releaseDepositAddress(
     throw new AddressReleaseError("Only an assigned address can be released.");
   }
 
-  const [unresolved] = await tx
-    .select({ count: sql<number>`count(*)::int` })
-    .from(t.deposits)
-    .where(
-      and(
-        eq(t.deposits.walletAddress, row.address),
-        sql`${t.deposits.status} in ('pending', 'confirming', 'confirmed')`,
-      ),
-    );
-  if ((unresolved?.count ?? 0) > 0) {
-    throw new AddressReleaseError(
-      "This address has unresolved deposit activity and cannot be released.",
-    );
-  }
+  await assertNoUnresolvedDeposits(tx, row.address, "released");
 
   const [updated] = await tx
     .update(t.depositAddresses)
@@ -208,6 +209,108 @@ export async function releaseDepositAddress(
     .where(and(eq(t.depositAddresses.id, addressId), eq(t.depositAddresses.status, "assigned")))
     .returning();
   if (!updated) throw new AddressReleaseError("That address changed while releasing it.");
+  return updated;
+}
+
+/**
+ * The safety check both un-assignment paths share.
+ *
+ * Extracted rather than copied: "an address with deposit activity still in
+ * flight must not leave its owner" is one rule, and a second copy of it is a
+ * second thing to forget to update. `pending`, `confirming` and an unassigned
+ * `confirmed` all mean blockchain activity nobody has resolved yet.
+ */
+async function assertNoUnresolvedDeposits(
+  tx: Tx,
+  address: string,
+  verb: "released" | "retired",
+): Promise<void> {
+  const [unresolved] = await tx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(t.deposits)
+    .where(
+      and(
+        eq(t.deposits.walletAddress, address),
+        sql`${t.deposits.status} in ('pending', 'confirming', 'confirmed')`,
+      ),
+    );
+  if ((unresolved?.count ?? 0) > 0) {
+    throw new AddressReleaseError(
+      `This address has unresolved deposit activity and cannot be ${verb}.`,
+    );
+  }
+}
+
+/**
+ * Retires an address: out of rotation, permanently, without deleting it.
+ *
+ * WHY THIS IS NOT `releaseDepositAddress`
+ * ---------------------------------------
+ * Release returns an address to `available`, which is right when an address
+ * should go back into circulation. It is wrong when the address is being
+ * *replaced* — because `claimAvailableAddress` orders the pool by `createdAt`,
+ * an older released address is handed straight back to the next caller, which
+ * is exactly the person who was supposed to stop using it. Retiring is the
+ * operation that has no such trap: `retired` is not `available`, so nothing
+ * claims it, ever.
+ *
+ * WHAT IS DELIBERATELY KEPT
+ * -------------------------
+ * The row, the address, and `user_id`. Retiring is not a deletion and not an
+ * erasure of who held the address — that is history an operator may need when
+ * a late transfer to it turns up. What removes it from every live path is the
+ * status alone, and that is enough because all three of them filter on it:
+ * `claimAvailableAddress` wants `available`, `findAssignedAddress` and
+ * `findOwnerOfAddress` want `assigned`. So a retired address is never handed
+ * out, never shown as somebody's current address, and never auto-credited —
+ * while `listWatchedAddresses` returns rows of every status, so the scanner
+ * keeps watching it and a stray transfer still surfaces in the operator queue
+ * instead of vanishing. That is the behaviour the `deposit_addresses` doc
+ * comment describes; this is the function that finally produces it.
+ *
+ * Accepts `assigned` and `available` alike — an address can need withdrawing
+ * from rotation whether or not somebody currently holds it — and refuses one
+ * that is already `retired`, because a second retirement would rewrite
+ * `released_at` and lose when it actually left.
+ */
+export async function retireDepositAddress(
+  tx: Tx,
+  addressId: string,
+  now: Date,
+): Promise<DepositAddressRow> {
+  const [row] = await tx
+    .select()
+    .from(t.depositAddresses)
+    .where(eq(t.depositAddresses.id, addressId))
+    .limit(1)
+    .for("update");
+  if (!row) throw new AddressReleaseError(`No deposit address ${addressId}.`);
+  if (row.status === "retired") {
+    throw new AddressReleaseError("That address is already retired.");
+  }
+
+  // The same rule release enforces, on the same code path.
+  await assertNoUnresolvedDeposits(tx, row.address, "retired");
+
+  const [updated] = await tx
+    .update(t.depositAddresses)
+    .set({
+      status: "retired",
+      // When it left rotation. `assigned_at` and `user_id` are untouched, so
+      // the row still says who held it and from when.
+      releasedAt: now,
+      updatedAt: now,
+    })
+    // The status observed under the lock, re-asserted — so two operators
+    // retiring at once produce one retirement and one clear refusal.
+    .where(
+      and(
+        eq(t.depositAddresses.id, addressId),
+        eq(t.depositAddresses.status, row.status),
+      ),
+    )
+    .returning();
+  if (!updated) throw new AddressReleaseError("That address changed while retiring it.");
   return updated;
 }
 

@@ -225,7 +225,45 @@ export const adminReferralAccounts: AdminReferralAccount[] = [
   },
 ];
 
-export const adminCommissionLedger: AdminCommissionEntry[] = [
+/**
+ * The commission ledger fixture's release schedule.
+ *
+ * `release_at` is stamped at accrual in the real path, from the operator's
+ * `payoutDelayDays` and the business calendar (`@/lib/business-time`).
+ * Repeated here rather than imported so `@/data` keeps its one-way dependency —
+ * the seed script reads this module, and a fixture reaching back into
+ * application code is how a seed comes to depend on the thing it is seeding.
+ * Three days and UTC+05:30, for fixture rows only.
+ *
+ * A `credited` fixture is shown as released on its scheduled date, which is
+ * what the nightly job would have done. A `pending` or `reversed` one has no
+ * release timestamp, because it was never paid.
+ */
+const FIXTURE_PAYOUT_DELAY_DAYS = 3;
+const IST_OFFSET_MS = 330 * 60_000;
+const DAY_MS = 86_400_000;
+
+function fixtureReleaseAt(createdAt: string): string {
+  const shifted = new Date(createdAt).getTime() + IST_OFFSET_MS;
+  const midnight =
+    Math.floor(shifted / DAY_MS) * DAY_MS + FIXTURE_PAYOUT_DELAY_DAYS * DAY_MS;
+  return new Date(midnight - IST_OFFSET_MS).toISOString();
+}
+
+function withReleaseSchedule(
+  entries: Array<Omit<AdminCommissionEntry, "releaseAt" | "releasedAt">>,
+): AdminCommissionEntry[] {
+  return entries.map((entry) => {
+    const releaseAt = fixtureReleaseAt(entry.createdAt);
+    return {
+      ...entry,
+      releaseAt,
+      releasedAt: entry.status === "credited" ? releaseAt : null,
+    };
+  });
+}
+
+export const adminCommissionLedger: AdminCommissionEntry[] = withReleaseSchedule([
   {
     id: "COM-31084",
     beneficiaryUserId: "usr_3a72fc",
@@ -413,7 +451,7 @@ export const adminCommissionLedger: AdminCommissionEntry[] = [
     createdAt: "2026-07-01T17:35:00.000Z",
     status: "credited",
   },
-];
+]);
 
 export function getReferralAccount(userId: string): AdminReferralAccount | undefined {
   return adminReferralAccounts.find((a) => a.userId === userId);

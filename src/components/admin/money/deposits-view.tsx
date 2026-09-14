@@ -382,7 +382,22 @@ function TxLink({ deposit }: { deposit: AdminDeposit }) {
   ];
 
   return (
-    <AdminSection className="space-y-4">
+    <AdminSection
+      className="space-y-4"
+      actions={
+        /*
+          The pool behind this queue. An operator looking at an unattributed
+          deposit and asking "whose address is that?" has one route to the
+          answer, rather than having to find it in the sidebar.
+        */
+        <Button asChild variant="outline" size="sm">
+          <Link href="/admin/deposits/addresses">
+            <Wallet className="size-4" />
+            Deposit addresses
+          </Link>
+        </Button>
+      }
+    >
       <PrototypeNote>
         Deposits are detected from real TRC-20 transfers on the TRON network the
         deployment is configured for — mainnet included — recorded in the

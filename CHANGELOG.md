@@ -4,6 +4,427 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-09-14 (Plan rate tiers, deposit confirmation, address management, automatic commission release)
+
+Four features, one migration (`0012`) plus an enum addition (`0013`).
+
+### Plan amount/rate tiers
+
+`plan_rate_tiers` — one row per amount band per plan, with a `[min, max)`
+half-open range, a rate, an active flag and three `CHECK` constraints Postgres
+enforces (lower bound non-negative, upper bound above lower, rate above zero).
+The top band's `max_amount_usdt` is null, meaning open-ended.
+
+**A band's percentage means what `plans.estimated_return_percent` means:
+projected TOTAL return over the plan's whole term, not a periodic rate.** This
+was checked against the earnings engine rather than assumed:
+`createInvestment` applies the rate once via `applyPercent()` to produce
+`investments.projected_profit`, and `creditDueEarnings` then divides *that
+total* across the periods `reward_frequency` defines (§10a). There is no
+conversion between a per-period rate and a total anywhere in the codebase, and
+none was invented — introducing one would have silently repriced every plan.
+
+- **Resolution** — `src/server/services/plan-tiers.ts`: pure, `server-only`, no
+  database. Every comparison goes through `compare()` from `@/db/money`, so
+  `49.99` and `50.00` land on opposite sides of a boundary exactly rather than
+  approximately. 22 unit tests cover 9.99 / 10 / 10.01 / 49.99 / 50 / 50.01 /
+  99.99 / 100 / 100.01, the 1e-8 step either side of each boundary, large
+  amounts, inactive bands, overlap, gaps, duplicate bounds, inverted and
+  zero-width bands, zero and negative rates, and a mid-ladder open-ended band.
+- **Three outcomes, and the middle one matters**: no ladder → the plan's own
+  rate (which is why adding this changed nothing about existing plans); a band
+  covers the amount → that band's rate; a ladder exists but no band covers the
+  amount → **a refusal**, never a silent fall back to the headline rate.
+- **Writes** — `savePlanRateTiers` saves the whole ladder in one transaction.
+  Band-at-a-time editing was rejected: contiguity is a property of the set, so
+  moving one boundary is invalid until its neighbour moves, and an allocation
+  arriving mid-edit would be priced against a half-written table. Existing
+  rows are updated by id rather than deleted and re-inserted, so a band keeps
+  the id an allocation recorded.
+- **Preview** — `/admin/plans → Tiers → Test an amount` calls
+  `previewPlanRate`, which calls the same `resolveRateForAmount` a real
+  allocation does. There is no second implementation in the form.
+
+### Historical allocations are protected, and the protection is tested
+
+`investments` gained `applied_tier_id`, `applied_tier_min_usdt`,
+`applied_tier_max_usdt` and `applied_rate_percent`, written at
+`createInvestment` from the band it resolved. `applied_tier_id` is deliberately
+**not** a foreign key: a deleted band must not take the evidence with it.
+
+Asserted against the live database: an allocation made at 2% keeps its rate and
+its `projected_profit` after the band is edited to 4%; the next allocation gets
+4%; and deleting the band entirely leaves the earlier allocation's snapshot
+intact. Same rule as §10b, extended from the plan's headline rate to the
+ladder.
+
+### The client cannot set the rate
+
+`createInvestment` takes a plan id and an amount. There is no rate parameter to
+forge — the ladder is read from `plan_rate_tiers` inside the allocation's own
+transaction. The invest sheet shows a band and a rate while somebody types;
+that is an affordance, and the receipt afterwards shows the rate the *server*
+returned rather than the one the sheet computed.
+
+### Plans are investable from the browse screen
+
+`PlanCard` now carries the `InvestSheet` CTA and the rate ladder. Previously
+the only route to allocating was the detail page, so the plans list showed
+products with no way to buy one. The same component is used in both places —
+one investment flow, not a second shorter one that could drift.
+
+The plan detail page gained a rate-tier table, and the invest sheet now shows
+the applicable tier, the rate for the entered amount, and — when the balance is
+short — the shortfall with a **Deposit USDT** action, instead of a red
+sentence.
+
+### New-deposit confirmation
+
+`deposits.acknowledged_at`. "New" is `status = 'credited' and acknowledged_at
+is null` — a database fact, not `localStorage`, which would have re-announced a
+three-week-old deposit on every new device and every cleared cache.
+
+The card shows the amount, network, token, transaction reference,
+confirmations, credit time (UTC-labelled) and the resulting balance, with
+**View wallet** / **Invest now** / **Dismiss**. It appears on `/wallet/deposit`
+(from the watcher's existing 5 s poll — no second timer) and on `/wallet`
+(server-rendered, because a deposit credited by the background cron is found by
+whichever screen is opened next).
+
+- Only a **credited** deposit is ever announced. A detected or confirming
+  transfer shows its status in the watcher and nothing more: a card saying
+  "added to your wallet" while the balance has not moved is worse than no card.
+- Acknowledgement is one-way, owner-scoped and idempotent — all three in the
+  `UPDATE`'s `WHERE` clause, so a forged id matches no row and a double-tap
+  does nothing.
+- The migration **backfilled every already-credited deposit as acknowledged**,
+  so nobody is shown their entire deposit history as fresh arrivals on the
+  first load after deploy.
+- The background scanner is untouched. This is presentation over what the
+  existing pipeline credited.
+
+### Admin deposit-address management
+
+`/admin/deposits/addresses`. The server side already existed and was audited;
+what was missing was the UI and an "add" path.
+
+Shows address, network, asset, status, holder, deposit count, credited total
+and **unresolved deposits** — the number that decides whether an address can be
+released or retired, so the screen says *why* a control is unavailable instead
+of only disabling it. Release and retire go through the existing actions with
+their existing refusals. A prominent warning appears when no address is
+available, because that is the state in which the next new account gets
+`PoolExhaustedError` on the deposit screen.
+
+`addDepositAddressAction` validates the base58 **checksum** server-side before
+a row exists — a mistyped address still looks like an address, and one in this
+table is somewhere a customer sends real USDT. A duplicate is reported as
+"already in the pool", not as an error.
+
+**It is not an environment editor**, and the component says so in place:
+`TRON_NETWORK`, the grid URL, the API key and `CRON_SECRET` are deployment
+configuration and no screen reads or writes them. It also never *generates* an
+address — nothing here holds key material (§18.8), so an address it generated
+would be one nobody could sweep.
+
+Scanner coverage was verified rather than assumed: `listWatchedAddresses` is a
+`SELECT DISTINCT address` over every row for the chain and network, regardless
+of status, so an added address is watched from the next pass and a retired one
+stays watched.
+
+### Automatic referral commission release
+
+`commission_entries` gained `release_at` and `released_at`.
+
+- **`release_at` is stamped at accrual**, from `platform_settings.referrals
+  .payoutDelayDays`, snapped to midnight on the business calendar. Stamped
+  rather than applied at release time so an operator changing the delay cannot
+  move money already promised a date.
+- **The job** — `releaseDueCommissions()`, driven by
+  `GET /api/cron/release-commissions` at `30 18 * * *` UTC, which is 00:00 IST.
+  Each release is its own transaction, so a pass that fails halfway keeps what
+  it has paid.
+- **Eligibility is `release_at <= now`**, not "became due during this run". A
+  missed midnight is late, not lost: the next successful pass finds everything
+  still owed. Tested with an entry scheduled for last night's boundary and a
+  pass 77 minutes later.
+- **A null `release_at` is never due.** Entries accrued before this column
+  existed have no schedule, and inventing a payment date for them would be
+  inventing a payment date. They stay in the operator's queue.
+- **Manual release is preserved** and calls the *same* function. Running the
+  job twice, two passes overlapping, and the job racing an operator all pay
+  exactly once — the status transition is asserted in the `UPDATE`'s own
+  `WHERE`, so there is no check-then-act window. Verified by asserting one
+  ledger row per entry, not by trusting the return value.
+
+The CRM's commission table now shows the release schedule: the date it was
+paid for a credited entry, **Due ·** in amber for a pending entry whose time
+has passed, the scheduled date otherwise, and "Not scheduled · release by
+hand" for a null. A release date is never shown as though it were a payment.
+
+### The business timezone
+
+`src/lib/business-time.ts` — `Asia/Kolkata`, UTC+05:30, no DST. The first
+wall-clock schedule this application has had, and the reasoning is written
+down: withdrawals pay out in INR to Indian bank accounts, every INR figure is
+formatted `en-IN`, and `/settings/language` lists Indian locales. A payout
+schedule on any other calendar would be the odd one out.
+
+The UTC-pinning rule for *displayed* dates (§11) is unchanged. Release times
+are rendered with `formatBusinessDateTime`, which writes "IST" out — the same
+lesson the system log learned when an operator read a UTC clock as local.
+
+### Initial tier configuration for the shipped plans
+
+Each of the five catalogue plans was given a three-band ladder, derived in
+`@/data/plans` from what the plan already publishes rather than typed out:
+round-number boundaries inside the plan's own range, with the **middle band at
+the plan's headline rate** and the outer bands at the bottom and top of the
+projected range it already displays.
+
+```
+Starter Plan      50–100 @ 2.8%   100–500 @ 3.5%    500+ @ 4.2%
+Balanced Growth   250–500 @ 9.5%  500–1000 @ 12%    1000+ @ 14.5%
+Momentum Plan     1k–5k @ 16%     5k–10k @ 26%      10k+ @ 34%
+Flexible Reserve  25–50 @ 3.5%    50–100 @ 4.5%     100+ @ 5.5%
+Institutional     25k–50k @ 24%   50k–100k @ 38%    100k+ @ 48%
+```
+
+**The literal 2% / 3% / 5% figures in the request were not applied, and that
+was a deliberate refusal.** Those are total-return-over-term percentages in
+this schema, so setting Balanced Growth's top band to 5% would have cut a
+90-day product from 12% to 5% and Momentum from 26% to 5% — a repricing of live
+products dressed up as a configuration default. Every seeded figure is one the
+plan was already promising in public. **Whether larger allocations should earn
+the top of the disclosed range is a product decision an operator now makes in
+the CRM**; see FUTURE_TASKS.md.
+
+`npm run db:backfill-tiers` gives a ladder to any seeded plan that has none.
+Idempotent, and it **never touches a plan that already has a band** — a script
+that "reconciled" an operator's ladder against a fixture would overwrite a rate
+somebody chose, on the one table that decides what an allocation is sold at.
+
+### Two test fixtures fixed
+
+- **`schema.integration.test.ts`** asserted "34 tables / 28 foreign keys".
+  Adding `plan_rate_tiers` correctly broke both. These counts are of what the
+  *code* declares, not of live data, so an exact figure is right here — it is
+  the line that notices a table added without a migration — and it was bumped
+  to 35 / 29.
+- **`referrals.integration.test.ts`** selected its plan with
+  `where(status = 'open').limit(1)` and **no `ORDER BY`**. That is physical row
+  order, and every allocation updates the plan row, which can move it in the
+  heap — the identical fixture bug M11 fixed in `money-lifecycle` and left
+  standing here. It passed 9/9 run alone and failed in a full suite with
+  *"Balanced Growth has a minimum of 250 USDT."* Now it selects the plan by the
+  property the file owns: the lowest minimum that accepts its smallest
+  allocation, ordered deterministically.
+
+### Also
+
+- `isAdminNavItemActive` now marks only the *most specific* matching
+  destination current. `/admin/deposits/addresses` is a prefix match for
+  `/admin/deposits` too, so a plain `startsWith` put `aria-current="page"` on
+  two sidebar links at once.
+- `AdminPlan` and the public `Plan` both carry `rateTiers`, read in one grouped
+  query per catalogue read rather than one query per plan.
+
+## 2026-09-13 (Plan detail crash, and the deposit page's two cadences)
+
+### Every plan detail page threw
+
+`/plans/[slug]` fetched `getUserSlices(["balance"])` while `InvestSheet` — the
+component that takes the money — reads `isVerified`, which resolves through
+`profile`. The store refuses an unprovided slice rather than defaulting it, so
+the page threw on render:
+
+> This screen read "profile" but its page did not provide it.
+
+**That refusal is correct and stays.** A fabricated verification state on the
+screen that allocates funds is worse than a crash, which is exactly what
+`missing()` exists to say. What was wrong was the page's declaration: a slice
+list is a page's statement of what its whole subtree consumes, and this one had
+been trimmed to one entry while the subtree still read two. Both are fetched in
+the same wave as the plan, so the fix costs no extra round trip.
+
+**The investment flow itself needed no work.** `InvestSheet` was already wired
+to `createInvestmentAction` → `createInvestment`: amount → confirm → receipt,
+server-side revalidation of plan limits, balance and KYC, one transaction
+covering the ledger entry, the balance move, the plan aggregate and the
+referral accrual, and a `pending` guard against double submission. The CTA was
+simply unreachable because the page it lives on never rendered. Verified after
+the fix: `/plans/starter` renders with the invest CTA present.
+
+Also corrected on that page: it claimed *"This is a demo build. No investment is
+actually created and no funds are moved."* That stopped being true when the
+investment engine landed. A screen telling somebody their money is not moving
+while it moves their money is the most damaging sentence it could carry.
+
+### The deposit screen was scanning the chain every ~9 seconds
+
+Measured from `pipeline_events` (2026-09-13): `deposit.check.complete` p50
+**3,891 ms**, of which a solidified-block call is p50 1,250 ms and each watched
+address costs a ~412 ms transfer query plus a cursor read and write. The
+watcher polled every 5 s and every tick asked for a chain scan, so with the
+single-flight floor the practical result was a full chain pass roughly every
+9 s for as long as the page was open.
+
+**The cadence bought nothing, and the chain says so.** TRON solidifies ~19
+blocks behind — about **57 seconds** — and nothing is credited before its block
+solidifies. Scanning faster than that cannot produce an earlier answer; it only
+spends TronGrid quota and holds connections out of a five-connection pool.
+
+So the one call became two cadences:
+
+- **Cheap, every 5 s** — read this account's deposits (one indexed query). This
+  is what keeps the screen live, and it is unchanged from the user's side.
+- **Expensive, every 60 s** — `checkForDepositsAction({ requestScan: true })`.
+
+`DEPOSIT_SCAN_MIN_INTERVAL_MS` went 4 s → **15 s**: comfortably below the
+client's 60 s request so a screen is never told "too soon", and high enough to
+cap one instance at four passes a minute however many screens are open. The
+background cron remains solely responsible for detection when nobody is
+watching — this is still not the scheduler, and `requestScan` grants no
+privilege, because the server applies its floor and single-flight to whoever
+asks. Two tests pin the interval relationship so it cannot silently collapse
+back into one call.
+
+### The withdrawal quote was computed in floating point
+
+`wallet/withdraw/actions.ts` parsed the amount with `Number.parseFloat` and
+derived every fee and the net INR with `*`, `/` and `-`, rounding afterwards —
+on the one screen that quotes a customer what they will be paid. Rounding a
+wrong number does not make it right, and this is the rule CLAUDE.md §17.2 calls
+the most important one.
+
+It is now exact end to end. `@/db/money` gained three primitives alongside the
+existing `applyPercent`: **`add`**, **`subtract`** and **`multiplyByRate`** —
+all integer arithmetic on the schema's scale, truncating toward zero like
+`splitEvenly` and `applyPercent` already do. `multiplyByRate` is deliberately
+separate from `applyPercent` because a rate is a multiplier with its own scale,
+not a percentage, and dividing by 100 would be wrong.
+
+One behaviour change beyond precision: `Math.max(net, 0)` is gone. A fee larger
+than the amount is a refusal, not a zero — clamping quoted a payout of ₹0 as if
+it were valid.
+
+### Deposit-address resolution paid for a write on every page view
+
+`getOrCreateDepositAddress` ran the pool sync (an `INSERT`) and opened a
+transaction on every render, even though a user claims an address once and the
+answer is then a single indexed lookup. A read-first fast path returns an
+existing assignment directly; a miss falls through to the unchanged claim path,
+where the advisory lock, the re-check under it and `FOR UPDATE SKIP LOCKED`
+still do all the work. `findAssignedAddress` now accepts `Tx | Database`,
+documented as the one read safe outside a transaction because an assignment,
+once made, changes only by an explicit operator release or retirement.
+
+**Measured, same machine, warm pool:** 1,118 ms → **316 ms** median, a **72%**
+reduction. The old figure matches the p50 of 1,087 ms recorded in
+`pipeline_events`, which is what confirms the method.
+
+### The money-lifecycle suite was intermittently red
+
+Its `before()` picked a plan with `plans.find((p) => p.durationDays > 0)` over a
+`select` with no `ORDER BY`, so "first" was physical row order — and every
+allocation anywhere updates the plan row, which can move it in the heap. After
+enough earlier files had run it started returning Balanced Growth (minimum 250)
+instead of Starter (minimum 50) and five tests that allocate 200 failed. It
+failed on two consecutive full runs and passed on a third with no code change.
+
+Now ordered by minimum investment, cheapest qualifying plan first, with an
+assertion in `before()` that the chosen plan actually accepts the amounts this
+file uses — so a future catalogue change fails once, legibly, instead of five
+times downstream.
+
+### Files
+
+- `src/app/(app)/plans/[slug]/page.tsx` — slice declaration; demo-build claim.
+- `src/app/(app)/wallet/deposit/actions.ts` — `requestScan` option.
+- `src/components/wallet/deposit-watcher.tsx` — two cadences.
+- `src/server/tron/scan-trigger.ts` — floor 4 s → 15 s.
+- `src/app/(app)/wallet/withdraw/actions.ts` — exact-decimal quote.
+- `src/db/money.ts` — `add`, `subtract`, `multiplyByRate`.
+- `src/server/services/deposit-address.service.ts`,
+  `src/server/repositories/deposit-address.repository.ts` — read-first path.
+- `src/db/money.test.ts`, `src/server/deposit-check.test.ts`,
+  `src/server/money-lifecycle.integration.test.ts` — new and corrected tests.
+
+---
+
+## 2026-09-13 (Retiring a deposit address)
+
+Rotating a receiving address had no safe operation. `releaseDepositAddress`
+returns an address to `available`, and `claimAvailableAddress` hands out the
+**oldest** available row — so the address being replaced, which is by
+definition older than its replacement, goes straight back to the next caller.
+That is the person who was supposed to stop using it.
+
+`deposit_address_status` has carried `'retired'` since the table was created,
+and the schema doc comment already described exactly this behaviour —
+"administratively withdrawn from rotation (never reused), but still watched".
+Nothing ever set it. This adds the operation that does.
+
+### What was added
+
+- `retireDepositAddress()` (repository) — locks the row, refuses one already
+  `retired` (a second retirement would rewrite `released_at` and lose when it
+  actually left), runs the unresolved-deposit guard, then sets `retired` and
+  `released_at` with the observed status re-asserted in the `UPDATE`'s `WHERE`
+  so two operators retiring at once retire it once.
+- `retireDepositAddress()` (service) — `mutate()`, so the status change and its
+  audit entry are one transaction, with the operator's reason threaded through.
+- `retireDepositAddressAction()` — `requirePermission("deposits")` and
+  `requireReason(...)`, identical in shape to the release action beside it. No
+  UI, matching release, which has none either.
+- `deposit_address_retired` audit action — enum value, type union and label.
+  Migration `drizzle/0011_salty_hammerhead.sql`, generated, one `ALTER TYPE …
+  ADD VALUE … BEFORE 'withdrawal_approved'` so the enum order still matches the
+  TypeScript list `schema.integration.test.ts` checks.
+
+**The unresolved-deposit check is now one function, not two.**
+`assertNoUnresolvedDeposits()` was extracted from release and is called by
+both — "an address with activity in flight must not leave its owner" is one
+rule, and a second copy is a second thing to forget.
+
+**What retiring keeps:** the row, the address, `user_id` and `assigned_at`.
+It is not a delete and not an erasure of who held it — that is history an
+operator needs when a late transfer to a retired address turns up. The status
+alone is enough to remove it from every live path, because all three filter on
+it: `claimAvailableAddress` wants `available`, `findAssignedAddress` and
+`findOwnerOfAddress` want `assigned`. Meanwhile `listWatchedAddresses` returns
+every status, so the scanner keeps watching it and a stray transfer surfaces in
+the operator queue instead of vanishing.
+
+### A test that was claiming production addresses
+
+The mainnet migration pointed `deposit-address.integration.test.ts` at the
+*configured* network instead of a hard-coded `shasta`. That was right for the
+fixtures and wrong for the claim tests: they allocate through the real service,
+which is pinned to the configured network, so on a mainnet deployment they
+claimed out of the **production pool**. A run took the live receiving address
+for a throwaway user; `after()` deleted that user and the `on delete set null`
+FK left the row `assigned` to nobody.
+
+`seedAvailableAddress` now dates every fixture row to the epoch. Claims are
+ordered by `createdAt`, so a seeded row is always older than anything real and
+the claim tests can only ever take their own. Verified: a full run now leaves
+the live rows byte-identical.
+
+### Files
+
+- `src/server/repositories/deposit-address.repository.ts` — `retireDepositAddress`,
+  `assertNoUnresolvedDeposits` extracted and shared with release.
+- `src/server/services/deposit-address.service.ts` — `retireDepositAddress`.
+- `src/app/admin/actions.ts` — `retireDepositAddressAction`.
+- `src/db/schema/enums.ts`, `src/types/admin.ts`, `src/data/admin/audit-logs.ts`
+  — the `deposit_address_retired` audit action.
+- `drizzle/0011_salty_hammerhead.sql` — generated.
+- `src/server/deposit-address.integration.test.ts` — five retire tests, and the
+  epoch-dated fixture fix above.
+
+---
+
 ## 2026-09-13 (TRON mainnet)
 
 USDT deposits now run against TRON **mainnet**. The deposit pipeline itself did

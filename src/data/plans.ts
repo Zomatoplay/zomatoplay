@@ -9,7 +9,92 @@ import type { Plan, RiskLevel } from "@/types";
  * INTEGRATION POINT: replace with a products API / CMS read.
  */
 
-export const plans: Plan[] = [
+/**
+ * The boundaries a plan's rate ladder may use, in ascending order.
+ *
+ * WHY THE LADDER IS DERIVED HERE RATHER THAN TYPED OUT PER PLAN
+ * -------------------------------------------------------------
+ * A ladder has to be contiguous, non-overlapping and cover the plan's whole
+ * allocation range — `validateTierLadder` refuses anything else, and a hand-
+ * written ladder per plan is five chances to get that wrong in a fixture. This
+ * derivation is the *seed's* starting point only: once seeded, the bands are
+ * rows an operator edits in `/admin/plans`, and nothing re-derives them.
+ *
+ * The boundaries are round numbers rather than a formula on the plan's own
+ * minimum, because that is what an operator would actually choose; the ones
+ * that fall inside a given plan's range are the ones it gets.
+ */
+const TIER_BOUNDARIES = [50, 100, 500, 1000, 5000, 10_000, 50_000, 100_000];
+
+/** How many bands a seeded ladder has at most. Three is the shape requested. */
+const MAX_SEEDED_TIERS = 3;
+
+/**
+ * A plan's starting rate ladder, derived from what the plan already publishes.
+ *
+ * RATES COME FROM THE PLAN'S OWN DISCLOSED RANGE — NOTHING IS INVENTED
+ * --------------------------------------------------------------------
+ * The middle band is the plan's headline `estimatedReturnPercent`, so the
+ * commonest allocation size is priced exactly as it was before the ladder
+ * existed. The lowest band is the bottom of the range the plan already shows
+ * (`estimatedReturnRange[0]`), the highest band the top of it. Every figure a
+ * seeded band carries is therefore one the plan was already promising in
+ * public, and no allocation is repriced outside the disclosed range.
+ *
+ * **A band's rate means projected TOTAL return over the plan's whole term**,
+ * exactly as `estimatedReturnPercent` does — not a weekly or daily rate. The
+ * reward *cadence* is `rewardFrequency` and is a separate thing entirely; see
+ * the `plan_rate_tiers` schema comment for why no conversion between the two
+ * is performed anywhere.
+ *
+ * **This is a starting configuration, not a product decision.** Whether larger
+ * allocations should earn the top of the range is for an operator to set in
+ * the CRM; this only makes sure every plan arrives with a valid, coherent
+ * ladder instead of none.
+ */
+function seedRateTiers(plan: {
+  id: string;
+  minInvestment: number;
+  maxInvestment: number;
+  estimatedReturnPercent: number;
+  estimatedReturnRange: [number, number];
+}): Plan["rateTiers"] {
+  const inner = TIER_BOUNDARIES.filter(
+    (boundary) => boundary > plan.minInvestment && boundary < plan.maxInvestment,
+  ).slice(0, MAX_SEEDED_TIERS - 1);
+
+  // Lower bounds: the plan's own minimum, then each inner boundary. The last
+  // band is always open-ended so no amount the plan accepts is ever unpriced.
+  const lowerBounds = [plan.minInvestment, ...inner];
+  const [low, high] = plan.estimatedReturnRange;
+  const rates =
+    lowerBounds.length === 1
+      ? [plan.estimatedReturnPercent]
+      : lowerBounds.length === 2
+        ? [plan.estimatedReturnPercent, high]
+        : [low, plan.estimatedReturnPercent, high];
+
+  return lowerBounds.map((minAmountUsdt, index) => ({
+    id: `${plan.id.replace(/^plan_/, "ptr_")}_${index + 1}`,
+    minAmountUsdt,
+    maxAmountUsdt: index < lowerBounds.length - 1 ? lowerBounds[index + 1] : null,
+    ratePercent: rates[index],
+    active: true,
+  }));
+}
+
+/**
+ * Attaches the derived ladder to each plan.
+ *
+ * Applied after the literals below rather than written into them so the ladder
+ * can never disagree with the plan's own minimum, maximum or published range —
+ * which is the only way a fixture ladder goes wrong.
+ */
+function withRateTiers(catalogue: Omit<Plan, "rateTiers">[]): Plan[] {
+  return catalogue.map((plan) => ({ ...plan, rateTiers: seedRateTiers(plan) }));
+}
+
+export const plans: Plan[] = withRateTiers([
   {
     id: "plan_starter",
     slug: "starter",
@@ -206,7 +291,7 @@ export const plans: Plan[] = [
     ],
     earlyExit: "No early exit under any circumstances.",
   },
-];
+]);
 
 export function getPlanBySlug(slug: string): Plan | undefined {
   return plans.find((plan) => plan.slug === slug);

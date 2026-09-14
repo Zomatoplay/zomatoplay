@@ -114,15 +114,6 @@ scoped reads and every write refuse instead, which is deliberate — see §16.3.
   type, the real filename, its size and the last four characters of the document
   number are recorded. `liveness_check_passed` is therefore always `false` and
   carries a `liveness_not_verified` risk flag — see §23.
-- Referral payout **automation**. The programme itself is complete and works
-  end to end: an allocation accrues commission at the beneficiary's VIP rate,
-  moves their standing, promotes their level, and an operator releases the
-  pending entry into their wallet from `/admin/referrals` (§10). What is absent
-  is anything that releases it *without* an operator — the investment engine
-  now settles allocations (§10a, §16.5), but nothing in the product's rules
-  says commission becomes payable the moment an allocation does, so this is
-  still a deliberate operator decision rather than something a settlement pass
-  guesses at.
 - Real notification delivery beyond in-app.
 - Phone/SMS one-time codes. Email only; the `phone` field is preserved on the
   profile so it can be added without a migration.
@@ -442,21 +433,28 @@ Rules:
   a `for update` on the edge, so two allocations arriving together cannot both
   count it.
 
-  **Accrual credits nobody.** Entries are written `pending` and land in
-  `commission_pending_usdt`. Nothing automatic pays them: "once their allocation
-  settles" has no settlement process (§16.5), and a scheduler releasing on
-  `payoutDelayDays` would have to invent what "settles" means on the one table
-  where inventing a rule pays real money to the wrong person. There is a test
-  asserting that accrual reaches no wallet and writes no ledger row; do not make
-  it pass by deleting it.
+  **Accrual credits nobody.** Entries are written `pending` with a `release_at`
+  and land in `commission_pending_usdt`. Nothing is credited in the allocation's
+  own transaction — an accrual is mechanical, a payment to a third party is not,
+  and every one of those in this codebase goes through its own explicit,
+  audited, idempotent step. There is a test asserting that accrual reaches no
+  wallet and writes no ledger row; do not make it pass by deleting it.
 
-  **Release is an operator decision**, like every other movement of money in the
-  console. `releaseCommission()` → `/admin/referrals` → *Release*, gated on
-  `manage` over `referrals`, one transaction containing the ledger row, the
-  balance, the aggregate move and the audit entry. The status transition is
-  asserted in the `UPDATE`'s own `WHERE`, so two operators clicking together pay
-  once. When an investment engine arrives it calls this same function — only the
-  trigger changes.
+  **A `release_at` of null is never due.** Entries accrued before that column
+  existed carry no schedule, and the job will not invent a date on which
+  somebody's money becomes payable. They stay in the operator's queue.
+
+  **Release is scheduled, and an operator can still do it by hand.** Each entry
+  carries a `release_at` stamped at accrual from
+  `platform_settings.referrals.payoutDelayDays`, snapped to midnight on the
+  business calendar (§10d). `releaseDueCommissions()` — driven nightly by
+  `/api/cron/release-commissions` — pays everything whose time has come; the
+  *Release* button in `/admin/referrals`, gated on `manage` over `referrals`,
+  calls the **same** `releaseCommission()`. One transaction containing the
+  ledger row, the balance, the aggregate move and the audit entry, with the
+  status transition asserted in the `UPDATE`'s own `WHERE` — so the job running
+  twice, two passes overlapping, and the job racing an operator all pay exactly
+  once.
 
   **The programme's switches are read, not decorative.**
   `platform_settings.referrals.programmeEnabled` and `maxTiers` are honoured by
@@ -585,6 +583,109 @@ table where inventing rules pays real money. "All accounts enrolled in a plan
 are governed by the same rate from that point forward" is therefore true of new
 enrollments, not a retroactive repricing of a contract already sold.
 
+### 10c Plan rate tiers — the amount band an allocation is sold at
+
+`plan_rate_tiers` holds one row per amount band per plan: a **half-open**
+`[min_amount_usdt, max_amount_usdt)` range, a `rate_percent`, and an `active`
+flag. The top band's upper bound is null, meaning open-ended. Three `CHECK`
+constraints are in the schema (lower bound ≥ 0, upper bound above lower, rate
+above zero); overlap, gap and duplicate-boundary checking is a property of the
+whole ladder and lives in `validateTierLadder`.
+
+**A band's percentage means exactly what `plans.estimated_return_percent`
+means: projected TOTAL return over the plan's whole term.** It is not a daily
+or weekly rate. The reward *cadence* is `plans.reward_frequency` and decides
+only how the total is split into periods (§10a). **There is no conversion
+between a periodic rate and a total anywhere in this codebase, and none should
+be invented** — `createInvestment` applies the resolved rate once via
+`applyPercent()`, and `creditDueEarnings` divides that one figure across the
+periods. Introducing a per-period meaning for this column would silently
+reprice every plan.
+
+**Boundaries are `[min, max)` — lower inclusive, upper exclusive.** 49.99 is in
+`10–50`; 50.00 is in `50–100`; 100.00 is in `100+`. Every comparison goes
+through `compare()` from `@/db/money`, never a float. There is a test file of
+nothing but boundaries; do not make it pass by loosening one.
+
+**Resolution has exactly three outcomes** (`resolveRateForAmount`):
+
+| | |
+|---|---|
+| no active bands | the plan's own `estimated_return_percent` — which is what every plan did before this table existed |
+| a band covers the amount | that band's rate |
+| bands exist, none covers the amount | **a refusal** |
+
+The third is the one to preserve. Falling back to the headline rate would hide
+a configuration gap behind a number nobody chose, on the table that decides
+what somebody's money is sold at.
+
+**The ladder is saved whole, in one transaction** (`savePlanRateTiers`).
+Band-at-a-time editing was considered and rejected: contiguity is a property of
+the *set*, so widening one band overlaps its neighbour until the neighbour
+moves too — an API editing one at a time must either forbid every intermediate
+state or let an invalid ladder exist between calls, and an allocation arriving
+in that window is priced against a half-written table. Existing rows are
+updated **by id**, never deleted and re-inserted, so a band keeps the id an
+allocation recorded against it.
+
+**The client never supplies a rate.** `createInvestment` takes a plan id and an
+amount; there is no third parameter to forge. The invest sheet resolves a band
+for *display* using the same rule, and the receipt shows the rate the server
+returned rather than the one the sheet computed. The CRM's preview calls
+`previewPlanRate` → `resolveRateForAmount` — the same function — rather than
+recomputing in the form: a preview whose only value is showing what the real
+rule does must not be a second implementation of it.
+
+**What a tier change does to a running allocation: nothing.** Exactly §10b,
+extended. `investments` copies the band onto the row at creation —
+`applied_tier_id`, `applied_tier_min_usdt`, `applied_tier_max_usdt`,
+`applied_rate_percent` — and `projected_profit` is computed from that copy.
+`applied_tier_id` is deliberately **not** a foreign key: a deleted band must
+not take the evidence with it, or block its own deletion. So editing,
+deactivating or deleting a band reaches only allocations made afterwards, and a
+dispute is reconstructable from the allocation row alone.
+
+**Seeding.** `@/data/plans` derives each plan's starting ladder from what the
+plan already publishes — round-number boundaries inside its own range, middle
+band at the headline rate, outer bands at the ends of the disclosed projected
+range. `npm run db:backfill-tiers` applies that to a database that has
+migrated without reseeding, and **never touches a plan that already has a
+band**.
+
+### 10d The business calendar
+
+`src/lib/business-time.ts` — `Asia/Kolkata`, UTC+05:30, **no daylight saving**.
+The one place this application says what a business day is, and the only thing
+that needs one: the referral release schedule, because "release at midnight" is
+a statement about a calendar and a calendar needs a place.
+
+The place is India because the business already runs on that calendar wherever
+money leaves the platform: withdrawals pay out in INR to Indian bank accounts
+at an INR payout rate (§9), every INR figure in both applications is formatted
+`en-IN`, and `/settings/language` lists Indian locales.
+
+The offset is a constant rather than an `Intl` lookup because India has
+observed one offset since 1945 and there is nothing for a DST rule to do. **If
+this is ever pointed at a jurisdiction that observes DST, the timezone
+database is the fix — not a different number.**
+
+**§11's UTC-pinning rule for displayed dates is unchanged and this does not
+weaken it.** Every stored timestamp is still UTC. What changed is that a
+release time is rendered with `formatBusinessDateTime`, which writes "IST" out
+— the same lesson the system log learned when an operator read a UTC clock as
+their own.
+
+Vercel Cron schedules in UTC, so `30 18 * * *` is 00:00 IST. The two halves of
+that are exported from the same module and echoed in the route's response, so a
+schedule drifting from the calendar it tracks is visible in the output rather
+than only in a cron expression nobody re-reads.
+
+**Eligibility is `release_at <= now`, never "became due during this run."** A
+pass that does not happen at midnight is *late*, not lossy: the next successful
+one finds everything still owed. That is the property that makes the daily
+schedule safe, and it is the same reasoning as the deposit scanner's cursor
+(§18.5) — polling designs fail by delay, and only if you let them.
+
 ### Language discipline (important)
 
 Returns are **never** presented as guaranteed. Always use *estimated*,
@@ -694,10 +795,10 @@ Ordered roughly by dependency.
    configured plan rate is what it actually pays, non-compounding, exact to the
    last decimal place. What remains is the product decision in item 8 below,
    not plumbing.
-8. **Referral payouts** — the *calculation* is done (§10); what remains is
-   releasing `pending` commission into a wallet *without* an operator, and
-   there is still no product rule for exactly when an allocation should be
-   considered to have "settled" for that purpose — see §23.
+8. **Referral payouts — done.** Accrual, scheduling and release are all
+   implemented: an entry is stamped with a `release_at` at accrual and
+   `/api/cron/release-commissions` pays everything due at 00:00 IST (§10,
+   §10d). Manual release is preserved and shares the same guarded function.
 9. **Reporting** — the CRM dashboard's aggregates and chart series, still on
    seed data for the reason given in §16.5.
 10. **Localisation** — `settings/language` lists the intended locales.
@@ -950,8 +1051,11 @@ Any PostgreSQL 14+ will do. The development database is a **Supabase** project
 **Never put a connection string in source.** `.env.local` is git-ignored;
 `.env.example` is the tracked template and contains no values.
 
-Other scripts: `npm run db:generate` after changing the schema, and
-`npm run db:studio` for Drizzle's table browser.
+Other scripts: `npm run db:generate` after changing the schema,
+`npm run db:studio` for Drizzle's table browser, and
+`npm run db:backfill-tiers` to give a seeded plan the rate ladder from
+`@/data/plans` when a database has migrated without being reseeded (§10c) —
+idempotent, and it never touches a plan that already has one.
 
 #### Two connections
 
@@ -1459,6 +1563,10 @@ appears twice, that there are *at least* `SEED_USER_COUNT` accounts.
 | `server/deposit-address.integration.test.ts` | yes | pool allocation (claim, reuse, no cross-user leakage, no auto-release), automatic attribution and crediting, idempotency under concurrency |
 | `server/tron/tron.test.ts` | no | TRON config validation and transfer parsing/filtering, against fixtures |
 | `server/referrals.integration.test.ts` | yes | commission accrual, tiers, and that it credits nobody |
+| `server/plan-tiers.test.ts` | no | the rate ladder's boundaries and validation, exhaustively |
+| `server/plan-tiers.integration.test.ts` | yes | tier resolution at allocation time, the snapshot, and that a tier edit never reprices an allocation already made |
+| `server/deposit-confirmation.integration.test.ts` | yes | which deposits are announced as new, and that acknowledgement is owner-scoped, one-way and idempotent |
+| `server/commission-release.integration.test.ts` | partly | the release schedule with no database; eligibility, missed-midnight recovery and pay-once-under-race with one |
 | `server/pipeline.integration.test.ts` | partly | redaction and correlation with no database; recording with one |
 
 Two are worth knowing about:
@@ -1795,6 +1903,37 @@ currently holds, still has none of that — attribution there stays an operator
 decision in `/admin/deposits`. That is slow and it is correct; crediting the
 wrong account is a loss, not a display bug.
 
+### 18.4a Telling the customer their deposit arrived
+
+`deposits.acknowledged_at`. A deposit is "new" to an account when
+`status = 'credited' and acknowledged_at is null`, and that is the whole rule —
+a **database fact**, never `localStorage`.
+
+Both halves are load-bearing. **Credited**, because the card says "25.00 USDT
+has been added to your wallet" and a transfer that has merely been detected has
+added nothing; an in-flight transfer shows its status in `DepositWatcher` and
+nothing more. **Not acknowledged**, because the defect this closes is a
+historical deposit reading as a fresh arrival on every visit — and a browser-
+side marker would have fixed that for one browser and broken it again on the
+next device, in a private window, and after a cache clear.
+
+`acknowledgeDeposit` puts ownership, `status = 'credited'` and
+`acknowledged_at is null` in the `UPDATE`'s own `WHERE` clause, so a forged id
+matches no row, the call can never credit or advance anything, and a double-tap
+is a no-op. It writes no ledger entry and no audit entry on purpose: it records
+that a person closed a card, not that anything moved.
+
+The confirmation renders on `/wallet/deposit` (from the watcher's existing 5 s
+poll — no second timer) and on `/wallet` (server-rendered, because a deposit
+credited by the cron while nobody was on the deposit screen is found by
+whichever screen is opened next). It is dismissed explicitly rather than on
+render: acknowledging on render would mark a background-tab arrival seen by
+nobody, and would lose the confirmation for anybody who refreshed mid-read.
+
+**A migration that adds this column to an existing deployment must backfill
+credited deposits as acknowledged**, or the first load after deploy announces
+every deposit the account has ever made.
+
 ### 18.5 The scanner
 
 Polling, not events: restartable, nothing to lose, and its failure mode is
@@ -1824,6 +1963,12 @@ concurrent scanners.
 > schedule at deploy time. `*/5 * * * *` assumes Pro. Lower it, or drive the
 > same URL from any external scheduler — nothing about the route is
 > Vercel-specific.
+>
+> `vercel.json` now schedules **three** jobs — the deposit scan (03:00 UTC),
+> investment settlement (04:00 UTC) and the referral release (18:30 UTC, which
+> is 00:00 IST, §10d). Hobby caps the *number* of cron jobs as well as their
+> frequency; if a deploy is rejected, move them to an external scheduler rather
+> than dropping one. All three are `CRON_SECRET`-authorised plain URLs.
 
 **The deposit screen triggers a pass too, and it is not the scheduler.** While
 `/wallet/deposit` is open with a real address on it, `DepositWatcher` calls
@@ -1976,6 +2121,33 @@ since every sweep is itself a transaction that costs network resources; a
 minimum-sweep threshold, so a $2 deposit does not spend $3 of network fees
 consolidating itself; and a decision on whether a provider handles this or the
 operator does it by hand at this volume. None of that is guessed at here.
+
+### 18.9 Managing the pool from the CRM
+
+`/admin/deposits/addresses`. `deposits` permission, `manage` for every
+mutation, every one through the existing service and audited inside its own
+transaction.
+
+- **Add** — `addDepositAddressAction` → `addDepositAddress`. Validates the
+  base58 **checksum** server-side before a row exists: a mistyped address still
+  looks like an address, and one in this table is somewhere a customer sends
+  real USDT. The network is not a parameter — it is whatever `TRON_NETWORK`
+  this deployment scans, because an address on any other network is one nothing
+  will ever detect. A duplicate is reported as already present, not as an
+  error.
+- **Release / retire** — unchanged, including the refusal when any deposit
+  against the address is `pending`, `confirming` or unassigned `confirmed`. The
+  screen shows that count so an operator sees *why* a control is unavailable.
+- **Scanner coverage is automatic**: `listWatchedAddresses` selects every row
+  for the chain and network regardless of status, so an added address is
+  watched from the next pass and a retired one stays watched.
+
+**Two things this screen must never become.** It is not an environment editor —
+`TRON_NETWORK`, the grid URL, the API key and `CRON_SECRET` are deployment
+configuration and no screen in this application reads or writes them. And it
+never *generates* an address: nothing here holds a private key, seed or xpub
+(§18.8), so a generated address would be one nobody could ever sweep. The
+operator generates it with their own tooling and pastes the string.
 
 ---
 
@@ -2336,15 +2508,17 @@ is the detail.
   exist. `submitKyc` writes `false` and a `liveness_not_verified` risk flag, and
   the CRM renders that as *"Not checked — compare by hand"* rather than as a
   failure. **Do not reintroduce a path that lets a click set it.**
-- **Referral commission release timing.** Investment settlement (§10a) now
-  exists, so `platform_settings.referrals.payoutDelayDays` could in principle
-  be read against something. It still is not: nothing in the product's rules
-  defines exactly when an allocation should be treated as "settled" for the
-  purpose of releasing a referrer's *commission* — at first credited earning,
-  at maturity, immediately on accrual — and guessing on the one table that
-  pays a third party's money is worse than leaving it manual. Commission
-  release remains an operator action (§10) until that rule is actually
-  written down as a product decision.
+- **A product rule tying commission release to an allocation's
+  *performance*.** Release is now automatic, on a date: `payoutDelayDays` after
+  accrual, at midnight IST (§10, §10d). What that rule deliberately does *not*
+  do is wait for the allocation to have earned anything — nothing in the
+  product's terms defines when an allocation is "settled" for the purpose of
+  paying a third party, and a delay measured from accrual is the one schedule
+  that uses configuration which already exists rather than a definition nobody
+  has written. If the business wants release gated on the first credited
+  earning period, or on maturity, that is a product decision and a change to
+  where `release_at` is computed — not a change to the release job, which only
+  ever asks whether the stamped date has passed. See FUTURE_TASKS.md.
 - **A deposit-address pool with more than one address in it.** The mechanism is
   built and works (§18.8): a transfer to an address assigned to a user is
   attributed and credited automatically, no operator involved. What is missing

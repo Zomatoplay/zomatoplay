@@ -169,9 +169,22 @@ click to its rows in the CRM's system log.
 
 | Action | Module | Effect |
 |---|---|---|
-| `createInvestmentAction` | `(app)/plans/actions` | Allocation + ledger entry + balance + plan aggregate, one transaction |
+| `createInvestmentAction` | `(app)/plans/actions` | Allocation + ledger entry + balance + plan aggregate + referral accrual, one transaction |
+| `endAllocationAction` | same | Returns an open-ended allocation's principal |
 | `requestWithdrawalAction` | `(app)/wallet/withdraw/actions` | Withdrawal record + immediate balance hold |
 | `requestTestDeposit` | `(app)/wallet/deposit/actions` | **Development only.** A `pending`/`unverified` row. No ledger entry. |
+| `acknowledgeDepositAction` | same | Marks one **credited** deposit seen. Moves no money. |
+
+`createInvestmentAction` takes a plan id and an amount and **no rate**. The
+applicable band is resolved server-side from `plan_rate_tiers` inside the
+allocation's own transaction, and the resolved rate comes back on the result so
+the receipt shows what was charged rather than what the form computed. A client
+cannot submit `amount=50, rate=99` because there is no parameter to put 99 in.
+
+`acknowledgeDepositAction` puts ownership, `status = 'credited'` and
+`acknowledged_at is null` in the `UPDATE`'s `WHERE`, so a forged deposit id
+matches no row, it can never credit or advance anything, and calling it twice
+is a no-op.
 
 `requestTestDeposit` refuses outside development and is deliberately incapable
 of becoming money: `assignDepositToUser` accepts only `confirmed`, which only
@@ -226,6 +239,9 @@ group so its import path is stable. Every one begins with `requirePermission`.
 | `sendUserPasswordResetAction` | `security` | Supabase emails a reset link |
 | `resetUserTwoFactorAction` | `security` | Clears 2FA preferences |
 | `createPlanAction` / `updatePlanAction` / `setPlanDisabledAction` | `plans` | The catalogue the public app reads |
+| `savePlanTiersAction` | `plans` | Replaces a plan's whole rate ladder, validated server-side, in one transaction |
+| `previewPlanTierAction` | `plans` (`view`) | Prices a test amount through the same function a real allocation uses. Writes nothing. |
+| `addDepositAddressAction` | `deposits` | Adds an operator-provided address to the pool. Base58 checksum verified server-side. |
 | `createAgentAction` / `updateAgentAction` / `setAgentDisabledAction` | `agents` | Operator directory and grants |
 | `sendAgentPasswordResetAction` | `agents` | Supabase emails a reset link |
 | `sendNotificationAction` | `notifications` | Campaign row + one `notifications` row per matched account |
@@ -359,9 +375,43 @@ pending → active → matured
 
 Creating one is a single transaction: the investment row, a negative ledger
 entry, the balance move (`available` down, `totalInvested` and
-`lockedInInvestments` up) and the plan's aggregate. Guards — verified account,
-allocations not frozen, plan open, within min/max, sufficient balance — are all
-re-checked server-side against the rows, not against what the browser believed.
+`lockedInInvestments` up), the plan's aggregate and the referral accrual.
+Guards — verified account, allocations not frozen, plan open, within min/max,
+sufficient balance, and a rate band covering the amount — are all re-checked
+server-side against the rows, not against what the browser believed.
+
+**The rate is resolved, never supplied.** If the plan has a ladder
+(`plan_rate_tiers`), the band whose half-open `[min, max)` range contains the
+amount decides the rate; if it has none, the plan's own
+`estimatedReturnPercent` does; if it has a ladder and no band covers the
+amount, the allocation is **refused** rather than quietly sold at the headline
+rate. The band's id, bounds and rate are then copied onto the investment row
+(`applied_tier_*`, `applied_rate_percent`), so a later edit to the ladder never
+reprices an allocation already made — and a band that is deleted takes no
+evidence with it, because those columns are a copy and not a foreign key.
+
+### Referral commission
+
+```
+accrued (pending, release_at stamped) → credited
+                                      → reversed
+```
+
+Accrual happens inside `createInvestment`'s own transaction — two tiers, at the
+beneficiary's VIP rate — and credits nobody. Each entry carries a `release_at`
+computed there from `platform_settings.referrals.payoutDelayDays`, snapped to
+midnight on the business calendar (`Asia/Kolkata`, UTC+05:30).
+
+`GET/POST /api/cron/release-commissions`, scheduled `30 18 * * *` UTC (00:00
+IST), pays every `pending` entry whose `release_at` has passed. Eligibility is
+`release_at <= now` and **not** "became due since the last run", so a missed
+midnight is late rather than lossy. A null `release_at` — an entry accrued
+before the schedule existed — is never due; an operator releases those by hand.
+
+Manual release (`releaseCommissionAction`, `referrals` permission) calls the
+same `releaseCommission()` the job does. The status transition is asserted in
+the `UPDATE`'s own `WHERE`, so the job running twice, two passes overlapping,
+and the job racing an operator all pay exactly once.
 
 ### Withdrawal
 

@@ -1,6 +1,6 @@
 import { index, integer, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
 
-import { ts, usdt } from "./columns";
+import { percent, ts, usdt } from "./columns";
 import {
   investmentStatusEnum,
   rewardFrequencyEnum,
@@ -56,6 +56,33 @@ export const investments = pgTable(
      * existed and every one created after it.
      */
     earningsCreditedPeriods: integer("earnings_credited_periods").notNull().default(0),
+
+    /*
+     * WHICH RATE BAND THIS ALLOCATION WAS SOLD AT, COPIED NOT JOINED.
+     *
+     * `projected_profit` already records what the allocation will be paid, but
+     * it cannot say *why* that figure is what it is — and a plan's rate ladder
+     * (`plan_rate_tiers`) is editable, so the band that applied may have moved,
+     * been deactivated or been deleted by the time anybody asks. These four
+     * columns are the answer to "which tier applied", recorded at the moment
+     * the allocation was created, so a dispute can be reconstructed from the
+     * allocation row alone.
+     *
+     * `applied_tier_id` is deliberately **not** a foreign key: a deleted band
+     * must not take the evidence with it, and must not block its own deletion
+     * either. The bounds and the rate beside it are the substance; the id is a
+     * breadcrumb back to the row if it still exists.
+     *
+     * Null on every allocation made before the ladder existed, and on any plan
+     * with no ladder configured — in which case the rate used was the plan's
+     * own `estimated_return_percent` and `applied_rate_percent` records it.
+     */
+    appliedTierId: text("applied_tier_id"),
+    appliedTierMinUsdt: usdt("applied_tier_min_usdt"),
+    /** Null for an open-ended top band, exactly as on the tier row. */
+    appliedTierMaxUsdt: usdt("applied_tier_max_usdt"),
+    /** The rate actually applied, whether it came from a band or the plan. */
+    appliedRatePercent: percent("applied_rate_percent"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },

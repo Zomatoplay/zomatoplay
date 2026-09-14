@@ -46,17 +46,23 @@ import { scanDeposits, ScannerUnavailableError, type ScanSummary } from "./scann
  */
 
 /**
- * Below the client's 5-second cadence, so a person watching their own screen is
- * never told "too soon", and above zero so a crowd of them — or one person's
- * rapid navigations, which are not cancelled when abandoned (§16.1a note 7) —
- * cannot drive more than fifteen passes a minute out of one instance.
+ * The server-side backstop, sized against the client's *scan* cadence.
  *
- * This was 20 seconds, matched to a 30-second client cadence. The migration to
- * mainnet moved the screen to 5 seconds so a real transfer can be watched
- * arriving; a floor above the cadence would have meant three ticks in four
- * getting `throttled` and the screen updating no faster than before.
+ * `DepositWatcher` polls the database every 5 s but asks for a chain scan only
+ * every 60 s (see its `SCAN_INTERVAL_MS`), because nothing can be credited
+ * before its block solidifies — ~57 s on TRON. This floor therefore has room
+ * to be meaningful: at 15 s one instance cannot exceed four passes a minute no
+ * matter how many screens are open, while a given screen's 60-second request
+ * is comfortably clear of it and is never told "too soon".
+ *
+ * History, because both previous values were wrong in instructive ways. It was
+ * 20 s against a 30 s client cadence, then dropped to 4 s when the client moved
+ * to 5 s — which kept the floor below the cadence but made the cadence itself
+ * the problem, since every tick then asked for a real chain scan. Splitting the
+ * cheap read from the expensive scan is what let this go back up. **Keep this
+ * below the client's scan interval and above its poll interval.**
  */
-export const DEPOSIT_SCAN_MIN_INTERVAL_MS = 4_000;
+export const DEPOSIT_SCAN_MIN_INTERVAL_MS = 15_000;
 
 export type ScanTriggerOutcome =
   /** This call ran a pass. */

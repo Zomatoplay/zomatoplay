@@ -1,13 +1,15 @@
 import "server-only";
 
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
 
-import { decimalFrom, isPositive, numericValue, type Decimal } from "@/db/money";
+import { add, decimalFrom, isPositive, numericValue, ZERO, type Decimal } from "@/db/money";
 import * as t from "@/db/schema";
-import type { Tx } from "@/db";
+import { getDb, type Tx } from "@/db";
 
 import { applyLedgerEntry, ensureWallet } from "../repositories/wallet.repository";
-import { mutate, newId, withReason, type Actor } from "../write";
+import { resilientRead } from "../database";
+import { businessMidnightUtc } from "@/lib/business-time";
+import { mutate, newId, withReason, SYSTEM_ACTOR, type Actor } from "../write";
 
 /**
  * The referral programme's write side: what an allocation earns the people who
@@ -47,14 +49,19 @@ import { mutate, newId, withReason, type Actor } from "../write";
  * what the referral screen shows as "pending". Nothing touches `available` and
  * no ledger entry is written.
  *
- * That is not an omission to tidy up later — it is the honest state of the
- * system. Crediting is what `referralSteps` calls "once their allocation
- * settles", and this application has no settlement: `recordInvestmentEarning()`
- * exists and nothing schedules it (CLAUDE.md §16.5). Paying commission on an
- * allocation that has not returned anything would be inventing a rule nobody
- * wrote, on the one table where inventing rules costs real money. Releasing
- * `pending` → `credited` belongs with the investment engine, beside the accrual
- * it is a share of.
+ * Crediting is a **separate, scheduled** step: each entry carries a
+ * `release_at` stamped here from the operator's `payoutDelayDays`, and
+ * `releaseDueCommissions()` — driven nightly by
+ * `/api/cron/release-commissions` — pays the ones whose time has come. An
+ * operator can still release one by hand from `/admin/referrals`, and the two
+ * routes call the same guarded function, so they cannot pay the same entry
+ * twice.
+ *
+ * The separation is not ceremony. An accrual is mechanical — an allocation
+ * happened, so a commission is owed — while a payment is a movement of money
+ * to a third party, and this codebase puts every one of those behind an
+ * explicit, audited, idempotent step rather than inside the transaction that
+ * caused it.
  *
  * ARITHMETIC
  * ----------
@@ -134,6 +141,31 @@ export async function accrueReferralCommission(
     MAX_TIER,
   );
 
+  /*
+   * WHEN THIS COMMISSION BECOMES PAYABLE, DECIDED ONCE, HERE.
+   *
+   * The delay is the operator's `payoutDelayDays`, and the boundary is
+   * midnight on the business calendar (`./business-time`) — so an entry
+   * accrued at any time on the 13th with a three-day delay becomes payable at
+   * 00:00 IST on the 16th, and every entry accrued that day shares a date a
+   * person can be told. Adding the delay to the accrual *instant* instead
+   * would make two allocations minutes apart pay out on different days, which
+   * is a worse thing to have to explain than a fixed boundary.
+   *
+   * Stamped now rather than applied at release time, so an operator changing
+   * the delay later cannot move money that was already promised a date — see
+   * the column comment on `commission_entries.release_at`.
+   *
+   * `payoutDelayDays` of 0 means the next midnight: a delay of zero days is
+   * "tonight's run", never "immediately", because the release is a nightly job
+   * and pretending otherwise would put a date in the past on a fresh entry.
+   */
+  const delayDays = Math.max(
+    Math.trunc(settings?.referrals?.payoutDelayDays ?? 0),
+    0,
+  );
+  const releaseAt = businessMidnightUtc(request.now, Math.max(delayDays, 1));
+
   // The direct edge first, then that person's own direct edge. Two lookups,
   // bounded — never a loop over a chain a cycle could make infinite.
   let childUserId = request.investorUserId;
@@ -171,6 +203,8 @@ export async function accrueReferralCommission(
       createdAt: request.now,
       // The enum's own default. Nothing here credits a wallet — see above.
       status: "pending",
+      // The schedule this entry was accrued under, not a rule re-derived later.
+      releaseAt,
     });
 
     /*
@@ -403,25 +437,18 @@ export class ReferralError extends Error {
 /**
  * Pays a pending commission entry into the beneficiary's wallet.
  *
- * WHY THIS IS AN OPERATOR DECISION AND NOT A SCHEDULER
- * ----------------------------------------------------
- * Accrual (above) is mechanical: an allocation happened, so a commission is
- * owed. Release is a *decision*, and this codebase already answers "who decides
- * a movement of money" the same way everywhere — an operator does, in the CRM,
- * with a permission check and an audit entry. A detected deposit is not
- * credited until an operator attributes it; a withdrawal is not paid until an
- * operator approves it. Commission now follows that same shape.
+ * TWO TRIGGERS, ONE FUNCTION
+ * --------------------------
+ * The nightly release job calls this, and so does an operator pressing
+ * *Release* in `/admin/referrals`. Deliberately the same function and not two
+ * that happen to agree: the money path, the ledger entry, the aggregate move
+ * and the audit line are written once, so a hand release and a scheduled one
+ * cannot drift, and — because the guard below is a condition in the `UPDATE`
+ * rather than a prior read — the two racing each other pay exactly once.
  *
- * The alternative was a scheduler releasing on
- * `platform_settings.referrals.payoutDelayDays`, and it was rejected for a
- * concrete reason rather than caution: that setting says "released N days after
- * the allocation *settles*", and nothing in this deployment settles an
- * allocation. `recordInvestmentEarning()` exists and nothing calls it
- * (CLAUDE.md §16.5). A scheduler would have had to invent what "settles" means
- * on the one table where inventing a rule pays real money to the wrong person.
- *
- * When the investment engine lands, this function is what it calls — the money
- * path, the guards and the audit entry do not change, only the trigger.
+ * The actor differs and is recorded: `SYSTEM_ACTOR` for the scheduler, the
+ * operator for a manual release. An audit line that could not say which is an
+ * audit line worth nothing.
  *
  * WHAT MAKES IT SAFE TO RUN TWICE
  * -------------------------------
@@ -480,7 +507,7 @@ export async function releaseCommission(
 
     const paid = await tx
       .update(t.commissionEntries)
-      .set({ status: "credited" })
+      .set({ status: "credited", releasedAt: now })
       // The guard, not a prior read: two operators releasing the same entry at
       // the same moment must produce one payment.
       .where(
@@ -528,4 +555,124 @@ export async function releaseCommission(
 
     return { amount, beneficiaryUserId: entry.beneficiaryUserId };
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* The nightly release pass                                                    */
+/* -------------------------------------------------------------------------- */
+
+export interface CommissionReleaseSummary {
+  /** How many entries were found due at the moment the pass started. */
+  due: number;
+  released: number;
+  releasedAmountUsdt: Decimal;
+  /**
+   * Entries that were due and were not paid, with the reason. Almost always
+   * "somebody else paid it first", which is a success of the guard rather than
+   * a failure of the pass — and is reported rather than hidden so a pass that
+   * is failing for a *real* reason does not look like a quiet night.
+   */
+  skipped: Array<{ commissionEntryId: string; reason: string }>;
+}
+
+/**
+ * Pays every pending commission whose release time has arrived.
+ *
+ * ELIGIBILITY IS `release_at <= now`, NOT "TODAY IS THE DAY"
+ * ----------------------------------------------------------
+ * The schedule runs at midnight on the business calendar, but eligibility is
+ * deliberately not tied to the run happening then. If the scheduler is down at
+ * 00:00 and the next successful pass is at 01:17 — or the following night —
+ * every entry whose moment has passed is still found, because the question
+ * asked is "is it due" and not "did it become due during this run". Nothing is
+ * lost by a missed run; it is late, which is the failure mode a polling design
+ * is chosen for (the same reasoning as the deposit scanner, CLAUDE.md §18.5).
+ *
+ * A `release_at` of null is **not** due, ever. Those are entries accrued
+ * before the column existed, and no rule says when they should be paid;
+ * inventing one for them would be putting a date on somebody's money after the
+ * fact. They stay in the operator's queue.
+ *
+ * WHY RELEASES ARE ONE TRANSACTION EACH, NOT ONE BIG ONE
+ * ------------------------------------------------------
+ * Each `releaseCommission` is its own transaction, so a pass that fails
+ * halfway keeps every payment it has already made and the next run resumes
+ * from what is still pending. One large transaction would roll back paid
+ * commissions on an unrelated failure, and would hold a connection out of a
+ * five-connection pool for the length of the whole pass (CLAUDE.md §16.1a).
+ *
+ * WHY RUNNING IT TWICE IS SAFE
+ * ----------------------------
+ * The due list is a *read*. What actually pays is `releaseCommission`, whose
+ * status transition is asserted in the `UPDATE`'s own `WHERE` clause — so two
+ * overlapping passes, or a pass overlapping an operator's manual release, both
+ * try and exactly one succeeds; the loser gets "already paid" and is reported
+ * as skipped. There is no check-then-act window anywhere in this path, which
+ * is the property CLAUDE.md §17.5 requires of anything that moves money.
+ */
+export async function releaseDueCommissions(
+  options: { now?: Date; limit?: number } = {},
+): Promise<CommissionReleaseSummary> {
+  const now = options.now ?? new Date();
+  const limit = options.limit ?? 500;
+
+  /*
+   * Through `resilientRead`, like every other read in the server layer: it
+   * carries the query deadline and the bounded connection retry (CLAUDE.md
+   * §16.8). A scheduled job on a serverless platform is exactly where an
+   * unbounded read is most expensive — it holds the invocation open until the
+   * platform's own ceiling rather than failing and being retried tonight.
+   *
+   * Only the read. Nothing that *pays* anybody is retried: `releaseCommission`
+   * below goes through `mutate()`, and a write that failed after its
+   * statements reached the server may have committed.
+   */
+  const due = await resilientRead(() =>
+    getDb()
+    .select({
+      id: t.commissionEntries.id,
+      amountUsdt: t.commissionEntries.amountUsdt,
+    })
+    .from(t.commissionEntries)
+    .where(
+      and(
+        eq(t.commissionEntries.status, "pending"),
+        isNotNull(t.commissionEntries.releaseAt),
+        lte(t.commissionEntries.releaseAt, now),
+      ),
+    )
+    // Oldest first: if a pass is bounded and there is a backlog, the entries
+    // that have waited longest are the ones that get paid tonight.
+    .orderBy(asc(t.commissionEntries.releaseAt))
+    .limit(limit),
+  );
+
+  const summary: CommissionReleaseSummary = {
+    due: due.length,
+    released: 0,
+    releasedAmountUsdt: ZERO,
+    skipped: [],
+  };
+
+  for (const entry of due) {
+    try {
+      const { amount } = await releaseCommission(
+        {
+          commissionEntryId: entry.id,
+          note: "Released automatically on the scheduled date.",
+        },
+        SYSTEM_ACTOR,
+      );
+      summary.released += 1;
+      // Exact addition — `add` from `@/db/money`, never `+` on money.
+      summary.releasedAmountUsdt = add(summary.releasedAmountUsdt, amount);
+    } catch (error) {
+      summary.skipped.push({
+        commissionEntryId: entry.id,
+        reason: error instanceof Error ? error.message : "Unknown failure.",
+      });
+    }
+  }
+
+  return summary;
 }

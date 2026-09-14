@@ -63,7 +63,11 @@ describe("schema", { skip }, () => {
     const live = new Set(rows.map((row) => row.table_name));
     const declared = tables.map(getTableName);
 
-    assert.equal(declared.length, 34, "the schema should declare 34 tables");
+    // Bumped with the schema, deliberately: this is a count of what the
+    // *code* declares, not of what happens to be in a shared database, so it
+    // is a fact a developer owns. Adding a table without updating it here is
+    // the one thing this line exists to notice. 35 since `plan_rate_tiers`.
+    assert.equal(declared.length, 35, "the schema should declare 35 tables");
 
     assert.deepEqual(
       declared.filter((name) => !live.has(name)).sort(),
@@ -147,7 +151,9 @@ describe("schema", { skip }, () => {
       }
     }
 
-    assert.equal(declared.length, 28, "the schema should declare 28 foreign keys");
+    // 29 since `plan_rate_tiers.plan_id → plans.id`. See the table count above
+    // for why an exact figure is right here and wrong for live-data counts.
+    assert.equal(declared.length, 29, "the schema should declare 29 foreign keys");
 
     assert.deepEqual(
       declared.filter((key) => !live.has(key)).sort(),

@@ -317,7 +317,15 @@ export function SettingsForm() {
             <NumberField
               id="referral-delay"
               label="Commission payout delay (days)"
-              hint="How long commission stays pending after an allocation settles."
+              /*
+                The copy said "after an allocation settles", which was never
+                what the code did and is certainly not what it does now: the
+                delay is measured from the **accrual** — the moment the
+                allocation is made — and the release happens at midnight IST on
+                the resulting date. An operator setting a number needs to know
+                which day it lands on.
+              */
+              hint="Days from the allocation until commission is released, at 00:00 IST. Applies to commission accrued from now on; entries already scheduled keep their date."
               value={draft.referrals.payoutDelayDays}
               disabled={!allowed}
               onChange={(value) =>

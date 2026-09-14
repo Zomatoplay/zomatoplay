@@ -13,7 +13,9 @@ import { TopBar } from "@/components/navigation/top-bar";
 import { SectionHeader } from "@/components/shared/section-header";
 import { EarningsBreakdown } from "@/components/wallet/earnings-breakdown";
 import { TransactionBrowser } from "@/components/wallet/transaction-browser";
+import { DepositConfirmation } from "@/components/wallet/deposit-confirmation";
 import { WalletOverview } from "@/components/wallet/wallet-overview";
+import { getNewDepositsAction } from "@/app/(app)/wallet/deposit/actions";
 import {
   getEarningsSummary,
   getMonthlyEarningsHistory,
@@ -56,12 +58,28 @@ export default async function WalletPage() {
   const earnings = deferred(getEarningsSummary());
   const monthlyHistory = deferred(getMonthlyEarningsHistory());
 
-  const slices = await getUserSlices([
-    "balance",
-    "transactions",
-    "profile",
-    "notifications",
-  ] as const);
+  /*
+   * The "deposit confirmed" state, read in this page's own wave.
+   *
+   * Here as well as on `/wallet/deposit` because a deposit credited by the
+   * background scanner is found by whichever screen the person opens next, and
+   * the wallet is the likelier one — the deposit screen only polls while it is
+   * open (CLAUDE.md §18.5). Nothing is announced twice: both screens read the
+   * same `acknowledged_at is null` rows, and dismissing on either clears both.
+   *
+   * Started alongside the slices rather than awaited after them: two sequential
+   * awaits here would be two waves of round trips for reads that share nothing
+   * (§16.1a item 6).
+   */
+  const [slices, newDeposits] = await Promise.all([
+    getUserSlices([
+      "balance",
+      "transactions",
+      "profile",
+      "notifications",
+    ] as const),
+    getNewDepositsAction(),
+  ]);
 
 
   return (
@@ -70,6 +88,11 @@ export default async function WalletPage() {
         <TopBar eyebrow="Your funds" title="Wallet" />
 
         <PageContainer className="space-y-6">
+          <DepositConfirmation
+            deposits={newDeposits.deposits}
+            availableUsdt={newDeposits.availableUsdt}
+          />
+
           <WalletOverview />
 
           <section className="space-y-3">

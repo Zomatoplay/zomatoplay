@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
 import { config as loadEnv } from "dotenv";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 loadEnv({ path: ".env.local", quiet: true });
 loadEnv({ path: ".env", quiet: true });
@@ -21,6 +21,7 @@ import {
 import {
   getOrCreateDepositAddress,
   releaseDepositAddress,
+  retireDepositAddress,
 } from "./services/deposit-address.service";
 import { recordObservedDeposit } from "./services/deposits.service";
 import { getTronConfig } from "./tron/config";
@@ -143,6 +144,23 @@ describe("deposit address pool", { skip }, () => {
   }
 
   /** Seeds one `available` pool row — for exercising the claim mechanism. */
+  /**
+   * Seeds an available address — dated 1970 on purpose.
+   *
+   * `claimAvailableAddress` hands out the *oldest* available row, and the
+   * allocation tests below claim through the real service, which is pinned to
+   * whichever network this environment is configured for. On a mainnet
+   * deployment that pool is the production one: without this, a test claims
+   * whichever real receiving address happens to be sitting in it and a
+   * throwaway user walks off with it. That is not hypothetical — it happened,
+   * to the live mainnet address, the first time this file was pointed at the
+   * configured network instead of a hard-coded testnet.
+   *
+   * An epoch `createdAt` makes every seeded row unambiguously older than
+   * anything real, so the claim tests can only ever take their own fixtures.
+   * Tests that care about relative ordering set `createdAt` themselves
+   * afterwards.
+   */
   async function seedAvailableAddress(target: PoolTarget) {
     const id = newId("dpa_test");
     const address = fixtureAddress();
@@ -153,6 +171,7 @@ describe("deposit address pool", { skip }, () => {
       asset: target.asset,
       address,
       status: "available",
+      createdAt: new Date(0),
     });
     createdAddressIds.push(id);
     return { id, address };
@@ -521,5 +540,148 @@ describe("deposit address pool", { skip }, () => {
     assert.equal(row.status, "available");
     assert.equal(row.userId, null);
     assert.ok(row.releasedAt);
+  });
+
+  /* ------------------------------------------------------------- retire -- */
+
+  test("R — an address with unresolved deposit activity cannot be retired either", async () => {
+    const userId = await makeUser();
+    const { id: addressId, address } = await seedAssignedAddress(userId);
+
+    const { depositId } = await recordObservedDeposit(transferTo(address, { confirmed: false }));
+    createdDeposits.push(depositId);
+
+    await assert.rejects(
+      () => retireDepositAddress({ addressId, reason: "test" }, OPERATOR),
+      AddressReleaseError,
+    );
+
+    const [row] = await db
+      .select()
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, addressId));
+    assert.equal(row.status, "assigned", "still assigned — the retirement was refused");
+  });
+
+  test("retiring takes an address out of rotation without deleting it or its history", async () => {
+    const userId = await makeUser();
+    const { id: addressId, address } = await seedAssignedAddress(userId);
+
+    await retireDepositAddress({ addressId, reason: "replaced by a new receiving address" }, OPERATOR);
+
+    const [row] = await db
+      .select()
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, addressId));
+
+    assert.equal(row.status, "retired");
+    assert.equal(row.address, address, "the row and its address survive — this is not a delete");
+    assert.equal(row.userId, userId, "who held it is kept as history");
+    assert.ok(row.assignedAt, "and from when");
+    assert.ok(row.releasedAt, "with the moment it left rotation recorded");
+  });
+
+  /**
+   * The whole reason this operation exists.
+   *
+   * Releasing the address being replaced returns it to `available`, and
+   * `claimAvailableAddress` orders by `createdAt` — so the *older* address,
+   * which is always the one being replaced, is handed straight back to the
+   * next caller. Retiring has to leave the replacement as the only claimable
+   * row even though it is newer.
+   */
+  test("a retired address is never claimed again, even when it is older than the replacement", async () => {
+    /*
+     * On ISOLATED, not LIVE — this test *claims* addresses, and the live pool
+     * is shared with real users and the real scanner. Claiming out of it here
+     * would hand a production address to a throwaway test account, which is
+     * the exact accident this whole capability exists to undo.
+     */
+    const oldAddress = await seedAvailableAddress(ISOLATED);
+    const replacement = await seedAvailableAddress(ISOLATED);
+
+    // Pin both, so the ordering under test is the one asserted rather than
+    // whatever `defaultNow()` produced microseconds apart: the address being
+    // replaced is always the older of the two, which is what makes releasing
+    // it hand it straight back.
+    await db
+      .update(t.depositAddresses)
+      .set({ createdAt: new Date("2000-01-01T00:00:00.000Z") })
+      .where(eq(t.depositAddresses.id, oldAddress.id));
+    await db
+      .update(t.depositAddresses)
+      .set({ createdAt: new Date("2000-01-02T00:00:00.000Z") })
+      .where(eq(t.depositAddresses.id, replacement.id));
+
+    // Claim it, then retire it — the real sequence, not a shortcut into the
+    // `retired` state.
+    const holder = await makeUser();
+    await mutate(OPERATOR, ({ tx, now }) => claimAvailableAddress(tx, holder, ISOLATED, now));
+    const [claimedRow] = await db
+      .select()
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, oldAddress.id));
+    assert.equal(claimedRow.status, "assigned", "the oldest available row is the one claimed");
+
+    await retireDepositAddress({ addressId: oldAddress.id, reason: "rotated out" }, OPERATOR);
+
+    const nextUser = await makeUser();
+    const claimed = await mutate(OPERATOR, ({ tx, now }) =>
+      claimAvailableAddress(tx, nextUser, ISOLATED, now),
+    );
+
+    assert.notEqual(
+      claimed.address,
+      oldAddress.address,
+      "the retired address must never come back, however old it is",
+    );
+    assert.equal(
+      claimed.address,
+      replacement.address,
+      "the next caller gets the replacement instead",
+    );
+  });
+
+  test("retiring an already-retired address is refused rather than rewriting when it left", async () => {
+    const userId = await makeUser();
+    const { id: addressId } = await seedAssignedAddress(userId);
+
+    await retireDepositAddress({ addressId, reason: "first" }, OPERATOR);
+    const [first] = await db
+      .select()
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, addressId));
+
+    await assert.rejects(
+      () => retireDepositAddress({ addressId, reason: "second" }, OPERATOR),
+      AddressReleaseError,
+    );
+
+    const [second] = await db
+      .select()
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, addressId));
+    assert.deepEqual(second.releasedAt, first.releasedAt, "the original retirement time stands");
+  });
+
+  test("retiring is recorded in the audit trail", async () => {
+    const userId = await makeUser();
+    const { id: addressId, address } = await seedAssignedAddress(userId);
+
+    await retireDepositAddress({ addressId, reason: "audit coverage" }, OPERATOR);
+
+    const entries = await db
+      .select()
+      .from(t.auditLogs)
+      .where(
+        and(
+          eq(t.auditLogs.actorId, OPERATOR.id),
+          eq(t.auditLogs.action, "deposit_address_retired"),
+        ),
+      );
+    const mine = entries.filter((entry) => entry.targetId === addressId);
+    assert.equal(mine.length, 1, "exactly one entry, written in the retiring transaction");
+    assert.equal(mine[0].targetLabel, address);
+    assert.match(mine[0].details ?? "", /audit coverage/, "the operator's reason reaches the entry");
   });
 });

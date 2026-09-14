@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -7,6 +8,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 import { percent, ts, usdt } from "./columns";
 import {
@@ -159,3 +161,92 @@ export const depositNetworks = pgTable("deposit_networks", {
   recommended: boolean("recommended").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
 });
+
+/**
+ * A plan's amount-banded rate ladder.
+ *
+ * WHAT A ROW MEANS
+ * ----------------
+ * "An allocation of at least `min_amount_usdt`, and strictly below
+ * `max_amount_usdt` when that is set, is sold at `rate_percent`." The band is
+ * **half-open — `[min, max)`** — which is what makes the boundaries
+ * unambiguous: 49.99 is in `[10, 50)`, 50 is in `[50, 100)`, and no amount is
+ * ever in two bands at once. `max_amount_usdt` is null on the top band only,
+ * meaning "and everything above".
+ *
+ * THE RATE MEANS WHAT `plans.estimated_return_percent` MEANS
+ * ----------------------------------------------------------
+ * Total projected return over the plan's whole term, non-compounding — the
+ * figure `createInvestment` applies once, via `applyPercent()`, to produce
+ * `investments.projected_profit` (CLAUDE.md §10a). It is **not** a periodic
+ * rate: a 3% band on a 90-day weekly-reward plan pays 3% across the term,
+ * split evenly across its thirteen periods, not 3% a week. Introducing a
+ * periodic rate would mean a second meaning for the same column type and a
+ * conversion formula nobody has written down; the reward *cadence* already
+ * lives on `plans.reward_frequency` and is the only thing that decides period
+ * length.
+ *
+ * WHY A TABLE AND NOT JSON ON `plans`
+ * -----------------------------------
+ * Bands are queried (resolve one by amount), validated against each other
+ * (no overlap, no gap, no duplicate boundary) and edited individually. A jsonb
+ * blob would make every one of those a read-modify-write of the whole ladder,
+ * which is exactly the shape that loses a concurrent edit.
+ *
+ * WHAT A CHANGE HERE DOES TO A RUNNING ALLOCATION: NOTHING.
+ * --------------------------------------------------------
+ * The same rule `plan_rate_history` documents. `createInvestment` resolves the
+ * band once, copies its id, its bounds and its rate onto the `investments` row
+ * and computes `projected_profit` from that copy. Nothing re-reads this table
+ * for an allocation that already exists — so editing, deactivating or deleting
+ * a band never reprices a contract already sold, and only allocations made
+ * after the edit see the new ladder.
+ */
+export const planRateTiers = pgTable(
+  "plan_rate_tiers",
+  {
+    id: text("id").primaryKey(),
+    planId: text("plan_id")
+      .notNull()
+      .references(() => plans.id, { onDelete: "cascade" }),
+    /** Inclusive lower bound. */
+    minAmountUsdt: usdt("min_amount_usdt").notNull(),
+    /** Exclusive upper bound. Null means open-ended — the top band. */
+    maxAmountUsdt: usdt("max_amount_usdt"),
+    /** Projected total return over the term, for allocations in this band. */
+    ratePercent: percent("rate_percent").notNull(),
+    /**
+     * An inactive band is ignored by resolution but kept for the audit trail:
+     * an allocation that cites it must still be explainable afterwards.
+     */
+    active: boolean("active").notNull().default(true),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    /**
+     * Ordering is by lower bound, and the bound is unique per plan — so a
+     * ladder has exactly one band starting at any amount, and "the band after
+     * this one" is a well-defined question. Overlap and gap checking is done
+     * in the write service, which is the only place a whole ladder is visible
+     * at once; this index is what stops two concurrent edits producing two
+     * bands with the same start.
+     */
+    uniqueIndex("plan_rate_tiers_plan_min_key").on(table.planId, table.minAmountUsdt),
+    index("plan_rate_tiers_plan_idx").on(table.planId, table.minAmountUsdt),
+    /*
+     * The three rules that can be stated about a band on its own, stated to
+     * Postgres. Overlap and gap are properties of a *ladder* and are checked in
+     * the write service, where the whole ladder is in hand; these are the ones
+     * no amount of application care should be the only thing enforcing, because
+     * a band with an upper bound below its lower bound can never match anything
+     * and a zero rate is an allocation sold at no return.
+     */
+    check("plan_rate_tiers_min_non_negative", sql`${table.minAmountUsdt} >= 0`),
+    check(
+      "plan_rate_tiers_bounds_ordered",
+      sql`${table.maxAmountUsdt} is null or ${table.maxAmountUsdt} > ${table.minAmountUsdt}`,
+    ),
+    check("plan_rate_tiers_rate_positive", sql`${table.ratePercent} > 0`),
+  ],
+);

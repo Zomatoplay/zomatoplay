@@ -1,0 +1,1 @@
+ALTER TYPE "public"."audit_action" ADD VALUE 'deposit_address_retired' BEFORE 'withdrawal_approved';

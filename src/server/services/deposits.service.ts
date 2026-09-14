@@ -708,3 +708,125 @@ export async function listDepositActivityForUser(
       .limit(limit);
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* New-deposit confirmation                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A credited deposit this account has not been shown a confirmation for.
+ *
+ * WHAT "NEW" MEANS HERE, AND WHY IT IS A DATABASE FACT
+ * -----------------------------------------------------
+ * `status = 'credited' and acknowledged_at is null`. Both halves matter:
+ *
+ * - **credited** — the money is actually in the wallet. The confirmation is
+ *   never shown for a transfer that was merely *detected*, or is waiting for
+ *   its block to solidify, because a screen that says "25 USDT has been added
+ *   to your wallet" while the balance has not moved is worse than no screen.
+ *   The deposit watcher already shows in-flight transfers with their status.
+ * - **not acknowledged** — the person has not dismissed it. Kept in the
+ *   database rather than in `localStorage`, which would re-announce a
+ *   three-week-old deposit on every new device and every cleared cache; the
+ *   column comment on `deposits.acknowledged_at` has the full reasoning.
+ *
+ * The browser decides nothing about either. It cannot mark a deposit credited,
+ * and `acknowledgeDeposit` below will only touch a row that already is.
+ */
+export interface NewDepositConfirmation {
+  id: string;
+  amountUsdt: number;
+  txHash: string;
+  /** `tron`, and the specific network the transfer arrived on. */
+  chain: (typeof t.chainEnum.enumValues)[number];
+  chainNetwork: (typeof t.chainNetworkEnum.enumValues)[number];
+  tokenSymbol: string | null;
+  network: (typeof t.depositNetworkEnum.enumValues)[number];
+  confirmationsCurrent: number;
+  confirmationsRequired: number;
+  creditedAt: Date | null;
+  blockTimestamp: Date | null;
+}
+
+export async function listUnacknowledgedDeposits(
+  userId: string,
+  limit = 3,
+): Promise<NewDepositConfirmation[]> {
+  if (!isDatabaseConfigured()) {
+    throw new DepositError(
+      "No DATABASE_URL is configured, so there is no deposit state to read.",
+    );
+  }
+  noStore();
+
+  return resilientRead(async () =>
+    getDb()
+      .select({
+        id: t.deposits.id,
+        amountUsdt: t.deposits.amountUsdt,
+        txHash: t.deposits.txHash,
+        chain: t.deposits.chain,
+        chainNetwork: t.deposits.chainNetwork,
+        tokenSymbol: t.deposits.tokenSymbol,
+        network: t.deposits.network,
+        confirmationsCurrent: t.deposits.confirmationsCurrent,
+        confirmationsRequired: t.deposits.confirmationsRequired,
+        creditedAt: t.deposits.creditedAt,
+        blockTimestamp: t.deposits.blockTimestamp,
+      })
+      .from(t.deposits)
+      .where(
+        and(
+          // Scoped to the caller's own id, which the caller never supplies —
+          // the action resolves it from the session.
+          eq(t.deposits.userId, userId),
+          eq(t.deposits.status, "credited"),
+          isNull(t.deposits.acknowledgedAt),
+        ),
+      )
+      // Newest first: several arriving at once is possible, and the most
+      // recent is the one somebody is standing in front of the screen for.
+      .orderBy(desc(t.deposits.creditedAt))
+      .limit(limit),
+  );
+}
+
+/**
+ * Marks a credited deposit as seen by the account that owns it.
+ *
+ * WHAT MAKES THIS SAFE TO CALL FROM A BROWSER
+ * -------------------------------------------
+ * Three things, all in the `WHERE` clause rather than in a prior read:
+ *
+ * - `user_id = $caller` — ownership, so an id guessed or copied from somebody
+ *   else's screen matches no row. The caller's id comes from the session, not
+ *   from the request.
+ * - `status = 'credited'` — this can only ever act on a deposit that already
+ *   moved money. It cannot create, credit, advance or reopen anything.
+ * - `acknowledged_at is null` — one-way. Acknowledging twice is a no-op, so a
+ *   double-tap, a retry and two open tabs all produce the same single result.
+ *
+ * It writes no ledger entry and no audit entry, deliberately: this changes
+ * nothing about money or authority. It records that a person closed a card.
+ */
+export async function acknowledgeDeposit(
+  request: { depositId: string; userId: string },
+  actor: Actor,
+): Promise<{ acknowledged: boolean }> {
+  return mutate(actor, async ({ tx, now }) => {
+    const updated = await tx
+      .update(t.deposits)
+      .set({ acknowledgedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(t.deposits.id, request.depositId),
+          eq(t.deposits.userId, request.userId),
+          eq(t.deposits.status, "credited"),
+          isNull(t.deposits.acknowledgedAt),
+        ),
+      )
+      .returning({ id: t.deposits.id });
+
+    return { acknowledged: updated.length > 0 };
+  });
+}

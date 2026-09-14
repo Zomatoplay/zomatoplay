@@ -376,6 +376,11 @@ export interface AdminPlan {
   risk: RiskLevel;
   status: AdminPlanStatus;
   capacityFilledPercent?: number;
+  /**
+   * The plan's amount-banded rate ladder, lowest band first. Empty when the
+   * plan has none and `estimatedReturnPercent` prices every allocation.
+   */
+  rateTiers: AdminPlanRateTier[];
   /** Live figures a real products service would compute. */
   stats: {
     activeInvestments: number;
@@ -383,6 +388,21 @@ export interface AdminPlan {
     totalProfitPaid: number;
   };
   updatedAt: string;
+}
+
+/**
+ * One editable band. Identical in substance to the public `PlanRateTierView` —
+ * it is deliberately not shared, because the two applications are isolated
+ * (CLAUDE.md §15.1) and the CRM's copy carries the inactive bands the public
+ * one filters out.
+ */
+export interface AdminPlanRateTier {
+  id: string;
+  minAmountUsdt: number;
+  /** `null` means open-ended: this is the top band. */
+  maxAmountUsdt: number | null;
+  ratePercent: number;
+  active: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -418,6 +438,45 @@ export interface AdminCommissionEntry {
   sourcePlanName: string;
   createdAt: string;
   status: "credited" | "pending" | "reversed";
+  /**
+   * When this entry becomes payable, stamped at accrual from the operator's
+   * `payoutDelayDays`. Null on entries accrued before the schedule existed —
+   * the nightly job leaves those to an operator rather than inventing a date.
+   */
+  releaseAt: string | null;
+  /** When it was actually paid, by the scheduler or by an operator. */
+  releasedAt: string | null;
+}
+
+/** Mirrors the `deposit_address_status` enum in the schema. */
+export type DepositAddressStatus = "available" | "assigned" | "retired";
+
+/**
+ * The deposit-address pool, as an operator needs to see it.
+ *
+ * `unresolvedDeposits` is the number that decides whether an address can be
+ * released or retired — the service refuses either while any deposit against
+ * it is `pending`, `confirming` or an unassigned `confirmed`. Counted here so
+ * the screen can say *why* a control is unavailable instead of only disabling
+ * it, which is the difference between a UI an operator trusts and one they
+ * file a ticket about.
+ */
+export interface AdminDepositAddress {
+  id: string;
+  address: string;
+  chain: string;
+  network: string;
+  asset: string;
+  status: DepositAddressStatus;
+  assignedUserId: string | null;
+  assignedUserName: string | null;
+  assignedUserDisplayId: string | null;
+  assignedAt: string | null;
+  releasedAt: string | null;
+  createdAt: string;
+  depositCount: number;
+  unresolvedDeposits: number;
+  totalCreditedUsdt: number;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -488,7 +547,9 @@ export type AuditAction =
   | "all_devices_logged_out"
   | "deposit_credited"
   | "deposit_failed"
+  | "deposit_address_added"
   | "deposit_address_released"
+  | "deposit_address_retired"
   | "withdrawal_approved"
   | "withdrawal_rejected"
   | "withdrawal_marked_paid"

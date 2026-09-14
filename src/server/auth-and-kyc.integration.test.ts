@@ -218,7 +218,8 @@ describe("verification lifecycle", { skip }, () => {
    * same service the user-facing action calls; only the session lookup in front
    * of it is skipped, because a test process has no request.
    */
-  async function submit(userId: string) {
+  async function submit(userId: string, options: { documents?: boolean } = {}) {
+    const withDocuments = options.documents ?? true;
     const { submissionId } = await submitKyc(
       {
         userId,
@@ -226,16 +227,24 @@ describe("verification lifecycle", { skip }, () => {
         dateOfBirth: "1990-01-01",
         documentType: "national_id",
         documentNumberMasked: "•••• 1234",
-        documentFileName: "identity-document.jpg",
-        documentByteSize: 128_000,
-        documentMimeType: "image/jpeg",
         // Object keys the action verifies against the session before it gets
         // here; this calls the service directly, so it supplies them.
-        documentPath: `${userId}/document-${Date.now()}.jpg`,
-        selfieFileName: "selfie.jpg",
-        selfiePath: `${userId}/selfie-${Date.now()}.jpg`,
-        selfieByteSize: 64_000,
-        selfieMimeType: "image/jpeg",
+        ...(withDocuments
+          ? {
+              document: {
+                fileName: "identity-document.jpg",
+                path: `${userId}/document-${Date.now()}.jpg`,
+                byteSize: 128_000,
+                mimeType: "image/jpeg",
+              },
+              selfie: {
+                fileName: "selfie.jpg",
+                path: `${userId}/selfie-${Date.now()}.jpg`,
+                byteSize: 64_000,
+                mimeType: "image/jpeg",
+              },
+            }
+          : {}),
       },
       MASTER,
     );
@@ -298,6 +307,141 @@ describe("verification lifecycle", { skip }, () => {
       documents.some((document) => document.label === "Selfie capture"),
       "the selfie a reviewer compares against the document is listed",
     );
+  });
+
+  test("a submission with no documents is accepted and reaches pending_review", async () => {
+    /*
+     * THE PRODUCTION DEFECT THIS PINS.
+     *
+     * Document upload is not enabled on this deployment, and the flow required
+     * a file and a selfie unconditionally — so a person who filled the form
+     * correctly was refused at the final step for not attaching something the
+     * product had not asked them for. Verification was simply not completable.
+     *
+     * The submission has to be a real, reviewable case: `pending_review` on the
+     * account, `pending` in the queue, with the declared identity intact.
+     */
+    const userId = await makeUser();
+    const submissionId = await submit(userId, { documents: false });
+
+    assert.equal(await statusOf(userId), "pending_review");
+
+    const [row] = await db
+      .select()
+      .from(t.kycSubmissions)
+      .where(eq(t.kycSubmissions.id, submissionId));
+    assert.equal(row.status, "pending");
+    assert.equal(row.legalName, "KYC Test");
+    assert.equal(row.documentType, "national_id");
+    assert.equal(
+      row.documentNumberMasked,
+      "•••• 1234",
+      "the identity fields are still required and still stored",
+    );
+  });
+
+  test("an absent document is absent — never a fabricated row", async () => {
+    const userId = await makeUser();
+    const submissionId = await submit(userId, { documents: false });
+
+    const documents = await db
+      .select()
+      .from(t.kycDocuments)
+      .where(eq(t.kycDocuments.submissionId, submissionId));
+
+    /*
+     * No placeholder filename, no null-path row, nothing. A `kyc_documents`
+     * row says "there is a document here" to the operator who approves from
+     * it; writing one for a file that does not exist is the same class of lie
+     * as a client-supplied `liveness_check_passed` (CLAUDE.md §23).
+     */
+    assert.equal(documents.length, 0, "no row was invented for a file that does not exist");
+
+    const [row] = await db
+      .select({ riskFlags: t.kycSubmissions.riskFlags })
+      .from(t.kycSubmissions)
+      .where(eq(t.kycSubmissions.id, submissionId));
+    assert.ok(
+      row.riskFlags.includes("documents_not_provided"),
+      "the reviewer is told there is nothing to inspect",
+    );
+    assert.ok(
+      row.riskFlags.includes("liveness_not_verified"),
+      "and the liveness signal is unchanged",
+    );
+  });
+
+  test("an operator can see and act on a case with no documents", async () => {
+    // A submission a reviewer cannot find is not a submission. This is the
+    // same queue read the CRM performs, and then a real decision on the case.
+    const userId = await makeUser();
+    const submissionId = await submit(userId, { documents: false });
+
+    const queue = await db
+      .select({ id: t.kycSubmissions.id, status: t.kycSubmissions.status })
+      .from(t.kycSubmissions)
+      .where(eq(t.kycSubmissions.userId, userId));
+    assert.ok(
+      queue.some((row) => row.id === submissionId && row.status === "pending"),
+      "the case is in the operator queue",
+    );
+
+    await approveKyc({ submissionId, note: "documents collected out of band" }, MASTER);
+    assert.equal(await statusOf(userId), "verified");
+  });
+
+  test("a submission with documents still records what Storage reported", async () => {
+    // The other half of the policy: optional means "may be absent", never
+    // "ignored when present". A supplied file still produces its row, with the
+    // path, type and size the server verified rather than what was claimed.
+    const userId = await makeUser();
+    const submissionId = await submit(userId, { documents: true });
+
+    const documents = await db
+      .select()
+      .from(t.kycDocuments)
+      .where(eq(t.kycDocuments.submissionId, submissionId));
+
+    assert.equal(documents.length, 2);
+    const identity = documents.find((d) => d.label === "Identity document");
+    const selfie = documents.find((d) => d.label === "Selfie capture");
+    assert.ok(identity && selfie);
+    assert.ok(identity.storagePath?.startsWith(userId), "keyed under the owner's folder");
+    assert.equal(identity.contentType, "image/jpeg");
+    assert.equal(identity.byteSize, 128_000);
+    assert.equal(selfie.byteSize, 64_000);
+
+    const [row] = await db
+      .select({ riskFlags: t.kycSubmissions.riskFlags })
+      .from(t.kycSubmissions)
+      .where(eq(t.kycSubmissions.id, submissionId));
+    assert.equal(
+      row.riskFlags.includes("documents_not_provided"),
+      false,
+      "the no-documents flag is not raised when there are documents",
+    );
+  });
+
+  test("a second submission while one is under review is refused", async () => {
+    // Idempotency at the level that matters here: a person double-tapping
+    // Submit must not open two cases for one account.
+    const userId = await makeUser();
+    await submit(userId, { documents: false });
+
+    await assert.rejects(
+      submit(userId, { documents: false }),
+      (error: Error) => {
+        assert.equal(error.name, "KycError");
+        assert.match(error.message, /already under review/i);
+        return true;
+      },
+    );
+
+    const cases = await db
+      .select({ id: t.kycSubmissions.id })
+      .from(t.kycSubmissions)
+      .where(eq(t.kycSubmissions.userId, userId));
+    assert.equal(cases.length, 1, "exactly one case exists for this account");
   });
 
   test("approval is an operator decision, and the user sees it", async () => {

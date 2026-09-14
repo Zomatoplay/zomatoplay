@@ -97,6 +97,9 @@ test("every table in the schema is seeded", async () => {
    * `deposit_addresses` is the same again: it exists to say which real address
    * belongs to which real account, and no seeded fixture account has ever
    * asked for a deposit address or been handed one from the pool.
+   * `deposit_address_assignments` follows `deposit_addresses` necessarily —
+   * it records the intervals during which a real account held a real address,
+   * and a fixture interval would be a claim about who owned a deposit.
    */
   const operational = new Set([
     "investment_earnings",
@@ -104,6 +107,7 @@ test("every table in the schema is seeded", async () => {
     "pipeline_events",
     "plan_rate_history",
     "deposit_addresses",
+    "deposit_address_assignments",
   ]);
 
   assert.deepEqual(

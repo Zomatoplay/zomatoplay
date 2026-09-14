@@ -58,6 +58,15 @@ export function SignInForm({
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [pending, startTransition] = useTransition();
+  /**
+   * The credential was accepted and the account could not be resolved.
+   *
+   * Kept as state rather than a toast because the recovery does not need the
+   * password again — the Supabase session already exists, so the only thing
+   * left is to ask the server once more. A toast that vanishes leaves somebody
+   * retyping credentials that were never the problem.
+   */
+  const [resumable, setResumable] = useState<string | null>(null);
 
   // Reported once, on arrival. Kept out of the render path so a re-render
   // cannot re-fire it.
@@ -72,9 +81,21 @@ export function SignInForm({
 
   /** Shared tail: Supabase has a session, the server resolves the account. */
   function finishSignIn() {
+    setResumable(null);
     startTransition(async () => {
       const result = await completeSignIn({ next });
       if (!result.ok) {
+        /*
+         * `retryable` means the server never reached a verdict — its database
+         * was momentarily unreachable, typically the session pooler refusing a
+         * connection. The credential was already accepted by Supabase before
+         * this call, so reporting it as a rejected sign-in is simply false, and
+         * it is the reported "correct credentials sometimes do not let me in".
+         */
+        if (result.retryable) {
+          setResumable(result.message);
+          return;
+        }
         toast.error(result.message);
         return;
       }
@@ -223,6 +244,26 @@ export function SignInForm({
             : "We will email you a one-time code."
         }
       />
+
+      {resumable ? (
+        <div className="space-y-2.5 rounded-2xl border border-warning/40 bg-warning/8 p-4">
+          <p className="text-sm font-medium text-foreground">
+            Your sign-in was accepted
+          </p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {resumable} You do not need to enter your details again.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={working}
+            onClick={finishSignIn}
+          >
+            Try again
+          </Button>
+        </div>
+      ) : null}
 
       <form
         onSubmit={method === "password" ? signInWithPassword : sendCode}

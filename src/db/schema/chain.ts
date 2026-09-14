@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
   index,
@@ -93,13 +94,35 @@ export const chainScanState = pgTable(
  * index to address is explicit rather than positional. See CLAUDE.md §18.8 for
  * why nothing in this codebase derives one today.
  *
- * WHY REASSIGNMENT IS NEVER AUTOMATIC
- * -------------------------------------
- * `released_at` is set by exactly one thing: a deliberate operator action, and
- * that action refuses an address with any deposit still in flight. Nothing
- * here ever reclaims an address because a page closed, a session expired, or
- * time passed — a transfer that lands after the tab is gone must still find
- * its owner.
+ * HOW AN ADDRESS COMES BACK, AND WHAT MAKES THAT SAFE
+ * ---------------------------------------------------
+ * This table used to say reassignment was never automatic, on the reasoning
+ * that a transfer landing after the tab closed must still find its owner. The
+ * reasoning was right; the conclusion was too strong, and it had a cost the
+ * pool could not absorb — an account that opened the deposit screen once and
+ * never paid held its address forever, so a small pool ran dry and the next
+ * customer met `PoolExhaustedError`.
+ *
+ * Three mechanisms replace "never", and all three are needed together:
+ *
+ *  1. **`deposit_address_assignments` is the record of who held what, when.**
+ *     Attribution no longer asks "who holds this address" — it asks "who held
+ *     it at the moment of this transfer's block". A late transfer is therefore
+ *     still that person's, whoever holds the address now. See
+ *     `findOwnerOfAddressAt`.
+ *
+ *  2. **`quarantine_until` keeps a released address away from a *different*
+ *     user** for a configured window. Inside it, a transfer lands in a gap
+ *     where nobody held the address, and a gap resolves to the operator queue —
+ *     never to somebody else's wallet.
+ *
+ *  3. **`last_user_id` lets the same person get their own address back**, which
+ *     carries no attribution risk at all and is the common case: somebody
+ *     returning to finish a deposit they started.
+ *
+ * Release itself is still refused while any deposit against the address is
+ * unresolved. That rule has not moved, and it is enforced in one function
+ * shared by the manual and automatic paths.
  *
  * `status = 'retired'` is not deleted and is not re-derivable as `available`:
  * once an address leaves rotation it is watched forever (see
@@ -129,8 +152,31 @@ export const depositAddresses = pgTable(
 
     status: depositAddressStatusEnum("status").notNull().default("available"),
     assignedAt: ts("assigned_at"),
-    /** Set only by an explicit administrative release — never automatically. */
+    /** When the current holder last gave it up — by hand, or by the sweep. */
     releasedAt: ts("released_at"),
+
+    /**
+     * Who held it immediately before it was released.
+     *
+     * Kept when `user_id` is nulled, for two reasons. It lets the same person
+     * be handed their own address back rather than a stranger's (no
+     * attribution risk, and the returning-customer case is the common one),
+     * and it means a row still says who to ask when a late transfer turns up.
+     */
+    lastUserId: text("last_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+
+    /**
+     * Before this instant, only the previous holder may claim this address.
+     *
+     * The window in which a transfer from the previous holder is still
+     * plausible. Handing the address to somebody else inside it is the one way
+     * an automatic release could credit the wrong account, so the claim query
+     * refuses to — see `claimAvailableAddress`. Null means no restriction,
+     * which is the state of an address that has never been held.
+     */
+    quarantineUntil: ts("quarantine_until"),
 
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
@@ -144,5 +190,88 @@ export const depositAddresses = pgTable(
     ),
     index("deposit_addresses_user_idx").on(table.userId),
     index("deposit_addresses_status_idx").on(table.chain, table.network, table.status),
+    /*
+     * The sweep's own query: "assigned rows for this pool, oldest assignment
+     * first". Without it the release job seq-scans the pool on every pass,
+     * which is nothing today and is not nothing once the pool is the size it
+     * needs to be.
+     */
+    index("deposit_addresses_assigned_idx").on(
+      table.status,
+      table.assignedAt,
+    ),
+  ],
+);
+
+/**
+ * Who held which address, and between when and when.
+ *
+ * THE TABLE THAT MAKES RELEASING AN ADDRESS SAFE
+ * ----------------------------------------------
+ * `deposit_addresses` holds one row per address and therefore remembers only
+ * the *current* holder. That is enough while an assignment is permanent and
+ * catastrophically not enough once it is not: a transfer sent by yesterday's
+ * holder, arriving after the address changed hands, would be credited to
+ * today's holder — one person's money in another person's wallet, with the
+ * chain showing nothing wrong.
+ *
+ * So the assignment is recorded as an *interval* and attribution is a lookup
+ * by time: the owner of a transfer is whoever held the recipient address at
+ * the transfer's own block timestamp. A transfer that falls in a gap — the
+ * address was in the pool, or quarantined, or nobody's — matches no interval
+ * and goes to the operator queue, which is exactly where an unattributable
+ * transfer belongs (CLAUDE.md §18.4).
+ *
+ * APPEND-ONLY IN SPIRIT
+ * ---------------------
+ * A row is written when an address is claimed and closed (`released_at`) when
+ * it is given up. Nothing else ever updates one and nothing deletes one; it is
+ * evidence, and a dispute about where a deposit went is answered from here.
+ * The address and its chain/network/asset are **copied onto the row** rather
+ * than joined, for the same reason `audit_logs` copies the actor's name: the
+ * history has to keep reading correctly after the pool row changes.
+ */
+export const depositAddressAssignments = pgTable(
+  "deposit_address_assignments",
+  {
+    id: text("id").primaryKey(),
+    addressId: text("address_id")
+      .notNull()
+      .references(() => depositAddresses.id, { onDelete: "cascade" }),
+    /** Copied, not joined — see the note above. */
+    address: text("address").notNull(),
+    chain: chainEnum("chain").notNull().default("tron"),
+    network: chainNetworkEnum("network").notNull().default("shasta"),
+    asset: depositAssetEnum("asset").notNull().default("usdt"),
+
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+
+    assignedAt: ts("assigned_at").notNull(),
+    /** Null while this is the current assignment. */
+    releasedAt: ts("released_at"),
+    /** Why it ended: `idle_timeout`, `settled`, `operator`, `retired`. */
+    releaseReason: text("release_reason"),
+
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    /*
+     * One open assignment per address, enforced by Postgres rather than by
+     * remembering to close the old one. A partial unique index is the only
+     * shape that expresses "at most one row where released_at is null" — a
+     * plain unique on `address_id` would forbid the history this table exists
+     * to keep.
+     */
+    uniqueIndex("deposit_address_assignments_open_key")
+      .on(table.addressId)
+      .where(sql`${table.releasedAt} is null`),
+    /* The attribution lookup: address, then the interval containing an instant. */
+    index("deposit_address_assignments_lookup_idx").on(
+      table.address,
+      table.assignedAt,
+    ),
+    index("deposit_address_assignments_user_idx").on(table.userId),
   ],
 );

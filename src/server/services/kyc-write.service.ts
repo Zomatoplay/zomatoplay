@@ -5,6 +5,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import * as t from "@/db/schema";
 
 import { mutate, newId, withReason, type Actor } from "../write";
+import { DOCUMENTS_NOT_PROVIDED } from "./kyc-policy";
 
 /**
  * Verification decisions.
@@ -34,6 +35,22 @@ export class KycError extends Error {
  * `rejected` → `pending_review`. `verified` is not reachable from here at any
  * input, which is the whole point — it used to be a button in the browser.
  */
+/**
+ * One uploaded file, as Storage described it.
+ *
+ * Present only when a file was genuinely uploaded and verified. There is no
+ * "empty" variant and no placeholder: an absent document is `undefined`, and
+ * `submitKyc` writes no row for it. See `@/server/services/kyc-policy`.
+ */
+export interface KycUploadedDocument {
+  fileName: string;
+  /** Object key in the private bucket, already verified against the session. */
+  path: string;
+  /** As Storage recorded it, not as the browser claimed. */
+  byteSize: number;
+  mimeType: string;
+}
+
 export interface KycSubmissionRequest {
   userId: string;
   legalName: string;
@@ -43,16 +60,17 @@ export interface KycSubmissionRequest {
   documentType: (typeof t.kycDocumentTypeEnum.enumValues)[number];
   /** Already masked by the caller — the full number never reaches this layer. */
   documentNumberMasked: string;
-  documentFileName: string;
-  documentByteSize: number;
-  documentMimeType: string;
-  /** Object key in the private bucket, already verified against the session. */
-  documentPath: string;
-  /** The selfie the reviewer compares against the document. */
-  selfieFileName: string;
-  selfiePath: string;
-  selfieByteSize: number;
-  selfieMimeType: string;
+  /**
+   * The identity document, when one was uploaded.
+   *
+   * Optional because document upload is not enabled on this deployment
+   * (`KYC_REQUIRE_DOCUMENTS`). Optional means absent, never fabricated: when
+   * it is undefined no `kyc_documents` row is written at all, rather than a
+   * row with an invented filename or a storage path pointing at nothing.
+   */
+  document?: KycUploadedDocument;
+  /** The selfie the reviewer compares against the document, when one exists. */
+  selfie?: KycUploadedDocument;
 }
 
 /**
@@ -100,6 +118,38 @@ export async function submitKyc(
 
     const submissionId = newId("kyc", now);
 
+    const documents: (typeof t.kycDocuments.$inferInsert)[] = [];
+    if (request.document) {
+      documents.push({
+        id: newId("kyd", now),
+        submissionId,
+        label: "Identity document",
+        type: request.documentType,
+        fileName: request.document.fileName.slice(0, 120),
+        storagePath: request.document.path,
+        contentType: request.document.mimeType,
+        byteSize: request.document.byteSize,
+        uploadedAt: now,
+        pages: 1,
+      });
+    }
+    if (request.selfie) {
+      documents.push({
+        // Offset by a millisecond so two ids generated in the same call cannot
+        // collide — `newId` derives from the timestamp.
+        id: newId("kyd", new Date(now.getTime() + 1)),
+        submissionId,
+        label: "Selfie capture",
+        type: request.documentType,
+        fileName: request.selfie.fileName.slice(0, 120),
+        storagePath: request.selfie.path,
+        contentType: request.selfie.mimeType,
+        byteSize: request.selfie.byteSize,
+        uploadedAt: now,
+        pages: 1,
+      });
+    }
+
     await tx.insert(t.kycSubmissions).values({
       id: submissionId,
       userId: request.userId,
@@ -123,45 +173,42 @@ export async function submitKyc(
        * approves from, that nothing had established.
        */
       livenessCheckPassed: false,
-      riskFlags: [LIVENESS_NOT_VERIFIED],
+      /*
+       * Both signals a reviewer needs, and both of them true statements about
+       * what this deployment did rather than about the person.
+       *
+       * `documents_not_provided` is added when the submission carries no
+       * files. The CRM renders risk flags and declines to recommend approval
+       * while any is present, so a case with nothing to inspect arrives marked
+       * as such instead of looking like a complete one whose documents failed
+       * to render.
+       */
+      riskFlags: documents.length === 0
+        ? [LIVENESS_NOT_VERIFIED, DOCUMENTS_NOT_PROVIDED]
+        : [LIVENESS_NOT_VERIFIED],
     });
 
     /*
-     * Two rows, because a reviewer compares two things: the document and the
-     * face. The seeded cases already carry a separate "Liveness capture" row
-     * for exactly that reason, and the CRM's case panel lists documents rather
-     * than assuming one.
+     * One row per file that actually exists, and none for one that does not.
+     *
+     * A reviewer compares two things where both are present — the document and
+     * the face — which is why the seeded cases carry a separate "Liveness
+     * capture" row and the CRM lists documents rather than assuming one.
+     *
+     * When a file is absent the row is simply not written. The alternative —
+     * a row with a placeholder filename and a null `storage_path` — would put
+     * "there is a document here" into the table an operator approves from,
+     * about a document that does not exist. That is the same class of mistake
+     * as a client-supplied `liveness_check_passed` (CLAUDE.md §23), and it is
+     * not worth making for a filename.
      *
      * `storagePath` points at an object in the private bucket that
      * `describeOwnUpload` has already confirmed exists and belongs to this
      * account. The bytes are not here; see the note on the table.
      */
-    await tx.insert(t.kycDocuments).values([
-      {
-        id: newId("kyd", now),
-        submissionId,
-        label: "Identity document",
-        type: request.documentType,
-        fileName: request.documentFileName.slice(0, 120),
-        storagePath: request.documentPath,
-        contentType: request.documentMimeType,
-        byteSize: request.documentByteSize,
-        uploadedAt: now,
-        pages: 1,
-      },
-      {
-        id: newId("kyd", new Date(now.getTime() + 1)),
-        submissionId,
-        label: "Selfie capture",
-        type: request.documentType,
-        fileName: request.selfieFileName.slice(0, 120),
-        storagePath: request.selfiePath,
-        contentType: request.selfieMimeType,
-        byteSize: request.selfieByteSize,
-        uploadedAt: now,
-        pages: 1,
-      },
-    ]);
+    if (documents.length > 0) {
+      await tx.insert(t.kycDocuments).values(documents);
+    }
 
     await tx
       .update(t.users)
@@ -172,9 +219,15 @@ export async function submitKyc(
       action: "kyc_note_added",
       target: { type: "kyc", id: submissionId, label: request.userId },
       details:
-        "User submitted identity verification. Awaiting review. No automated " +
-        "liveness check ran — none is connected — so the selfie must be " +
-        "compared with the document by hand.",
+        documents.length === 0
+          ? "User submitted identity verification with declared details only. " +
+            "Document upload is not enabled on this deployment, so no files " +
+            "were provided and none were expected. No automated liveness " +
+            "check ran — none is connected."
+          : `User submitted identity verification with ${documents.length} ` +
+            `document${documents.length === 1 ? "" : "s"}. Awaiting review. No ` +
+            "automated liveness check ran — none is connected — so the selfie " +
+            "must be compared with the document by hand.",
     });
 
     return { submissionId };

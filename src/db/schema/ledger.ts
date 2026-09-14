@@ -182,6 +182,20 @@ export const deposits = pgTable(
     index("deposits_created_idx").on(table.createdAt),
     index("deposits_unassigned_idx").on(table.status, table.userId),
     index("deposits_sender_idx").on(table.senderAddress),
+    /*
+     * "What has arrived at this receiving address, and is any of it
+     * unresolved?"
+     *
+     * Three call sites ask it and one of them gates a write:
+     * `countUnresolvedDeposits` is the safety check that refuses to release an
+     * address with deposit activity still in flight, and it runs inside the
+     * release transaction; the sweep's candidate rollup asks it for every
+     * assigned address on every pass; and the CRM's address list asks it three
+     * times per row. `sender_address` was indexed and `wallet_address` — the
+     * side this application actually scans and attributes on — was not, so all
+     * three were sequential scans of `deposits`.
+     */
+    index("deposits_wallet_address_idx").on(table.walletAddress, table.status),
     /** "This account's credited deposits it has not acknowledged yet." */
     index("deposits_unacknowledged_idx").on(
       table.userId,

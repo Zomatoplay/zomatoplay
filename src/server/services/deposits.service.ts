@@ -8,7 +8,7 @@ import { decimalFrom, isPositive, numericValue, type Decimal } from "@/db/money"
 import * as t from "@/db/schema";
 import { getDb, isDatabaseConfigured, type Tx } from "@/db";
 
-import { findOwnerOfAddress } from "../repositories/deposit-address.repository";
+import { findOwnerOfAddressAt } from "../repositories/deposit-address.repository";
 import { getTronConfig, isTronConfigured } from "../tron/config";
 import { applyLedgerEntry, ensureWallet } from "../repositories/wallet.repository";
 import { fromDatabase, resilientRead } from "../database";
@@ -175,12 +175,31 @@ export async function recordObservedDeposit(
 
     if (!eligibleForAutoCredit) return { outcome, depositId };
 
-    const owner = await findOwnerOfAddress(tx, {
-      chain: "tron",
-      network: transfer.network as "shasta" | "nile" | "mainnet",
-      asset: "usdt",
-      address: transfer.to,
-    });
+    /*
+     * ATTRIBUTED BY WHEN THE TRANSFER HAPPENED, NOT BY WHO HOLDS THE ADDRESS NOW.
+     *
+     * The instant that decides ownership is the transfer's own **block
+     * timestamp** — a fact about the chain. Using the scanner's clock instead
+     * would make attribution depend on when a cron happened to run, so a pass
+     * delayed past a release would credit the wrong account. `detectedAt` is
+     * the fallback only for a transfer whose block time TronGrid did not
+     * report, which places it at detection and is the most conservative
+     * reading available.
+     *
+     * A null answer is not a failure: it means nobody held this address at
+     * that moment, so the deposit stays unattributed and an operator assigns
+     * it. See `findOwnerOfAddressAt`.
+     */
+    const owner = await findOwnerOfAddressAt(
+      tx,
+      {
+        chain: "tron",
+        network: transfer.network as "shasta" | "nile" | "mainnet",
+        asset: "usdt",
+        address: transfer.to,
+      },
+      transfer.blockTimestamp ?? now,
+    );
     if (!owner) return { outcome, depositId };
 
     const [user] = await tx

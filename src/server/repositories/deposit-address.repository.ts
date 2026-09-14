@@ -1,9 +1,14 @@
 import "server-only";
 
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 
 import * as t from "@/db/schema";
 import type { Database, Tx } from "@/db";
+import { newId } from "../write";
+import {
+  REASSIGN_QUARANTINE_MS,
+  type ReleaseReason,
+} from "../services/deposit-address-policy";
 
 /**
  * The deposit-address pool's data access.
@@ -89,18 +94,52 @@ export async function claimAvailableAddress(
   target: PoolTarget,
   now: Date,
 ): Promise<DepositAddressRow> {
+  /*
+   * QUARANTINE: A RELEASED ADDRESS IS NOT IMMEDIATELY ANYBODY ELSE'S.
+   *
+   * `quarantine_until` is stamped when an address is released. Until it
+   * passes, only the account that just held it may take it back — which is
+   * risk-free, because a late transfer from that same person is still theirs —
+   * while anybody else is passed over. A transfer arriving in that gap matches
+   * no assignment interval and goes to the operator queue rather than into a
+   * stranger's wallet, which is the whole safety argument for releasing
+   * automatically at all. See `@/server/services/deposit-address-policy`.
+   *
+   * Ordered so a row this user previously held is preferred over a stranger's:
+   * `last_user_id = userId` first, then oldest-created, which keeps the stable
+   * auditable ordering the pool always had for everything else.
+   */
+  const claimable = and(
+    eq(t.depositAddresses.chain, target.chain),
+    eq(t.depositAddresses.network, target.network),
+    eq(t.depositAddresses.asset, target.asset),
+    eq(t.depositAddresses.status, "available"),
+    or(
+      isNull(t.depositAddresses.quarantineUntil),
+      lte(t.depositAddresses.quarantineUntil, now),
+      eq(t.depositAddresses.lastUserId, userId),
+    ),
+  );
+
   const [candidate] = await tx
     .select({ id: t.depositAddresses.id })
     .from(t.depositAddresses)
-    .where(
-      and(
-        eq(t.depositAddresses.chain, target.chain),
-        eq(t.depositAddresses.network, target.network),
-        eq(t.depositAddresses.asset, target.asset),
-        eq(t.depositAddresses.status, "available"),
-      ),
+    .where(claimable)
+    .orderBy(
+      /*
+       * This user's own previous address first, then oldest-created.
+       *
+       * `IS NOT DISTINCT FROM` rather than `=`, and that is not pedantry:
+       * `last_user_id = $1` is **NULL** for a row nobody has ever held, and
+       * Postgres sorts NULLs *first* under `DESC` by default — so a plain `=`
+       * would order never-held rows above rows that genuinely belong to this
+       * user, and the preference would be silently inverted for exactly the
+       * case it exists for. `IS NOT DISTINCT FROM` returns true or false and
+       * never null, so `DESC` means what it reads as.
+       */
+      desc(sql`${t.depositAddresses.lastUserId} is not distinct from ${userId}`),
+      asc(t.depositAddresses.createdAt),
     )
-    .orderBy(asc(t.depositAddresses.createdAt))
     .limit(1)
     .for("update", { skipLocked: true });
 
@@ -108,7 +147,16 @@ export async function claimAvailableAddress(
 
   const [claimed] = await tx
     .update(t.depositAddresses)
-    .set({ userId, status: "assigned", assignedAt: now, updatedAt: now })
+    .set({
+      userId,
+      status: "assigned",
+      assignedAt: now,
+      // Cleared on claim: the row is held again, so there is nothing to
+      // withhold it from and a stale value would confuse the next release.
+      quarantineUntil: null,
+      lastUserId: userId,
+      updatedAt: now,
+    })
     // Re-asserted so a row that changed status between the two statements
     // (it cannot, under the lock just taken, but the guard costs nothing and
     // matches the rest of the codebase's belt-and-braces style) is refused
@@ -117,6 +165,26 @@ export async function claimAvailableAddress(
     .returning();
 
   if (!claimed) throw new PoolExhaustedError(target);
+
+  /*
+   * The interval opens here, in the same transaction as the claim.
+   *
+   * Attribution reads this table rather than `deposit_addresses.user_id`, so a
+   * claim without its history row would be an assignment no deposit could ever
+   * be matched to. One transaction is what makes that impossible.
+   */
+  await tx.insert(t.depositAddressAssignments).values({
+    id: newId("dpx", now),
+    addressId: claimed.id,
+    address: claimed.address,
+    chain: claimed.chain,
+    network: claimed.network,
+    asset: claimed.asset,
+    userId,
+    assignedAt: now,
+    createdAt: now,
+  });
+
   return claimed;
 }
 
@@ -140,26 +208,72 @@ export async function lockAllocationFor(
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${key}))`);
 }
 
-/** Resolves a received transfer's recipient address to its owning user. */
-export async function findOwnerOfAddress(
+/**
+ * Who held this address at a given instant.
+ *
+ * ATTRIBUTION IS BY TIME, NOT BY CURRENT HOLDER — AND THAT IS THE POINT.
+ * ---------------------------------------------------------------------
+ * This used to read `deposit_addresses` and return whoever holds the address
+ * *now*. That is correct exactly as long as an assignment is permanent, and
+ * catastrophically wrong the moment one is not: a transfer sent by yesterday's
+ * holder, arriving after the address changed hands, would be credited to
+ * today's holder. One customer's deposit in another customer's wallet, with
+ * nothing on the chain to indicate anything went wrong.
+ *
+ * So the question asked is "who held this address at `at`", answered from
+ * `deposit_address_assignments` — an append-only record of intervals. `at` is
+ * the transfer's own **block timestamp**, which is a fact about the chain and
+ * not about when the scanner happened to run, so a pass that runs late cannot
+ * change who a deposit belongs to.
+ *
+ * Three outcomes, and the third is the one worth preserving:
+ *
+ *   an interval contains `at`   →  that user
+ *   no interval contains `at`   →  **null** — the address was in the pool,
+ *                                  quarantined, or nobody's at that moment, so
+ *                                  the deposit is unattributed and goes to the
+ *                                  operator queue (CLAUDE.md §18.4)
+ *   the address is not ours     →  null, likewise
+ *
+ * Returning null is never a loss: an unattributed deposit is visible, credits
+ * nobody, and an operator assigns it by hand. Guessing would be the loss.
+ */
+export async function findOwnerOfAddressAt(
   tx: Tx,
   target: PoolTarget & { address: string },
-): Promise<{ addressId: string; userId: string } | null> {
+  at: Date,
+): Promise<{ addressId: string; userId: string; assignmentId: string } | null> {
   const [row] = await tx
-    .select({ id: t.depositAddresses.id, userId: t.depositAddresses.userId })
-    .from(t.depositAddresses)
+    .select({
+      id: t.depositAddressAssignments.id,
+      addressId: t.depositAddressAssignments.addressId,
+      userId: t.depositAddressAssignments.userId,
+    })
+    .from(t.depositAddressAssignments)
     .where(
       and(
-        eq(t.depositAddresses.chain, target.chain),
-        eq(t.depositAddresses.network, target.network),
-        eq(t.depositAddresses.asset, target.asset),
-        eq(t.depositAddresses.address, target.address),
-        eq(t.depositAddresses.status, "assigned"),
+        eq(t.depositAddressAssignments.chain, target.chain),
+        eq(t.depositAddressAssignments.network, target.network),
+        eq(t.depositAddressAssignments.asset, target.asset),
+        eq(t.depositAddressAssignments.address, target.address),
+        lte(t.depositAddressAssignments.assignedAt, at),
+        // Open, or closed after the transfer landed. `released_at` is exact:
+        // an address released at 10:00 does not own a transfer from 10:01.
+        or(
+          isNull(t.depositAddressAssignments.releasedAt),
+          gt(t.depositAddressAssignments.releasedAt, at),
+        ),
       ),
     )
+    // Most recent interval first. They cannot overlap — one open row per
+    // address is enforced by a partial unique index — but ordering makes the
+    // answer deterministic rather than dependent on physical row order, which
+    // is a lesson this codebase has already paid for once (CLAUDE.md §16.7).
+    .orderBy(desc(t.depositAddressAssignments.assignedAt))
     .limit(1);
-  if (!row || !row.userId) return null;
-  return { addressId: row.id, userId: row.userId };
+
+  if (!row) return null;
+  return { addressId: row.addressId, userId: row.userId, assignmentId: row.id };
 }
 
 export class AddressReleaseError extends Error {
@@ -184,6 +298,7 @@ export async function releaseDepositAddress(
   tx: Tx,
   addressId: string,
   now: Date,
+  reason: ReleaseReason = "operator",
 ): Promise<DepositAddressRow> {
   const [row] = await tx
     .select()
@@ -193,7 +308,9 @@ export async function releaseDepositAddress(
     .for("update");
   if (!row) throw new AddressReleaseError(`No deposit address ${addressId}.`);
   if (row.status !== "assigned") {
-    throw new AddressReleaseError("Only an assigned address can be released.");
+    throw new AddressReleaseError(
+      `Only an assigned address can be released — this one is ${row.status}.`,
+    );
   }
 
   await assertNoUnresolvedDeposits(tx, row.address, "released");
@@ -204,12 +321,72 @@ export async function releaseDepositAddress(
       userId: null,
       status: "available",
       releasedAt: now,
+      /*
+       * The window in which only the previous holder may take it back.
+       *
+       * Stamped at release rather than computed at claim time so the promise
+       * made to this particular holder is a stored fact. Changing the policy
+       * afterwards then applies to future releases and cannot retroactively
+       * shorten one somebody is already relying on.
+       */
+      quarantineUntil: new Date(now.getTime() + REASSIGN_QUARANTINE_MS),
+      // `user_id` is cleared; who held it is not lost.
+      lastUserId: row.userId ?? row.lastUserId,
       updatedAt: now,
     })
     .where(and(eq(t.depositAddresses.id, addressId), eq(t.depositAddresses.status, "assigned")))
     .returning();
   if (!updated) throw new AddressReleaseError("That address changed while releasing it.");
+
+  await closeOpenAssignment(tx, addressId, now, reason);
   return updated;
+}
+
+/**
+ * Closes the open interval for an address.
+ *
+ * `released_at` is what stops a later transfer being attributed to the holder
+ * who has just let the address go — see `findOwnerOfAddressAt`. It runs in the
+ * same transaction as the status change, so there is no instant at which the
+ * pool row says "available" and the history still says somebody owns it.
+ *
+ * Tolerant of there being no open row: addresses assigned before this table
+ * existed were backfilled, but a row created by some future path that forgets
+ * to open an interval should still be releasable rather than wedged.
+ */
+async function closeOpenAssignment(
+  tx: Tx,
+  addressId: string,
+  now: Date,
+  reason: ReleaseReason,
+): Promise<void> {
+  await tx
+    .update(t.depositAddressAssignments)
+    .set({ releasedAt: now, releaseReason: reason })
+    .where(
+      and(
+        eq(t.depositAddressAssignments.addressId, addressId),
+        isNull(t.depositAddressAssignments.releasedAt),
+      ),
+    );
+}
+
+/**
+ * Why an address cannot be released, in a form a screen can render.
+ *
+ * `assertNoUnresolvedDeposits` throws, which is right for a write path and
+ * useless for "should this button be enabled and what should the tooltip
+ * say". This is the same rule asked as a question, so the UI, the sweep and
+ * the operator action all agree by construction rather than by three
+ * implementations happening to match.
+ */
+export interface ReleaseEligibility {
+  releasable: boolean;
+  /** `idle_timeout` / `settled` when releasable; otherwise undefined. */
+  reason?: ReleaseReason;
+  /** Why not, in plain words. Shown to the operator verbatim. */
+  blockedBy?: string;
+  unresolvedDeposits: number;
 }
 
 /**
@@ -225,7 +402,33 @@ async function assertNoUnresolvedDeposits(
   address: string,
   verb: "released" | "retired",
 ): Promise<void> {
-  const [unresolved] = await tx
+  const unresolved = await countUnresolvedDeposits(tx, address);
+  if (unresolved > 0) {
+    throw new AddressReleaseError(
+      `This address has ${unresolved} unresolved deposit${unresolved === 1 ? "" : "s"} ` +
+        `and cannot be ${verb}. Resolve them in the deposits queue — credit, ` +
+        `fail or ignore each one — and try again.`,
+    );
+  }
+}
+
+/**
+ * Deposits against an address that nobody has finished dealing with.
+ *
+ * `pending` and `confirming` are still arriving. A `confirmed` row with no
+ * `user_id` is money that landed and has not been attributed to anybody — the
+ * legacy shared-address case (CLAUDE.md §18.4) — and releasing the address out
+ * from under it would destroy the only context an operator has for deciding
+ * whose it was.
+ *
+ * A `confirmed` row that *is* attributed is not a blocker: it belongs to a
+ * known account and the settlement path will credit it.
+ */
+export async function countUnresolvedDeposits(
+  tx: Tx | Database,
+  address: string,
+): Promise<number> {
+  const [row] = await tx
     .select({ count: sql<number>`count(*)::int` })
     .from(t.deposits)
     .where(
@@ -234,11 +437,7 @@ async function assertNoUnresolvedDeposits(
         sql`${t.deposits.status} in ('pending', 'confirming', 'confirmed')`,
       ),
     );
-  if ((unresolved?.count ?? 0) > 0) {
-    throw new AddressReleaseError(
-      `This address has unresolved deposit activity and cannot be ${verb}.`,
-    );
-  }
+  return row?.count ?? 0;
 }
 
 /**
@@ -261,7 +460,7 @@ async function assertNoUnresolvedDeposits(
  * a late transfer to it turns up. What removes it from every live path is the
  * status alone, and that is enough because all three of them filter on it:
  * `claimAvailableAddress` wants `available`, `findAssignedAddress` and
- * `findOwnerOfAddress` want `assigned`. So a retired address is never handed
+ * `findOwnerOfAddressAt` resolves by interval. So a retired address is never handed
  * out, never shown as somebody's current address, and never auto-credited —
  * while `listWatchedAddresses` returns rows of every status, so the scanner
  * keeps watching it and a stray transfer still surfaces in the operator queue
@@ -311,6 +510,17 @@ export async function retireDepositAddress(
     )
     .returning();
   if (!updated) throw new AddressReleaseError("That address changed while retiring it.");
+
+  /*
+   * The interval is closed even though `user_id` is kept on the pool row.
+   *
+   * A retired address is never handed to anybody else, so leaving the interval
+   * open would not misattribute anything — but it would mean the history says
+   * somebody still holds an address that has left rotation, and "open" is the
+   * thing the partial unique index and the sweep both key on. Closed, with the
+   * reason recorded, is the honest state.
+   */
+  await closeOpenAssignment(tx, addressId, now, "retired");
   return updated;
 }
 

@@ -1197,6 +1197,13 @@ table owner too and would lock the application out of its own data.
 > remember: **migrate, then secure.** There is a regression test
 > (`kyc-storage.integration.test.ts`) that reads every table as `anon` and as a
 > signed-in customer and requires both to come back empty.
+>
+> That test's table list is **derived from `@/db/schema`**, not written out. It
+> used to be a hand-written list of thirteen, and a hand-written list is one
+> somebody forgets to add to: `deposit_address_assignments` — which maps a
+> blockchain address to the user who held it, so it *is* the attribution
+> mechanism §18.8 describes — shipped with RLS off and the suite stayed green.
+> Deriving the list turns "migrate, then secure" from a rule into a test.
 
 It also provisions the private `kyc-documents` bucket and its policies — see
 §16.1c. Neither half needs a service-role key: Supabase keeps buckets and
@@ -1619,9 +1626,27 @@ re-resolves per attempt, so a retry lands on a different endpoint.
 Rules, all load-bearing:
 
 - **Only connection-establishment failures are retried.** `CONNECT_TIMEOUT`,
-  `ECONNRESET`, SQLSTATE class `08`, `57P01`/`57P03`. A constraint violation or
-  syntax error is re-thrown on the first attempt. Retrying a permanent error
-  hides a bug behind a delay.
+  `ECONNRESET`, SQLSTATE class `08`, `57P01`/`57P03`, `53300`/`53400`, and the
+  pooler's own client-limit refusal. A constraint violation or syntax error is
+  re-thrown on the first attempt. Retrying a permanent error hides a bug behind
+  a delay.
+- **A full pooler is retried, and it needs both the code and the message.**
+  Supavisor answers a sixteenth session-mode client with `PostgresError`
+  `XX000` — `internal_error` — and the text `(EMAXCONNSESSION) max clients
+  reached in session mode`. `XX000` on its own is far too broad to retry, so
+  `isPoolExhaustionError` requires the message too; there is a test asserting
+  that a plain `XX000` is *not* retried.
+
+  This was the cause of the intermittent sign-in failure: the code matched
+  nothing in the transient set, so the retry re-threw on the first attempt and
+  five consecutive `admin.resolveOperator` failures over 78 seconds produced no
+  `database.connectRetry` row at all.
+
+  It gets a **different backoff** — 700ms, 1.4s, 2.8s, four extra attempts —
+  because a full pooler frees up on `idle_timeout` (30s), not on landing a
+  different A record. Two attempts 200ms apart are effectively one attempt. The
+  12s wall-clock budget still bounds it, so a caller never waits longer than it
+  was promised.
 - **Reads only. Never `mutate()`.** A write that failed after its statements
   reached the server may have committed; replaying it would double it. Nothing
   in `@/server/write` goes through `resilientRead`, and nothing should.
@@ -1677,6 +1702,38 @@ whole document. Do not delete either file.
 resolve an account only to offer a convenience redirect and fall back to showing
 the form; `redirect()` is called **outside** the `try`, because it works by
 throwing a signal a broad `catch` would swallow.
+
+**A gate that cannot reach an answer degrades; it does not crash and it does
+not sign anybody out.** `(app)/layout.tsx` re-threw on a database fault, so one
+refused connection took out the whole document — no navigation, no way back
+except a reload. Both gates now distinguish three outcomes, and the distinction
+is the point:
+
+| | |
+|---|---|
+| resolved, and it is somebody | render |
+| resolved, and it is nobody | redirect to sign-in |
+| **could not resolve** (`isInfrastructureFailure`) | render a shell with a retry |
+
+The third grants nothing: no account or operator is resolved, so no page below
+the layout renders — `(console)` shows `ConsoleUnavailable`, which contains no
+console and no operator data. The retry re-runs the same gate, which redirects
+to sign-in if the session really has gone. This is the same reasoning
+`AuthProviderUnavailableError` already applied to the auth provider (§19.4),
+extended to the database, because "we could not check" means the same thing
+whichever dependency was unreachable.
+
+**Nothing may report an infrastructure failure as an authorization verdict.**
+`completeSignIn`, `completeOperatorSignIn` and the CRM's `failed()` helper all
+caught everything and returned `error.message` verbatim — which is how Drizzle's
+"Failed query: select …admin_agents… params: <uuid>" reached an operator's
+browser as the reason their sign-in failed. `toSafeFailure()` in
+`@/server/errors` is the one place that decides what a person may be shown:
+an allowlist of this application's own error classes may speak, everything else
+is described from its category, and the real text goes to `pipeline_events`.
+A `retryable` flag rides along so a form can offer another go — and
+`AdminSignInForm` must **not** call `signOut()` on one, which it used to do for
+every failure and which is the mechanism behind "it took six tries".
 
 ## 17. The write layer
 
@@ -1864,9 +1921,12 @@ structurally, not by inference.
 
 So, today:
 
-- A transfer to an **assigned pool address** resolves to its owner and is
-  credited automatically, in the same transaction that records it — see
-  `recordObservedDeposit` in `@/server/services/deposits.service`.
+- A transfer to a **pool address** resolves to whoever held it **at the
+  transfer's own block timestamp** and is credited automatically, in the same
+  transaction that records it — see `recordObservedDeposit` in
+  `@/server/services/deposits.service` and `findOwnerOfAddressAt`. The block
+  timestamp rather than the scanner's clock, so a pass that runs late cannot
+  change who a deposit belongs to.
 - A transfer to the **legacy shared address**, or to a pool address that was
   never assigned, still cannot say who paid. `deposits.user_id` stays
   **nullable** for exactly this case, and an operator attributes it by hand in
@@ -2009,6 +2069,9 @@ will report nothing until `TRON_LOOKBACK_MS` covers it.
 | `TRON_CONFIRMATION_REQUIRED` | Wait for solidification. Default on. **Refused on mainnet when off** (§18.1). |
 | `TRON_POLL_INTERVAL_MS` | Scanner interval. Default 30000. |
 | `TRON_LOOKBACK_MS` | First-run window. Default 24h. |
+| `DEPOSIT_ADDRESS_IDLE_RELEASE_MS` | How long an address with no deposit stays assigned. Default 10 min (§18.8). |
+| `DEPOSIT_ADDRESS_SETTLED_RELEASE_MS` | How long after the last settled deposit an address may be released. Default 1h. |
+| `DEPOSIT_ADDRESS_QUARANTINE_MS` | How long a released address is withheld from a *different* account. Default 24h. **Lowering this trades safety for capacity; add addresses instead.** |
 
 Leaving the contract and address unset disables the integration; nothing else in
 the application is affected.
@@ -2073,13 +2136,55 @@ is always pool member zero, so this works today with the one address every
 deployment already has, and grows by adding more addresses to the env var, not
 by writing code.
 
-**An address is never reassigned automatically.** No code path reclaims one
-because a page closed, a session ended, or time passed — the only way an
-address returns to the pool is `releaseDepositAddress`, an explicit operator
-action (`/admin/actions.ts`'s `releaseDepositAddressAction`) that refuses when
-any deposit against that address is not yet `credited`, `failed` or `ignored`.
-A transfer that arrives after the browser tab is long gone must still find its
-owner.
+**An address IS released automatically, and what makes that safe is not a
+timer.** This used to say reassignment never happens. The reasoning was right —
+a transfer arriving after the tab closed must still find its owner — and the
+conclusion was too strong: an account that opened the deposit screen once and
+never paid held its address forever, so a two-address pool is a permanently
+exhausted pool and every later customer meets `PoolExhaustedError`.
+
+Three mechanisms replace "never", and all three are needed together:
+
+1. **`deposit_address_assignments`** — an append-only record of who held which
+   address between when and when. `findOwnerOfAddressAt` resolves a transfer
+   against its **own block timestamp**, so a late transfer belongs to whoever
+   held the address when it was *sent*, whoever holds it now. Attribution can
+   no longer be moved by releasing an address.
+2. **A transfer in a gap credits nobody.** If no interval covers the instant,
+   the deposit is recorded unattributed and an operator assigns it (§18.4).
+   Slow and correct.
+3. **`quarantine_until`** — a released address is withheld from any *other*
+   account for `DEPOSIT_ADDRESS_QUARANTINE_MS` (default 24h). The previous
+   holder may take it straight back, which carries no attribution risk at all
+   and is the common case; `last_user_id` is what makes that preference
+   possible.
+
+`sweepDepositAddresses()` (`deposit-address-sweep.service.ts`) releases an
+address with **no deposit at all** after `DEPOSIT_ADDRESS_IDLE_RELEASE_MS`
+(10 min), or — once every deposit against it is terminal — after
+`DEPOSIT_ADDRESS_SETTLED_RELEASE_MS` (1h) from the *last* deposit. The windows
+live in `deposit-address-policy.ts` and nowhere else.
+
+**The pre-existing refusal is untouched and is checked first.** A `pending`,
+`confirming` or unattributed `confirmed` deposit blocks release at **any age**,
+for the sweep and for an operator alike, through one shared function. No amount
+of elapsed time talks past it. There is a test named for that ordering.
+
+**An operator's authority is not subject to the clock.** The idle and settle
+windows govern the *sweep*. `releaseDepositAddress` refuses only on unresolved
+deposits, so an operator may release a fresh assignment — they have looked at
+it and decided. `/admin/deposits/addresses` shows both verdicts separately, and
+both come from the server.
+
+**Three triggers, because one scheduler is not guaranteed.**
+`/api/cron/release-deposit-addresses` (every 15 minutes) is the primary one;
+the tail of `/api/cron/scan-deposits` sweeps too, because Hobby caps the
+*number* of cron jobs as well as their frequency; and
+`getOrCreateDepositAddress` sweeps **on pool exhaustion**, which makes the pool
+self-healing at the moment capacity is needed even with no scheduler at all.
+A missed run is a delay and never a loss — eligibility is a property of the
+row, so the next pass finds everything still outstanding, exactly like the
+commission release (§10d).
 
 **Concurrency.** Two requests for the same user's first-ever address are
 serialised by a transaction-scoped `pg_advisory_xact_lock`, keyed to that user
@@ -2473,6 +2578,15 @@ doing the real work:
    were given, and a table an operator browses is not the place for a
    connection string.
 
+**Errors are recorded with their whole cause chain.** `describeError()` walks
+up to four levels and `errorDiagnostics()` puts `errorCode`, `errorName` and
+`errorSeverity` in `metadata`. This is not decoration: it used to record
+`${error.name}: ${error.message}`, one level deep, and Drizzle wraps every
+driver failure in a `DrizzleQueryError` whose message is the SQL text and whose
+`cause` carries the SQLSTATE — so **every database failure in the system log
+recorded the query and threw away the reason**, which is why a connection fault
+went undiagnosed for weeks. Every level goes through `redact()`.
+
 ---
 
 ## 23. What is deliberately still missing
@@ -2502,6 +2616,27 @@ is the detail.
   What is not: nothing *verifies* the document. A human compares the selfie with
   the ID; no provider reads either.
 
+  **Documents are OPTIONAL, and that is a policy in one place.**
+  `KYC_REQUIRE_DOCUMENTS` (`@/server/services/kyc-policy`, mirrored to the form
+  as `NEXT_PUBLIC_KYC_REQUIRE_DOCUMENTS`) is off, so a submission may carry
+  declared details alone. The flow used to require a document *and* a selfie
+  unconditionally, which meant a correctly filled form was refused at the last
+  step for not attaching something the product was not asking for —
+  verification was not completable at all.
+
+  Three things this does **not** relax, at any setting: the identity fields
+  (name, date of birth, document type, last four characters of the number),
+  the session the account is resolved from, and the verification of a document
+  that *is* supplied — still checked against the caller's own `auth.uid()`
+  folder and re-read from Storage before any row claims it exists.
+
+  **An absent document is absent.** No `kyc_documents` row is written for a
+  file that does not exist: no placeholder filename, no null-path row. Such a
+  row tells the operator who approves from it that there is a document there,
+  which is the same class of lie as a client-supplied `liveness_check_passed`.
+  The case carries a `documents_not_provided` risk flag instead, and the CRM
+  says plainly that nothing failed to upload because there was nothing to.
+
   `liveness_check_passed` is **not a value the client can send**. It used to be,
   and the flow sent `true` whenever a button had been pressed — a claim an
   operator reads as a check that ran and passed, about a check that did not
@@ -2520,15 +2655,19 @@ is the detail.
   where `release_at` is computed — not a change to the release job, which only
   ever asks whether the stamped date has passed. See FUTURE_TASKS.md.
 - **A deposit-address pool with more than one address in it.** The mechanism is
-  built and works (§18.8): a transfer to an address assigned to a user is
-  attributed and credited automatically, no operator involved. What is missing
-  is *addresses* — `TRON_DEPOSIT_POOL_ADDRESSES` is unset, so the pool holds
-  only `TRON_PLATFORM_DEPOSIT_ADDRESS`. The first account to open the deposit
-  screen claims it; the next gets `PoolExhaustedError` and sees "could not get
-  your deposit address". Growing the pool is configuration, not code — the
-  operator generates addresses with their own wallet tooling and lists them —
-  and deriving them from an xpub instead is the key-custody decision §18.8
-  explains.
+  built and works (§18.8): a transfer is attributed to whoever held the address
+  when it was sent, credited automatically, and an idle or settled address is
+  released back to the pool by a scheduled sweep. What is missing is
+  *addresses* — `TRON_DEPOSIT_POOL_ADDRESSES` is unset, so the pool holds only
+  `TRON_PLATFORM_DEPOSIT_ADDRESS`.
+
+  The sweep keeps a one-address pool *usable* — an account that never pays
+  gives its address back after ten minutes — but it cannot make one address
+  serve two people at once, and the 24h quarantine means a released address is
+  not immediately available to somebody else. **Growing the pool is the fix,
+  and it is configuration rather than code:** the operator generates addresses
+  with their own wallet tooling and lists them. Deriving them from an xpub
+  instead is the key-custody decision §18.8 explains.
 - **Operator credential provisioning from the CRM** (§20.3).
 - **Phone/SMS codes; username sign-in.**
 - **The CRM dashboard's headline metrics and chart series**, still on

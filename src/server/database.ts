@@ -7,7 +7,11 @@ import {
   DEFAULT_RETRY_BUDGET_MS,
   withConnectionRetry,
 } from "@/db/resilience";
-import { recordPipelineEvent } from "@/server/observability";
+import {
+  describeError,
+  errorDiagnostics,
+  recordPipelineEvent,
+} from "@/server/observability";
 
 /**
  * The seam between the database and the seed data.
@@ -65,7 +69,7 @@ export function resilientRead<T>(query: () => Promise<T>): Promise<T> {
   return withTimeout(
     withConnectionRetry(query, {
       budgetMs: Math.min(DEFAULT_RETRY_BUDGET_MS, QUERY_TIMEOUT_MS),
-      onRetry: ({ attempt, error, delayMs }) => {
+      onRetry: ({ attempt, error, delayMs, reason }) => {
         /*
          * Recorded, never swallowed silently.
          *
@@ -89,12 +93,20 @@ export function resilientRead<T>(query: () => Promise<T>): Promise<T> {
             // infrastructure fault this whole module exists to work around.
             // `willRetry` separates "recovered" from "gave up" when reading.
             status: "failed",
-            message: `Transient connection failure; retrying in ${delayMs}ms (attempt ${attempt})`,
-            errorMessage:
-              error instanceof Error
-                ? `${error.name}: ${error.message}`
-                : String(error),
-            metadata: { attempt, delayMs, willRetry: true },
+            message:
+              reason === "pool_exhausted"
+                ? `Connection pool is full; retrying in ${delayMs}ms (attempt ${attempt})`
+                : `Transient connection failure; retrying in ${delayMs}ms (attempt ${attempt})`,
+            // The whole cause chain, so the SQLSTATE that actually caused this
+            // is in the row rather than only Drizzle's "Failed query:" wrapper.
+            errorMessage: describeError(error),
+            metadata: {
+              attempt,
+              delayMs,
+              willRetry: true,
+              reason,
+              ...errorDiagnostics(error),
+            },
           });
         } catch {
           // Instrumentation is never allowed to fail the read it describes.

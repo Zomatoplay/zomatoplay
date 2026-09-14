@@ -23,6 +23,14 @@ import {
   releaseDepositAddress,
   retireDepositAddress,
 } from "./services/deposit-address.service";
+import {
+  IDLE_RELEASE_MS,
+  SETTLED_RELEASE_MS,
+} from "./services/deposit-address-policy";
+import {
+  releaseDecision,
+  sweepDepositAddresses,
+} from "./services/deposit-address-sweep.service";
 import { recordObservedDeposit } from "./services/deposits.service";
 import { getTronConfig } from "./tron/config";
 import { mutate, newId, type Actor } from "./write";
@@ -182,13 +190,18 @@ describe("deposit address pool", { skip }, () => {
    * need an exact, known address-to-user mapping and no dependency on which
    * physical address the shared pool's claim mechanism happens to pick.
    */
-  async function seedAssignedAddress(userId: string, target: PoolTarget = LIVE) {
+  async function seedAssignedAddress(
+    userId: string,
+    target: PoolTarget = LIVE,
+    options: { assignedAt?: Date } = {},
+  ) {
     const id = newId("dpa_test");
     const address = fixtureAddress();
-    const now = new Date();
+    const now = options.assignedAt ?? new Date();
     await db.insert(t.depositAddresses).values({
       id,
       userId,
+      lastUserId: userId,
       chain: target.chain,
       network: target.network,
       asset: target.asset,
@@ -196,8 +209,56 @@ describe("deposit address pool", { skip }, () => {
       status: "assigned",
       assignedAt: now,
     });
+    /*
+     * The open interval, exactly as `claimAvailableAddress` writes it.
+     *
+     * Attribution reads `deposit_address_assignments`, not
+     * `deposit_addresses.user_id`, so a fixture that skipped this would be an
+     * assignment no deposit could ever be matched to — and every attribution
+     * test below would pass for the wrong reason, or fail for one.
+     */
+    await db.insert(t.depositAddressAssignments).values({
+      id: newId("dpx_test"),
+      addressId: id,
+      address,
+      chain: target.chain,
+      network: target.network,
+      asset: target.asset,
+      userId,
+      assignedAt: now,
+    });
     createdAddressIds.push(id);
     return { id, address };
+  }
+
+  /**
+   * Empties the isolated pool, so a test that asserts *which* address comes
+   * back is asserting about its own fixture and nothing else.
+   *
+   * Integration test files share one live database (CLAUDE.md §16.7), and
+   * every release in this file puts another row back into the pool — so a test
+   * that claims and then checks an id is otherwise asserting a fact about the
+   * physical table rather than a property it owns. Draining first makes the
+   * claim deterministic.
+   *
+   * Only ever called on `ISOLATED`, which is a network this deployment does
+   * not scan. Draining the live pool would hand production receiving addresses
+   * to throwaway accounts.
+   */
+  async function drainPool(target: PoolTarget) {
+    assert.notEqual(target.network, LIVE.network, "never drain the live pool");
+    const sink = await makeUser();
+    for (let i = 0; i < 50; i++) {
+      try {
+        await mutate(OPERATOR, ({ tx, now }) =>
+          claimAvailableAddress(tx, sink, target, now),
+        );
+      } catch (error) {
+        if (error instanceof PoolExhaustedError) return sink;
+        throw error;
+      }
+    }
+    throw new Error("the isolated pool did not drain — 50 addresses is not a fixture");
   }
 
   async function balanceOf(userId: string) {
@@ -222,6 +283,8 @@ describe("deposit address pool", { skip }, () => {
       confirmed: boolean;
       network: PoolTarget["network"];
       txHash: string;
+      /** When the block was produced — what attribution is decided from. */
+      blockTimestamp: Date;
     }> = {},
   ) {
     return {
@@ -232,7 +295,7 @@ describe("deposit address pool", { skip }, () => {
       tokenSymbol: "USDT",
       amount: overrides.amount ?? decimal("10"),
       blockNumber: BigInt(60_000_000),
-      blockTimestamp: new Date(),
+      blockTimestamp: overrides.blockTimestamp ?? new Date(),
       // The configured network by default, so a transfer lines up with the
       // addresses `seedAssignedAddress` writes. Ownership is scoped by network
       // as well as by address, so a mismatch here credits nobody — which is
@@ -597,6 +660,15 @@ describe("deposit address pool", { skip }, () => {
      * would hand a production address to a throwaway test account, which is
      * the exact accident this whole capability exists to undo.
      */
+    /*
+     * Drained first, so "the oldest available row" is a statement about this
+     * test's own two fixtures rather than about whatever earlier tests in this
+     * file have released back into the shared pool. Every release in this file
+     * adds a row, so without this the assertion is about the physical table —
+     * the hazard CLAUDE.md §16.7 names.
+     */
+    await drainPool(ISOLATED);
+
     const oldAddress = await seedAvailableAddress(ISOLATED);
     const replacement = await seedAvailableAddress(ISOLATED);
 
@@ -683,5 +755,499 @@ describe("deposit address pool", { skip }, () => {
     assert.equal(mine.length, 1, "exactly one entry, written in the retiring transaction");
     assert.equal(mine[0].targetLabel, address);
     assert.match(mine[0].details ?? "", /audit coverage/, "the operator's reason reaches the entry");
+  });
+  /* ---------------------------------------------------------------------- */
+  /* Automatic release — the sweep                                           */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * The whole point of these: an assignment used to be permanent, so a pool of
+   * one or two addresses was permanently exhausted by the first one or two
+   * people who opened the deposit screen and never paid. Releasing is the fix,
+   * and releasing wrongly credits one customer's deposit to another — so every
+   * boundary is asserted rather than assumed.
+   */
+  test("S — an assigned address with no deposit, older than the idle window, releases", async () => {
+    const userId = await makeUser();
+    const { id, address } = await seedAssignedAddress(userId, ISOLATED, {
+      assignedAt: new Date(Date.now() - IDLE_RELEASE_MS - 60_000),
+    });
+
+    const summary = await sweepDepositAddresses();
+    const mine = summary.outcomes.find((o) => o.addressId === id);
+
+    assert.ok(mine, "the sweep considered this address");
+    assert.equal(mine.released, true, mine.blockedBy ?? "");
+    assert.equal(mine.reason, "idle_timeout");
+
+    const [row] = await db
+      .select()
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, id));
+    assert.equal(row.status, "available");
+    assert.equal(row.userId, null, "no longer belongs to anybody");
+    assert.equal(row.lastUserId, userId, "but the row still says who held it");
+    assert.ok(row.releasedAt, "when it was released is recorded");
+    assert.ok(row.quarantineUntil, "and until when it is withheld from others");
+    assert.ok(
+      row.quarantineUntil.getTime() > Date.now(),
+      "the quarantine is in the future",
+    );
+
+    // The interval is closed, which is what stops a later transfer being
+    // attributed to the holder who has just let the address go.
+    const [assignment] = await db
+      .select()
+      .from(t.depositAddressAssignments)
+      .where(eq(t.depositAddressAssignments.addressId, id));
+    assert.ok(assignment.releasedAt, "the assignment interval is closed");
+    assert.equal(assignment.releaseReason, "idle_timeout");
+    assert.equal(assignment.userId, userId, "and still says whose it was");
+    void address;
+  });
+
+  test("T — an assigned address younger than the idle window stays assigned", async () => {
+    const userId = await makeUser();
+    const { id } = await seedAssignedAddress(userId, ISOLATED, {
+      assignedAt: new Date(Date.now() - 30_000),
+    });
+
+    const summary = await sweepDepositAddresses();
+    assert.equal(
+      summary.outcomes.some((o) => o.addressId === id),
+      false,
+      "too young to even be a candidate",
+    );
+
+    const [row] = await db
+      .select({ status: t.depositAddresses.status, userId: t.depositAddresses.userId })
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, id));
+    assert.equal(row.status, "assigned");
+    assert.equal(row.userId, userId);
+  });
+
+  test("U — an unresolved deposit protects the address at any age", async () => {
+    const userId = await makeUser();
+    // Old enough that the idle window has long passed — the only thing keeping
+    // it is the deposit.
+    const { id, address } = await seedAssignedAddress(userId, ISOLATED, {
+      assignedAt: new Date(Date.now() - 30 * 24 * 60 * 60_000),
+    });
+
+    const depositId = newId("dep_test");
+    await db.insert(t.deposits).values({
+      id: depositId,
+      userId: null,
+      amountUsdt: 12.5,
+      chain: "tron",
+      chainNetwork: ISOLATED.network,
+      network: "trc20",
+      walletAddress: address,
+      txHash: `0xsweep${depositId}`,
+      status: "confirmed",
+      confirmationsRequired: 1,
+      detectedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    createdDeposits.push(depositId);
+
+    const summary = await sweepDepositAddresses();
+    const mine = summary.outcomes.find((o) => o.addressId === id);
+    assert.ok(mine, "it was considered");
+    assert.equal(mine.released, false);
+    assert.match(mine.blockedBy ?? "", /unresolved/i);
+
+    const [row] = await db
+      .select({ status: t.depositAddresses.status })
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, id));
+    assert.equal(row.status, "assigned", "still protected");
+  });
+
+  test("V — an address whose deposits have all settled waits out the settle window", async () => {
+    const userId = await makeUser();
+    const { id, address } = await seedAssignedAddress(userId, ISOLATED, {
+      assignedAt: new Date(Date.now() - 30 * 24 * 60 * 60_000),
+    });
+
+    // A credited deposit, updated just now: terminal, but recent.
+    const depositId = newId("dep_test");
+    await db.insert(t.deposits).values({
+      id: depositId,
+      userId,
+      amountUsdt: 5,
+      chain: "tron",
+      chainNetwork: ISOLATED.network,
+      network: "trc20",
+      walletAddress: address,
+      txHash: `0xsettled${depositId}`,
+      status: "credited",
+      confirmationsRequired: 1,
+      detectedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    createdDeposits.push(depositId);
+
+    const held = await sweepDepositAddresses();
+    const blocked = held.outcomes.find((o) => o.addressId === id);
+    assert.ok(blocked);
+    assert.equal(blocked.released, false, "a fresh credit is not a finished customer");
+    assert.match(blocked.blockedBy ?? "", /settle window/);
+
+    // Age the deposit past the settle window and it becomes releasable — the
+    // post-credit rule, which is the other half of the lifecycle.
+    await db
+      .update(t.deposits)
+      .set({ updatedAt: new Date(Date.now() - SETTLED_RELEASE_MS - 60_000) })
+      .where(eq(t.deposits.id, depositId));
+
+    const freed = await sweepDepositAddresses();
+    const released = freed.outcomes.find((o) => o.addressId === id);
+    assert.ok(released);
+    assert.equal(released.released, true, released.blockedBy ?? "");
+    assert.equal(released.reason, "settled");
+  });
+
+  test("W — re-running the sweep is idempotent", async () => {
+    const userId = await makeUser();
+    const { id } = await seedAssignedAddress(userId, ISOLATED, {
+      assignedAt: new Date(Date.now() - IDLE_RELEASE_MS - 60_000),
+    });
+
+    await sweepDepositAddresses();
+    const [first] = await db
+      .select({ releasedAt: t.depositAddresses.releasedAt })
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, id));
+
+    // A second pass must not touch an address it already released — a moving
+    // `released_at` would keep extending the quarantine and would rewrite when
+    // the address actually changed hands.
+    await sweepDepositAddresses();
+    const [second] = await db
+      .select({
+        releasedAt: t.depositAddresses.releasedAt,
+        status: t.depositAddresses.status,
+      })
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, id));
+
+    assert.equal(second.status, "available");
+    assert.equal(
+      second.releasedAt?.getTime(),
+      first.releasedAt?.getTime(),
+      "the release instant is not rewritten",
+    );
+
+    const intervals = await db
+      .select()
+      .from(t.depositAddressAssignments)
+      .where(eq(t.depositAddressAssignments.addressId, id));
+    assert.equal(intervals.length, 1, "no second interval was invented");
+  });
+
+  test("X — inside the quarantine only the previous holder may take it back", async () => {
+    await drainPool(ISOLATED);
+
+    const first = await makeUser();
+    const { id } = await seedAssignedAddress(first, ISOLATED, {
+      assignedAt: new Date(Date.now() - IDLE_RELEASE_MS - 60_000),
+    });
+    await sweepDepositAddresses();
+
+    // Inside the quarantine, a *different* user is passed over. With the pool
+    // otherwise empty that is an exhaustion, which is the strongest available
+    // statement of "this row was not offered to them".
+    const stranger = await makeUser();
+    await assert.rejects(
+      mutate(OPERATOR, ({ tx, now }) =>
+        claimAvailableAddress(tx, stranger, ISOLATED, now),
+      ),
+      PoolExhaustedError,
+      "a stranger cannot take a just-released address",
+    );
+
+    // The previous holder can, immediately — there is no attribution risk in
+    // giving somebody back their own address.
+    const reclaimed = await mutate(OPERATOR, ({ tx, now }) =>
+      claimAvailableAddress(tx, first, ISOLATED, now),
+    );
+    assert.equal(reclaimed.id, id);
+    assert.equal(reclaimed.userId, first);
+    assert.equal(reclaimed.quarantineUntil, null, "cleared once held again");
+
+    const intervals = await db
+      .select()
+      .from(t.depositAddressAssignments)
+      .where(eq(t.depositAddressAssignments.addressId, id));
+    assert.equal(intervals.length, 2, "the second assignment opened its own interval");
+  });
+
+  test("Y — a stranger may claim it once the quarantine has elapsed", async () => {
+    await drainPool(ISOLATED);
+
+    const first = await makeUser();
+    const { id } = await seedAssignedAddress(first, ISOLATED, {
+      assignedAt: new Date(Date.now() - IDLE_RELEASE_MS - 60_000),
+    });
+    await sweepDepositAddresses();
+
+    // Expire the quarantine rather than waiting a day for it.
+    await db
+      .update(t.depositAddresses)
+      .set({ quarantineUntil: new Date(Date.now() - 1_000) })
+      .where(eq(t.depositAddresses.id, id));
+
+    const stranger = await makeUser();
+    const claimed = await mutate(OPERATOR, ({ tx, now }) =>
+      claimAvailableAddress(tx, stranger, ISOLATED, now),
+    );
+    assert.equal(claimed.id, id);
+    assert.equal(claimed.userId, stranger);
+  });
+
+  /* ---------------------------------------------------------------------- */
+  /* Attribution across a change of holder                                   */
+  /* ---------------------------------------------------------------------- */
+
+  test("Z — a late transfer is credited to whoever held the address when it was SENT", async () => {
+    /*
+     * THE TEST THIS WHOLE DESIGN EXISTS FOR.
+     *
+     * Releasing an address is only safe if a transfer that arrives afterwards
+     * still belongs to the person who was shown it. Attribution by *current*
+     * holder — which is what the code did before — would credit this deposit
+     * to the second user, which is one customer's money in another customer's
+     * wallet with nothing on-chain to indicate anything went wrong.
+     */
+    const first = await makeUser();
+    const second = await makeUser();
+    const { id, address } = await seedAssignedAddress(first, LIVE, {
+      assignedAt: new Date(Date.now() - IDLE_RELEASE_MS - 120_000),
+    });
+
+    // The transfer is sent while `first` holds the address …
+    const sentAt = new Date(Date.now() - 90_000);
+
+    /*
+     * … then the address is released and handed to somebody else.
+     *
+     * The hand-over is written directly rather than claimed through the pool.
+     * This test has to run on `LIVE` — `recordObservedDeposit` resolves
+     * ownership on the configured network and nothing else — and the live pool
+     * is shared with real users, so draining it to make a claim deterministic
+     * is exactly the accident this capability exists to undo. What is under
+     * test here is attribution across a change of holder, not the claim
+     * mechanism; the claim mechanism has tests X and Y of its own.
+     */
+    await sweepDepositAddresses();
+    const handoverAt = new Date();
+    await db
+      .update(t.depositAddresses)
+      .set({
+        userId: second,
+        lastUserId: second,
+        status: "assigned",
+        assignedAt: handoverAt,
+        quarantineUntil: null,
+      })
+      .where(eq(t.depositAddresses.id, id));
+    await db.insert(t.depositAddressAssignments).values({
+      id: newId("dpx_test"),
+      addressId: id,
+      address,
+      chain: LIVE.chain,
+      network: LIVE.network,
+      asset: LIVE.asset,
+      userId: second,
+      assignedAt: handoverAt,
+    });
+
+    const [handed] = await db
+      .select({ userId: t.depositAddresses.userId })
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, id));
+    assert.equal(handed.userId, second, "the fixture address really did change hands");
+
+    // Only now does the scanner see the transfer.
+    const result = await recordObservedDeposit(
+      transferTo(address, { blockTimestamp: sentAt }),
+    );
+    createdDeposits.push(result.depositId);
+
+    const [deposit] = await db
+      .select({ userId: t.deposits.userId, status: t.deposits.status })
+      .from(t.deposits)
+      .where(eq(t.deposits.id, result.depositId));
+
+    assert.equal(deposit.userId, first, "credited to the sender's holder, not the current one");
+    assert.equal(deposit.status, "credited");
+
+    const strangerLedger = await ledgerFor(second);
+    assert.equal(strangerLedger.length, 0, "the new holder was credited nothing");
+  });
+
+  test("AA — a transfer arriving while nobody held the address credits nobody", async () => {
+    const userId = await makeUser();
+    const { id, address } = await seedAssignedAddress(userId, LIVE, {
+      assignedAt: new Date(Date.now() - IDLE_RELEASE_MS - 120_000),
+    });
+    await sweepDepositAddresses();
+
+    const [row] = await db
+      .select({ status: t.depositAddresses.status })
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, id));
+    assert.equal(row.status, "available", "released, so nobody holds it");
+
+    // Sent *after* the release: it falls in the gap.
+    const result = await recordObservedDeposit(
+      transferTo(address, { blockTimestamp: new Date(Date.now() + 1_000) }),
+    );
+    createdDeposits.push(result.depositId);
+
+    const [deposit] = await db
+      .select({ userId: t.deposits.userId, status: t.deposits.status })
+      .from(t.deposits)
+      .where(eq(t.deposits.id, result.depositId));
+
+    // Unattributed and visible, for an operator to assign by hand. Slow and
+    // correct beats fast and wrong — CLAUDE.md §18.4.
+    assert.equal(deposit.userId, null);
+    assert.equal(deposit.status, "confirmed");
+    assert.equal((await ledgerFor(userId)).length, 0);
+  });
+
+  /* ---------------------------------------------------------------------- */
+  /* Manual release                                                          */
+  /* ---------------------------------------------------------------------- */
+
+  test("AB — an operator may release a safe address at any age", async () => {
+    /*
+     * The idle and settle windows govern the *sweep*, not an operator's
+     * authority. An operator has looked at the address and decided; refusing
+     * them because it was assigned four minutes ago would be inventing a rule
+     * the write path does not have.
+     */
+    const userId = await makeUser();
+    const { id, address } = await seedAssignedAddress(userId, ISOLATED);
+
+    const released = await releaseDepositAddress(
+      { addressId: id, reason: "operator release, fresh assignment" },
+      OPERATOR,
+    );
+    assert.equal(released.address, address, "the action names what it changed");
+
+    const [row] = await db
+      .select({ status: t.depositAddresses.status, userId: t.depositAddresses.userId })
+      .from(t.depositAddresses)
+      .where(eq(t.depositAddresses.id, id));
+    assert.equal(row.status, "available");
+    assert.equal(row.userId, null);
+
+    const [assignment] = await db
+      .select({ releaseReason: t.depositAddressAssignments.releaseReason })
+      .from(t.depositAddressAssignments)
+      .where(eq(t.depositAddressAssignments.addressId, id));
+    assert.equal(assignment.releaseReason, "operator");
+  });
+
+  test("AC — two concurrent releases: exactly one succeeds", async () => {
+    const userId = await makeUser();
+    const { id } = await seedAssignedAddress(userId, ISOLATED);
+
+    const results = await Promise.allSettled([
+      releaseDepositAddress({ addressId: id, reason: "race A" }, OPERATOR),
+      releaseDepositAddress({ addressId: id, reason: "race B" }, OPERATOR),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    assert.equal(fulfilled.length, 1, "exactly one release won");
+
+    const rejected = results.find((r) => r.status === "rejected");
+    assert.ok(rejected);
+    assert.ok(
+      rejected.reason instanceof AddressReleaseError,
+      "the loser is refused with a clear reason, not a driver error",
+    );
+
+    const intervals = await db
+      .select()
+      .from(t.depositAddressAssignments)
+      .where(eq(t.depositAddressAssignments.addressId, id));
+    assert.equal(intervals.length, 1);
+    assert.ok(intervals[0].releasedAt, "closed exactly once");
+  });
+
+  test("AD — releasing something that is not assigned says so", async () => {
+    const { id } = await seedAvailableAddress(ISOLATED);
+    await assert.rejects(
+      releaseDepositAddress({ addressId: id, reason: "nothing to release" }, OPERATOR),
+      (error: Error) => {
+        assert.ok(error instanceof AddressReleaseError);
+        assert.match(error.message, /available/, "the real state is named");
+        return true;
+      },
+    );
+  });
+
+  /* ---------------------------------------------------------------------- */
+  /* The decision function, at its boundaries                                */
+  /* ---------------------------------------------------------------------- */
+
+  test("AE — unresolved activity refuses first, whatever the clock says", () => {
+    // Order matters: no amount of elapsed time may talk the sweep past a
+    // deposit nobody has finished dealing with.
+    const ancient = new Date(Date.now() - 365 * 24 * 60 * 60_000);
+    const decision = releaseDecision(
+      {
+        assignedAt: ancient,
+        lastDepositAt: ancient,
+        depositCount: 1,
+        unresolvedDeposits: 1,
+      },
+      new Date(),
+    );
+    assert.equal(decision.release, false);
+    assert.match(decision.blockedBy, /unresolved/);
+  });
+
+  test("AF — the idle boundary is inclusive, and a millisecond short is not", () => {
+    const now = new Date();
+    const exactly = {
+      assignedAt: new Date(now.getTime() - IDLE_RELEASE_MS),
+      lastDepositAt: null,
+      depositCount: 0,
+      unresolvedDeposits: 0,
+    };
+    assert.equal(releaseDecision(exactly, now).release, true);
+
+    const short = {
+      ...exactly,
+      assignedAt: new Date(now.getTime() - IDLE_RELEASE_MS + 1),
+    };
+    assert.equal(releaseDecision(short, now).release, false);
+  });
+
+  test("AG — an assignment with no timestamp is never aged out", () => {
+    /*
+     * The same refusal the commission release makes for a null `release_at`
+     * (CLAUDE.md §10): nothing here invents the date on which somebody's
+     * address becomes somebody else's.
+     */
+    const decision = releaseDecision(
+      {
+        assignedAt: null,
+        lastDepositAt: null,
+        depositCount: 0,
+        unresolvedDeposits: 0,
+      },
+      new Date(),
+    );
+    assert.equal(decision.release, false);
+    assert.match(decision.blockedBy, /timestamp/);
   });
 });

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { AdminShell } from "@/components/admin/layout/admin-shell";
+import { ConsoleUnavailable } from "@/components/admin/layout/console-unavailable";
 import { AdminStoreProvider } from "@/lib/admin-store";
 import {
   getCurrentOperator,
@@ -8,6 +9,12 @@ import {
   AdminAuthorizationError,
 } from "@/server/admin/session";
 import { getAdminShell } from "@/server/services/admin.service";
+import { isInfrastructureFailure } from "@/server/errors";
+import {
+  describeError,
+  errorDiagnostics,
+  recordPipelineEvent,
+} from "@/server/observability";
 import { traceRender } from "@/server/trace-action";
 
 /**
@@ -97,9 +104,36 @@ async function renderConsoleLayout(children: React.ReactNode) {
   try {
     operator = await getCurrentOperator();
   } catch (error) {
+    // A real verdict about this operator — disabled, suspended. Sending them to
+    // sign-in with the reason is correct: there is nothing to retry.
     if (error instanceof AdminAuthorizationError) {
       redirect(`/admin/login?reason=${encodeURIComponent(error.message)}`);
     }
+
+    /*
+     * NO VERDICT WAS REACHED, SO NEITHER OPENING NOR DESTROYING IS RIGHT.
+     *
+     * A refused connection used to re-throw from here into the error boundary,
+     * which is how a two-second pooler fault turned into "Something went wrong"
+     * across the whole console. Redirecting to `/admin/login` would be worse
+     * still — the credential is fine, and it teaches operators to re-enter it.
+     *
+     * The console is **not** rendered: `operator` is still undefined, no shell
+     * data is read, and `children` never appear. This is a terminal, honest
+     * state with a retry that runs the same gate again.
+     */
+    if (isInfrastructureFailure(error)) {
+      recordPipelineEvent({
+        pipeline: "admin",
+        operation: "admin.gate.degraded",
+        status: "failed",
+        message: "The operator gate could not reach the database; console refused",
+        errorMessage: describeError(error),
+        metadata: errorDiagnostics(error),
+      });
+      return <ConsoleUnavailable />;
+    }
+
     throw error;
   }
 

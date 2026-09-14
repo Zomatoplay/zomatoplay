@@ -6,6 +6,7 @@ import {
   scanDeposits,
   ScannerUnavailableError,
 } from "@/server/tron/scanner";
+import { sweepDepositAddresses } from "@/server/services/deposit-address-sweep.service";
 
 /**
  * The scheduled deposit scan.
@@ -82,6 +83,37 @@ async function runScan(request: NextRequest) {
 
   try {
     const summary = await scanDeposits();
+
+    /*
+     * The address sweep runs on the scan's schedule too, and after it.
+     *
+     * After, because the scan is what turns a `confirming` deposit into a
+     * `confirmed` or `credited` one — so sweeping first would refuse addresses
+     * that this very pass has just made releasable, and the capacity would sit
+     * unavailable until tomorrow.
+     *
+     * Here as well as on its own route because Vercel's Hobby plan caps the
+     * number of cron jobs as well as their frequency (§18.5). A deployment that
+     * can only schedule the deposit scan still gets its pool swept.
+     *
+     * Never allowed to fail the scan: detection is the more important half,
+     * and an address that stays assigned for another cycle costs capacity
+     * rather than money.
+     */
+    let addressSweep: { examined: number; released: number; blocked: number } | null =
+      null;
+    try {
+      const swept = await sweepDepositAddresses();
+      addressSweep = {
+        examined: swept.examined,
+        released: swept.released,
+        blocked: swept.blocked,
+      };
+    } catch {
+      // Reported as null below rather than swallowed silently — the sweep's own
+      // instrumentation has already recorded why.
+    }
+
     return NextResponse.json({
       ok: true,
       scanned: summary.scanned,
@@ -91,6 +123,7 @@ async function runScan(request: NextRequest) {
       awaitingConfirmation: summary.pending,
       rejected: summary.rejected,
       solidBlock: summary.solidBlock,
+      addressSweep,
     });
   } catch (error) {
     /*

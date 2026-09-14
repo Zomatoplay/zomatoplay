@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import { ExternalLink, Plus, ShieldAlert, Wallet } from "lucide-react";
 
+import Link from "next/link";
+
 import { AdminHeader } from "@/components/admin/layout/admin-header";
 import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
 import {
@@ -148,6 +150,7 @@ function AddressManager() {
   const available = addresses.filter((row) => row.status === "available").length;
   const assigned = addresses.filter((row) => row.status === "assigned").length;
   const unresolved = addresses.reduce((sum, row) => sum + row.unresolvedDeposits, 0);
+  const autoReleasable = addresses.filter((row) => row.autoReleaseEligible).length;
 
   const columns: DataTableColumn<AdminDepositAddress>[] = [
     {
@@ -237,12 +240,17 @@ function AddressManager() {
    */
   function renderActions(row: AdminDepositAddress) {
     /*
-     * The same rule the service enforces, stated here so the operator can see
-     * it rather than discovering it in a toast. The service is still the
-     * boundary: a disabled button prevents nothing, and
-     * `assertNoUnresolvedDeposits` refuses the write regardless.
+     * `releasable` comes from the server, computed by the same rule the write
+     * path enforces — not recomputed here.
+     *
+     * It used to be `row.unresolvedDeposits > 0`, which is the right rule
+     * written in the wrong place, and it produced the reported "manual release
+     * does nothing": the shasta pool address carries two legacy `confirmed`
+     * deposits that were never attributed to anybody, so Release was disabled
+     * forever behind a tooltip that named the problem and not the remedy. The
+     * button now says *why*, and points at the queue where the remedy is.
      */
-    const blocked = row.unresolvedDeposits > 0;
+    const blocked = !row.releasable;
     // Null when the network has no explorer configured; the link is simply not
     // offered rather than pointing somewhere that 404s.
     const explorer = addressUrl(row.network as ChainNetwork, row.address);
@@ -261,11 +269,7 @@ function AddressManager() {
             variant="outline"
             size="xs"
             disabled={!allowed || pending || blocked}
-            title={
-              blocked
-                ? "This address has deposit activity that has not been resolved yet."
-                : undefined
-            }
+            title={row.releaseBlockedBy ?? undefined}
             onClick={() => setReleasing(row)}
           >
             Release
@@ -275,15 +279,29 @@ function AddressManager() {
           <Button
             variant="outline"
             size="xs"
-            disabled={!allowed || pending || blocked}
+            disabled={!allowed || pending || row.unresolvedDeposits > 0}
             title={
-              blocked
+              row.unresolvedDeposits > 0
                 ? "This address has deposit activity that has not been resolved yet."
                 : undefined
             }
             onClick={() => setRetiring(row)}
           >
             Retire
+          </Button>
+        ) : null}
+        {blocked && row.status === "assigned" ? (
+          /*
+           * The way out, not just the refusal. Every blocked release on this
+           * screen is blocked by deposits somebody has to work, and they are
+           * one click away — an operator who is told "unresolved activity" and
+           * nothing else has no reason to believe the feature works at all.
+           */
+          <Button asChild variant="ghost" size="xs">
+            {/* Plain link: the deposits screen filters client-side and takes
+                no query parameter, so pointing at one would promise a
+                pre-filtered view it does not give. */}
+            <Link href="/admin/deposits">Resolve deposits</Link>
           </Button>
         ) : null}
       </div>
@@ -316,7 +334,11 @@ function AddressManager() {
         <AdminStatCard
           label="Assigned"
           value={assigned}
-          hint="Held by an account; never reassigned automatically"
+          hint={
+            autoReleasable > 0
+              ? `${autoReleasable} eligible for automatic release on the next sweep`
+              : "Held by an account; released automatically once idle or settled"
+          }
         />
         <AdminStatCard
           label="Unresolved deposits"
@@ -428,11 +450,13 @@ function AddressManager() {
               <strong className="font-medium text-foreground">
                 {truncateMiddle(releasing.address, 12, 10)}
               </strong>{" "}
-              stops belonging to {releasing.assignedUserName ?? "its current holder"}{" "}
-              and becomes claimable by the next account that asks for one. A
-              transfer that arrives afterwards will not be attributed to them
-              automatically. Use <em>Retire</em> instead if the address is being
-              replaced.
+              stops belonging to {releasing.assignedUserName ?? "its current holder"}
+              . A transfer that arrives afterwards is still attributed to
+              whoever held the address when it was <em>sent</em>, so releasing
+              cannot move a late deposit to the wrong account — and the address
+              is withheld from any other account until its quarantine window
+              passes. Use <em>Retire</em> instead if the address is being
+              replaced permanently.
             </>
           ) : null
         }

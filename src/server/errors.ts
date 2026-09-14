@@ -24,6 +24,8 @@ import "server-only";
  * suggesting.
  */
 
+import { isPoolExhaustionError } from "@/db/resilience";
+
 export type ErrorCategory =
   | "UNAUTHENTICATED"
   | "AUTH_LINK_EXPIRED"
@@ -135,6 +137,19 @@ export function classifyError(error: unknown): ErrorCategory {
   if (/^08/.test(code)) return "DATABASE_UNAVAILABLE";
   // 57P01/57P03 — admin shutdown, cannot connect now.
   if (code === "57P01" || code === "57P03") return "DATABASE_UNAVAILABLE";
+  // 53300/53400 — the server itself is out of connection slots.
+  if (code === "53300" || code === "53400") return "DATABASE_UNAVAILABLE";
+  /*
+   * The pooler refusing a new client because the project is at its ceiling.
+   *
+   * `XX000` is `internal_error` and must never be classified on its own; this
+   * pairs it with the message, exactly as `isPoolExhaustionError` does. It is
+   * `DATABASE_UNAVAILABLE` rather than `SERVER_ERROR` because that is the
+   * truth — the database is fine and we could not get to it — and because
+   * that category is `isRetryable`, which is what tells a sign-in page to
+   * offer "try again" instead of "your credentials are wrong".
+   */
+  if (isPoolExhaustionError(error)) return "DATABASE_UNAVAILABLE";
 
   if (name === "WritesUnavailableError" || name === "AccountUnavailableError") {
     return "DATABASE_UNAVAILABLE";
@@ -155,4 +170,118 @@ export function classifyError(error: unknown): ErrorCategory {
   }
 
   return "SERVER_ERROR";
+}
+
+/* -------------------------------------------------------------------------- */
+/* Turning a thrown value into something safe to show                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Error classes whose `message` this application wrote and may therefore show.
+ *
+ * WHY AN ALLOWLIST RATHER THAN "SHOW `error.message`"
+ * ----------------------------------------------------
+ * Because `error.message` is whatever threw. On 2026-09-14 an operator signing
+ * in was shown, in the browser:
+ *
+ *   Failed query: select "admin_agents"."id", … where "auth_user_id" = $1
+ *   params: 84555b4d-c50d-4486-9f15-59f0e61c3616
+ *
+ * That is Drizzle's message, reported as the reason their sign-in failed. It
+ * leaks the schema and an internal identifier, it tells the operator nothing
+ * they can act on, and — worse — it describes an *infrastructure* failure as an
+ * *authentication* one. The sign-in had not been refused; the pooler had
+ * refused a connection.
+ *
+ * So the rule is inverted: a message is shown only when this codebase composed
+ * it for a person to read. Everything else gets text chosen from the category,
+ * and the real reason goes to `pipeline_events` where an operator can find it.
+ */
+const SPEAKABLE_ERROR_NAMES = new Set([
+  "AdminAuthorizationError",
+  "NotAuthenticatedOperatorError",
+  "AdminValidationError",
+  "AuthError",
+  "ProfileIncompleteError",
+  "MoneyError",
+  "KycError",
+  "KycStorageError",
+  "InvestmentError",
+  "WithdrawalError",
+  "DepositError",
+  "DepositAddressServiceError",
+  "AddressReleaseError",
+  "PoolExhaustedError",
+  "WritesUnavailableError",
+  "AccountUnavailableError",
+]);
+
+export interface SafeFailure {
+  category: ErrorCategory;
+  /** Safe to render. Never a driver message, never SQL, never a parameter. */
+  message: string;
+  /** Whether the same action, tried again, could plausibly work. */
+  retryable: boolean;
+}
+
+/** What a person is told when the reason is not theirs to read. */
+function genericMessage(category: ErrorCategory, fallback: string): string {
+  switch (category) {
+    case "DATABASE_TIMEOUT":
+    case "DATABASE_UNAVAILABLE":
+      return (
+        "We could not reach the service just now. This is temporary — " +
+        "please try again in a moment."
+      );
+    case "AUTH_PROVIDER_UNAVAILABLE":
+      return (
+        "The sign-in service is temporarily unreachable. Please try again in " +
+        "a moment."
+      );
+    case "UNAUTHENTICATED":
+      return "Your session has expired. Sign in again.";
+    case "PERMISSION_DENIED":
+      return "You do not have access to do that.";
+    case "NOT_FOUND":
+      return "That no longer exists.";
+    default:
+      return fallback;
+  }
+}
+
+/**
+ * Classifies a thrown value and picks text that is safe to return to a client.
+ *
+ * `fallback` is the caller's own wording for "this did not work", used when the
+ * category has nothing more specific to say.
+ */
+export function toSafeFailure(error: unknown, fallback: string): SafeFailure {
+  const category = classifyError(error);
+  const name = error instanceof Error ? error.name : "";
+  const own = SPEAKABLE_ERROR_NAMES.has(name);
+
+  return {
+    category,
+    message: own && error instanceof Error
+      ? error.message
+      : genericMessage(category, fallback),
+    retryable: isRetryable(category),
+  };
+}
+
+/**
+ * Whether a failure means "we could not find out", as opposed to "the answer
+ * is no".
+ *
+ * The distinction every gate in this application needs: an absent session and
+ * an unreachable database both stop a page rendering, and only one of them is
+ * a reason to sign somebody out.
+ */
+export function isInfrastructureFailure(error: unknown): boolean {
+  const category = classifyError(error);
+  return (
+    category === "DATABASE_TIMEOUT" ||
+    category === "DATABASE_UNAVAILABLE" ||
+    category === "AUTH_PROVIDER_UNAVAILABLE"
+  );
 }

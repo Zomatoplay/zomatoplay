@@ -8,7 +8,13 @@ import * as t from "@/db/schema";
 import { requireSupabaseConfig } from "@/lib/supabase/env";
 import { getSiteUrl } from "@/lib/site-url";
 import { sendPasswordRecovery } from "@/lib/supabase/auth-rest";
-import { trackPipeline } from "@/server/observability";
+import {
+  describeError,
+  errorDiagnostics,
+  recordPipelineEvent,
+  trackPipeline,
+} from "@/server/observability";
+import { toSafeFailure } from "@/server/errors";
 import { traceAction } from "@/server/trace-action";
 import { requirePermission } from "@/server/admin/session";
 import { revalidate, revalidateCatalogue } from "@/server/revalidate";
@@ -113,19 +119,44 @@ async function originForEmails(): Promise<string> {
 export interface AdminActionResult {
   ok: boolean;
   message: string;
+  /** True when the same action, tried again, could plausibly succeed. */
+  retryable?: boolean;
 }
 
+/**
+ * Turns a thrown value into something an operator may be shown.
+ *
+ * WHAT WAS WRONG WITH THE OLD VERSION
+ * -----------------------------------
+ * Its comment said "anything else gets the generic text rather than a database
+ * error string", and its code did the opposite: the final branch returned
+ * `error.message` for every `Error`, so a Drizzle failure put raw SQL and its
+ * bound parameters into a toast. The `fallback` argument every call site passes
+ * was only ever used for a non-`Error` throw, which essentially never happens.
+ *
+ * `toSafeFailure` implements what that comment intended: an allowlist of this
+ * application's own error classes may speak, everything else is described from
+ * its category. The real message is still recorded — with its whole cause
+ * chain — by the action's own instrumentation, so nothing is lost to the
+ * operator who needs it, only to the toast that should not carry it.
+ */
 function failed(error: unknown, fallback: string): AdminActionResult {
-  // Authorization refusals carry a message an operator can act on ("you do not
-  // have manage access to withdrawals"); anything else gets the generic text
-  // rather than a database error string.
-  if (error instanceof Error && error.name.startsWith("Admin")) {
-    return { ok: false, message: error.message };
-  }
-  return {
-    ok: false,
-    message: error instanceof Error ? error.message : fallback,
-  };
+  const failure = toSafeFailure(error, fallback);
+
+  recordPipelineEvent({
+    pipeline: "admin",
+    operation: "admin.action.failed",
+    status: "failed",
+    message: fallback,
+    errorMessage: describeError(error),
+    metadata: {
+      errorCategory: failure.category,
+      retryable: failure.retryable,
+      ...errorDiagnostics(error),
+    },
+  });
+
+  return { ok: false, message: failure.message, retryable: failure.retryable };
 }
 
 function requireReason(reason: string | undefined, what: string) {
@@ -395,9 +426,32 @@ export async function releaseDepositAddressAction(input: {
   try {
     const operator = await requirePermission("deposits");
     const reason = requireReason(input.reason, "release a deposit address");
-    await releaseDepositAddress({ addressId: input.addressId, reason }, operator.actor);
-    revalidate("/admin/deposits", "/admin");
-    return { ok: true, message: "Address released back to the pool." };
+    const released = await trackPipeline(
+      {
+        pipeline: "deposit",
+        operation: "deposit.address.release.manual",
+        message: "Operator released a deposit address",
+        actor: operator.actor,
+        subject: { type: "deposit_address", id: input.addressId },
+      },
+      () =>
+        releaseDepositAddress({ addressId: input.addressId, reason }, operator.actor),
+    );
+    /*
+     * `/admin/deposits/addresses` is the screen the operator is standing on,
+     * and it was **not** in this list — so a release that worked left the row
+     * showing "assigned" until a hard reload, which reads as "the button does
+     * nothing". That is a large part of the reported "manual release is not
+     * releasing".
+     */
+    revalidate("/admin/deposits/addresses", "/admin/deposits", "/admin");
+    /*
+     * The address is named rather than a bare "done". `releaseDepositAddress`
+     * returns the row it actually updated — and throws if the `UPDATE` matched
+     * nothing — so this message can only be produced by a state change that
+     * really happened.
+     */
+    return { ok: true, message: `${released.address} released back to the pool.` };
   } catch (error) {
     return failed(error, "The address was not released.");
   }
@@ -424,7 +478,7 @@ export async function retireDepositAddressAction(input: {
     const operator = await requirePermission("deposits");
     const reason = requireReason(input.reason, "retire a deposit address");
     await retireDepositAddress({ addressId: input.addressId, reason }, operator.actor);
-    revalidate("/admin/deposits", "/admin");
+    revalidate("/admin/deposits/addresses", "/admin/deposits", "/admin");
     return { ok: true, message: "Address retired from rotation." };
   } catch (error) {
     return failed(error, "The address was not retired.");

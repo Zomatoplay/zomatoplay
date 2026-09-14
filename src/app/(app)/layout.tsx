@@ -5,6 +5,12 @@ import { SessionUnavailableNotice } from "@/components/shared/session-unavailabl
 import { PrototypeStoreProvider } from "@/lib/prototype-store";
 import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
 import { AuthProviderUnavailableError } from "@/server/auth/session";
+import { isInfrastructureFailure } from "@/server/errors";
+import {
+  describeError,
+  errorDiagnostics,
+  recordPipelineEvent,
+} from "@/server/observability";
 import { traceRender } from "@/server/trace-action";
 
 /**
@@ -68,13 +74,50 @@ async function renderAppLayout(children: React.ReactNode) {
       return (
         <PrototypeStoreProvider>
           <AppShell>
-            <SessionUnavailableNotice />
+            <SessionUnavailableNotice dependency="auth" />
           </AppShell>
         </PrototypeStoreProvider>
       );
     }
-    // Anything else — a database outage, a genuine fault — belongs to the error
-    // boundary in `app/error.tsx`, which is the boundary that covers a layout.
+
+    /*
+     * A DATABASE THAT CANNOT BE REACHED IS THE SAME KIND OF NON-ANSWER.
+     *
+     * This used to re-throw, so the pooler refusing one connection —
+     * `(EMAXCONNSESSION) max clients reached in session mode`, five times in
+     * eighty seconds on this project — took out the whole document and showed
+     * a crash screen with no navigation and no way back except reloading.
+     *
+     * The reasoning is identical to the auth case above and the conclusion has
+     * to be too: the gate asked "who is this" and got no reply. That is not a
+     * reason to sign somebody out, and it is not a reason to destroy a page
+     * that could have rendered its shell.
+     *
+     * **It grants nothing.** No account was resolved, so `PrototypeStoreProvider`
+     * gets no data and every route below this layout is unreachable — the
+     * notice replaces the children entirely. The retry re-runs this same gate,
+     * which will redirect to `/login` if the session really has gone.
+     */
+    if (isInfrastructureFailure(error)) {
+      recordPipelineEvent({
+        pipeline: "auth",
+        operation: "auth.gate.degraded",
+        status: "failed",
+        message: "The account gate could not reach the database; shell rendered",
+        errorMessage: describeError(error),
+        metadata: errorDiagnostics(error),
+      });
+      return (
+        <PrototypeStoreProvider>
+          <AppShell>
+            <SessionUnavailableNotice dependency="database" />
+          </AppShell>
+        </PrototypeStoreProvider>
+      );
+    }
+
+    // A genuine fault belongs to the error boundary in `app/error.tsx`, which
+    // is the boundary that covers a layout.
     throw error;
   }
 

@@ -477,6 +477,29 @@ export interface AdminDepositAddress {
   depositCount: number;
   unresolvedDeposits: number;
   totalCreditedUsdt: number;
+  /** ISO. Until this instant only the previous holder may claim the address. */
+  quarantineUntil: string | null;
+  /** Who held it last, once `assignedUserId` has been cleared by a release. */
+  lastUserName: string | null;
+  /**
+   * Whether an **operator** may release this address right now.
+   *
+   * This is the guard the write path actually enforces, and nothing else: an
+   * address with no unresolved deposit activity may be released by hand at any
+   * age. The idle and settle windows govern the *automatic* sweep, not an
+   * operator's authority — a clock is not a reason to refuse a person who has
+   * looked at the address and decided.
+   */
+  releasable: boolean;
+  /** Why an operator cannot release it. Null when they can. */
+  releaseBlockedBy: string | null;
+  /**
+   * Whether the scheduled sweep would release it on its next pass, and why
+   * not. Informational: it explains why an idle-looking address is still
+   * assigned, which is otherwise indistinguishable from a broken sweep.
+   */
+  autoReleaseEligible: boolean;
+  autoReleaseBlockedBy: string | null;
 }
 
 /* -------------------------------------------------------------------------- */

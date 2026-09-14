@@ -21,7 +21,19 @@ import { Button } from "@/components/ui/button";
  * further action; if their session really has expired, the gate redirects to
  * sign-in on that pass, which is the correct outcome reached the correct way.
  */
-export function SessionUnavailableNotice() {
+export function SessionUnavailableNotice({
+  /**
+   * Which dependency was unreachable.
+   *
+   * The response is the same either way — keep the session, offer a retry —
+   * but the wording should not claim the sign-in service is down when it was
+   * the account database that could not be reached. Saying the wrong thing
+   * here sends somebody to reset a password that is working fine.
+   */
+  dependency = "auth",
+}: {
+  dependency?: "auth" | "database";
+} = {}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [tried, setTried] = useState(false);
@@ -30,8 +42,16 @@ export function SessionUnavailableNotice() {
     <PageContainer className="pt-16">
       <EmptyState
         icon={CloudOff}
-        title="Unable to confirm your sign-in"
-        description="We could not reach the sign-in service just now. You have not been signed out — this is usually temporary."
+        title={
+          dependency === "database"
+            ? "Unable to load your account"
+            : "Unable to confirm your sign-in"
+        }
+        description={
+          dependency === "database"
+            ? "We could not reach your account data just now. You are still signed in — this is usually temporary."
+            : "We could not reach the sign-in service just now. You have not been signed out — this is usually temporary."
+        }
         action={
           <div className="space-y-3">
             <Button

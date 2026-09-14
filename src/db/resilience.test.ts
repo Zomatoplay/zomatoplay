@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isTransientConnectionError, withConnectionRetry } from "./resilience";
+import {
+  isPoolExhaustionError,
+  isTransientConnectionError,
+  withConnectionRetry,
+} from "./resilience";
 
 /**
  * The retry that routes around an unhealthy pooler endpoint.
@@ -45,6 +49,69 @@ test("classification", async (t) => {
       cause: driverError("CONNECT_TIMEOUT"),
     });
     assert.equal(isTransientConnectionError(wrapped), true);
+  });
+
+  await t.test("treats a full connection pooler as transient", () => {
+    /*
+     * THE EXACT ERROR THAT BROKE ADMIN SIGN-IN, REPRODUCED AGAINST THE LIVE
+     * PROJECT ON 2026-09-14 AND PINNED HERE.
+     *
+     * Supavisor in session mode completes TLS and SCRAM and then answers with
+     * a FATAL ErrorResponse. postgres.js surfaces it as a `PostgresError` whose
+     * `code` is `XX000` — `internal_error`, which is deliberately NOT retried
+     * on its own — so the code alone was not enough to classify it and the
+     * retry never fired. Five consecutive `admin.resolveOperator` failures over
+     * 78 seconds, then a success, with no `database.connectRetry` row between
+     * them.
+     */
+    const exhausted = Object.assign(
+      new Error(
+        "(EMAXCONNSESSION) max clients reached in session mode - max clients are limited to pool_size: 15",
+      ),
+      { code: "XX000", name: "PostgresError" },
+    );
+    assert.equal(isPoolExhaustionError(exhausted), true);
+    assert.equal(isTransientConnectionError(exhausted), true);
+
+    // Postgres' own version of the same condition.
+    assert.equal(
+      isTransientConnectionError(driverError("53300", "too many clients already")),
+      true,
+    );
+    assert.equal(
+      isTransientConnectionError(
+        driverError("XX000", "remaining connection slots are reserved"),
+      ),
+      true,
+    );
+  });
+
+  await t.test("does NOT retry XX000 on its own", () => {
+    /*
+     * The guard that keeps the fix above honest. `XX000` is `internal_error` —
+     * a genuine server-side fault, a failed assertion, an extension crashing —
+     * and retrying that class blindly would turn one loud bug into three quiet
+     * ones. The message is what distinguishes the pooler's refusal, so only
+     * both together count.
+     */
+    assert.equal(
+      isTransientConnectionError(driverError("XX000", "internal error in tuplesort")),
+      false,
+    );
+    assert.equal(isPoolExhaustionError(driverError("XX000", "something else")), false);
+  });
+
+  await t.test("finds a full pooler through Drizzle's wrapper", () => {
+    // What actually arrives in production: the message is the SQL text and the
+    // reason is one level down.
+    const wrapped = new Error('Failed query: select "admin_agents"."id" …', {
+      cause: Object.assign(
+        new Error("(EMAXCONNSESSION) max clients reached in session mode"),
+        { code: "XX000", name: "PostgresError" },
+      ),
+    });
+    assert.equal(isTransientConnectionError(wrapped), true);
+    assert.equal(isPoolExhaustionError(wrapped), true);
   });
 
   await t.test("does not recurse forever on a self-referential cause", () => {
@@ -134,6 +201,72 @@ test("retrying", async (t) => {
       return null;
     });
     assert.equal(attempts, 1);
+  });
+
+  await t.test("spends more attempts on a full pooler than on a bad endpoint", async () => {
+    /*
+     * The two faults want different waits, and this is the assertion that says
+     * so. A bad pooler endpoint is fixed by landing on a different A record, so
+     * two attempts a fifth of a second apart is enough. A *full* pooler refuses
+     * every endpoint until somebody's connection is handed back — so the same
+     * two quick attempts are effectively one, and the budget is better spent on
+     * more attempts spread further out.
+     */
+    const exhausted = () =>
+      Object.assign(new Error("(EMAXCONNSESSION) max clients reached in session mode"), {
+        code: "XX000",
+      });
+
+    let attempts = 0;
+    const delays: number[] = [];
+    await assert.rejects(
+      withConnectionRetry(
+        async () => {
+          attempts++;
+          throw exhausted();
+        },
+        {
+          // A generous budget so the attempt count, not the clock, is what
+          // ends this. The delays are asserted separately below.
+          budgetMs: 60_000,
+          onRetry: ({ delayMs, reason }) => {
+            delays.push(delayMs);
+            assert.equal(reason, "pool_exhausted");
+          },
+        },
+      ),
+    );
+
+    // Five attempts: the first plus POOL_EXHAUSTION_RETRIES.
+    assert.equal(attempts, 5);
+    // Each wait is longer than the previous, and the first is already well
+    // clear of the 120ms a bad-endpoint retry uses.
+    assert.ok(delays[0] >= 700, `first delay was ${delays[0]}ms`);
+    for (let i = 1; i < delays.length; i++) {
+      assert.ok(delays[i] > delays[i - 1], `delays not increasing: ${delays.join(",")}`);
+    }
+  });
+
+  await t.test("still honours the budget when the pooler is full", async () => {
+    // The extra attempts must not extend the wall-clock promise a caller was
+    // given. The budget is checked before each wait, so a short budget ends the
+    // loop early rather than letting five attempts run.
+    let attempts = 0;
+    const started = Date.now();
+    await assert.rejects(
+      withConnectionRetry(
+        async () => {
+          attempts++;
+          throw Object.assign(
+            new Error("(EMAXCONNSESSION) max clients reached in session mode"),
+            { code: "XX000" },
+          );
+        },
+        { budgetMs: 900 },
+      ),
+    );
+    assert.ok(attempts < 5, `expected the budget to cut this short, got ${attempts}`);
+    assert.ok(Date.now() - started < 3_000);
   });
 
   await t.test("reports each retry so a recovered fault is still visible", async () => {

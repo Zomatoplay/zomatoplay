@@ -283,15 +283,36 @@ describe("what an open deposit screen reads back", { skip }, () => {
   async function seedAssignedAddress(userId: string) {
     const id = newId("dpa_test");
     const address = `TTEST${newId("addr").slice(-28).toUpperCase()}`;
+    const assignedAt = new Date();
     await db.insert(t.depositAddresses).values({
       id,
       userId,
+      lastUserId: userId,
       chain: "tron",
       network: "shasta",
       asset: "usdt",
       address,
       status: "assigned",
-      assignedAt: new Date(),
+      assignedAt,
+    });
+    /*
+     * The open assignment interval, as `claimAvailableAddress` writes it.
+     *
+     * Attribution reads `deposit_address_assignments`, not
+     * `deposit_addresses.user_id` — a transfer belongs to whoever held the
+     * address at the transfer's own block time, which is what makes releasing
+     * an address safe. A fixture without this row is an assignment no deposit
+     * can be matched to.
+     */
+    await db.insert(t.depositAddressAssignments).values({
+      id: newId("dpx_test"),
+      addressId: id,
+      address,
+      chain: "tron",
+      network: "shasta",
+      asset: "usdt",
+      userId,
+      assignedAt,
     });
     createdAddressIds.push(id);
     return address;

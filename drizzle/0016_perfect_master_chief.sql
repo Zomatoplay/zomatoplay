@@ -1,0 +1,1 @@
+CREATE INDEX "deposits_wallet_address_idx" ON "deposits" USING btree ("wallet_address","status");

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, use, useState } from "react";
 import { AlertTriangle, ChevronRight } from "lucide-react";
 
 import { CopyField } from "@/components/shared/copy-field";
@@ -43,6 +43,24 @@ import type { DepositAddressResult } from "@/app/(app)/wallet/deposit/actions";
  * and calls `getOrCreateDepositAddress`. Nothing in this component, or
  * anywhere in the browser, ever supplies a user id, a network or an asset that
  * decides whose address comes back. This component only decides what to show.
+ *
+ * WHY IT ARRIVES AS A *PROMISE*
+ * -----------------------------
+ * The page used to `await` it before returning any HTML, so tapping "Add
+ * funds" showed the route's loading skeleton until the pool lookup came back —
+ * a round trip on a good day, four on a first-ever allocation, and a
+ * `PoolExhaustedError` retry on a bad one.
+ *
+ * Nothing on the first stage needs the address. "Select network", the
+ * TRC-20-only warning and the Continue button are constants, and the warning
+ * is the thing a person most needs to read before an address is on screen at
+ * all. So the page hands this component the unawaited promise, the shell
+ * renders immediately, and only the panel that actually shows an address
+ * suspends — usually finishing while the person is still reading the warning.
+ *
+ * Nothing about where the address comes from changes. It is still resolved
+ * server-side from the session; `use()` only decides *when* this component
+ * reads the answer.
  */
 
 /** The one asset Nanotron accepts, on the one chain it scans. */
@@ -50,16 +68,27 @@ const TOKEN_LABEL = "USDT (TRC-20)";
 
 export function DepositNetworkSelect({
   deposit,
+  /**
+   * Which TRON network this deployment is on, resolved server-side from the
+   * environment rather than from the address lookup.
+   *
+   * Passed separately and eagerly for one reason: the first stage tells the
+   * person whether the funds they are about to send are real, and that
+   * sentence must not wait on a database read — nor default to the wrong one
+   * while it does. Telling somebody their real USDT is test funds is the worst
+   * thing this screen could print.
+   */
+  isTestnet,
+  networkLabel,
 }: {
-  /** Already resolved server-side for this account — see the page. */
-  deposit: DepositAddressResult;
+  /** Resolved server-side for this account, streamed in — see the page. */
+  deposit: Promise<DepositAddressResult>;
+  isTestnet: boolean;
+  networkLabel: string;
 }) {
   const [stage, setStage] = useState<"select" | "show">("select");
 
-  // `networkLabel` is absent only when the server could not resolve an address
-  // at all, and the error card below is what that case renders.
-  const chainLabel = `TRON ${deposit.networkLabel ?? "network"}`;
-  const isTestnet = deposit.isTestnet ?? true;
+  const chainLabel = `TRON ${networkLabel}`;
 
   if (stage === "select") {
     return (
@@ -119,100 +148,160 @@ export function DepositNetworkSelect({
         </Button>
       </div>
 
-      {!deposit.ok ? (
-        <Card className="p-5">
-          <div className="flex items-start gap-2.5">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
-            <div className="min-w-0 space-y-1">
-              <h3 className="text-sm font-semibold">Could not get your deposit address</h3>
-              <p className="text-sm leading-relaxed text-muted-foreground">
-                {deposit.message ?? "Something went wrong. Try again shortly."}
-              </p>
-            </div>
-          </div>
-        </Card>
+      {/*
+        Only the address itself waits.
+
+        The heading, the Change control and the three warnings below are all
+        constants, so they paint immediately and the layout is its final size
+        before the address lands — no jump when it does.
+      */}
+      <Suspense fallback={<AddressPanelSkeleton />}>
+        <DepositAddressPanel deposit={deposit} chainLabel={chainLabel} />
+      </Suspense>
+
+      <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
+        <InfoRow label="Network" value={chainLabel} />
+        <InfoRow label="Token" value={TOKEN_LABEL} />
+        <InfoRow label="This address belongs to" value="Your account only" />
+      </div>
+
+      {isTestnet ? (
+        <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
+          <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
+          <span>
+            This is a <strong className="font-medium text-foreground">test network</strong>.
+            Send test USDT only — real USDT sent here is permanently lost.
+          </span>
+        </p>
       ) : (
-        <>
-          <Card className="space-y-4 p-5">
-            {/*
-              Generated server-side from the address the server issued, and
-              carrying that address and nothing else — no amount, no token
-              parameter, no URI scheme. See `getMyDepositAddressAction`, which
-              is also the reason the QR and the copyable text below it cannot
-              disagree: they are the same string.
-            */}
-            {deposit.qrSvg ? (
-              <QrCode
-                svg={deposit.qrSvg}
-                label={`QR code for your ${TOKEN_LABEL} deposit address on ${chainLabel}`}
-              />
-            ) : null}
-            <CopyField
-              label="Deposit address"
-              value={deposit.address ?? ""}
-              successMessage="Deposit address copied"
-            />
-          </Card>
-
-          <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
-            <InfoRow label="Network" value={chainLabel} />
-            <InfoRow label="Token" value={TOKEN_LABEL} />
-            <InfoRow label="This address belongs to" value="Your account only" />
-          </div>
-
-          {isTestnet ? (
-            <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
-              <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
-              <span>
-                This is a <strong className="font-medium text-foreground">test network</strong>.
-                Send test USDT only — real USDT sent here is permanently lost.
-              </span>
-            </p>
-          ) : (
-            /*
-              The mainnet counterpart, and the reason the testnet notice is now
-              a branch rather than a constant: this screen used to say "this is
-              a test network" unconditionally, resting on the integration
-              refusing mainnet. Telling somebody their real USDT is test funds
-              is the worst sentence this page could print.
-            */
-            <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
-              <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
-              <span>
-                This is the{" "}
-                <strong className="font-medium text-foreground">TRON main network</strong>. Funds
-                sent here are real, and a transfer on a blockchain cannot be reversed — check the
-                address before you send.
-              </span>
-            </p>
-          )}
-
-          {/*
-            The mistake this exists to prevent, stated first and plainly.
-
-            Every TRC-20 address is also a valid address for the chain's native
-            coin, and a wallet will happily send TRX to it. Those transfers
-            succeed on-chain and are invisible to a TRC-20 transfer query — a
-            different endpoint entirely — so nothing here detects or credits
-            them. See CLAUDE.md §18.9 (H1) for the visibility gap this implies.
-          */}
-          <p className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs leading-relaxed">
-            <AlertTriangle className="mt-px size-3.5 shrink-0 text-destructive" aria-hidden />
-            <span className="text-muted-foreground">
-              <strong className="font-medium text-foreground">Send USDT (TRC-20) only.</strong>{" "}
-              Do <strong className="font-medium text-foreground">not</strong> send TRX — it is
-              TRON&rsquo;s own coin, not USDT, and it cannot be detected or credited.
-            </span>
-          </p>
-
-          {/*
-            Mounted here and nowhere else: the polling cycle exists only while
-            a real, supported deposit address is on screen, and unmounts with
-            it. See `DepositWatcher`.
-          */}
-          <DepositWatcher />
-        </>
+        /*
+          The mainnet counterpart, and the reason the testnet notice is a
+          branch rather than a constant: this screen used to say "this is a
+          test network" unconditionally, resting on the integration refusing
+          mainnet. Telling somebody their real USDT is test funds is the worst
+          sentence this page could print.
+        */
+        <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
+          <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
+          <span>
+            This is the{" "}
+            <strong className="font-medium text-foreground">TRON main network</strong>. Funds
+            sent here are real, and a transfer on a blockchain cannot be reversed — check the
+            address before you send.
+          </span>
+        </p>
       )}
+
+      {/*
+        The mistake this exists to prevent, stated first and plainly.
+
+        Every TRC-20 address is also a valid address for the chain's native
+        coin, and a wallet will happily send TRX to it. Those transfers
+        succeed on-chain and are invisible to a TRC-20 transfer query — a
+        different endpoint entirely — so nothing here detects or credits
+        them.
+      */}
+      <p className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs leading-relaxed">
+        <AlertTriangle className="mt-px size-3.5 shrink-0 text-destructive" aria-hidden />
+        <span className="text-muted-foreground">
+          <strong className="font-medium text-foreground">Send USDT (TRC-20) only.</strong>{" "}
+          Do <strong className="font-medium text-foreground">not</strong> send TRX — it is
+          TRON&rsquo;s own coin, not USDT, and it cannot be detected or credited.
+        </span>
+      </p>
     </div>
+  );
+}
+
+/**
+ * The address, its QR and the watcher — everything that needs the server's
+ * answer, and nothing that does not.
+ *
+ * `use()` suspends until the promise the page started resolves. Note what is
+ * *inside* this boundary: `DepositWatcher` is mounted here rather than beside
+ * it, so the five-second poll begins only once there is a real address to
+ * watch. A watcher mounted next to a skeleton would be polling for deposits to
+ * an address the screen cannot yet name.
+ */
+function DepositAddressPanel({
+  deposit,
+  chainLabel,
+}: {
+  deposit: Promise<DepositAddressResult>;
+  chainLabel: string;
+}) {
+  const resolved = use(deposit);
+
+  if (!resolved.ok) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-start gap-2.5">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+          <div className="min-w-0 space-y-1">
+            <h3 className="text-sm font-semibold">Could not get your deposit address</h3>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {resolved.message ?? "Something went wrong. Try again shortly."}
+            </p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      <Card className="space-y-4 p-5">
+        {/*
+          Generated server-side from the address the server issued, and
+          carrying that address and nothing else — no amount, no token
+          parameter, no URI scheme. See `getMyDepositAddressAction`, which is
+          also the reason the QR and the copyable text below it cannot
+          disagree: they are the same string.
+        */}
+        {resolved.qrSvg ? (
+          <QrCode
+            svg={resolved.qrSvg}
+            label={`QR code for your ${TOKEN_LABEL} deposit address on ${chainLabel}`}
+          />
+        ) : null}
+        <CopyField
+          label="Deposit address"
+          value={resolved.address ?? ""}
+          successMessage="Deposit address copied"
+        />
+      </Card>
+
+      {/*
+        Mounted here and nowhere else: the polling cycle exists only while a
+        real, supported deposit address is on screen, and unmounts with it.
+        See `DepositWatcher`.
+      */}
+      <DepositWatcher />
+    </>
+  );
+}
+
+/**
+ * The address panel's placeholder, shaped like what replaces it.
+ *
+ * Sized to the real QR and the real copy field so the page does not move when
+ * the address lands — a layout that jumps under somebody's thumb while they
+ * are about to tap "copy" on a blockchain address is worse than a slower one.
+ */
+function AddressPanelSkeleton() {
+  return (
+    <Card className="space-y-4 p-5" aria-busy="true">
+      <span className="sr-only">Loading your deposit address</span>
+      <div className="mx-auto size-44 animate-pulse rounded-xl bg-secondary" />
+      <div className="space-y-2">
+        <div className="h-3 w-28 animate-pulse rounded-md bg-secondary" />
+        {/*
+          Blurred rather than blank: the field keeps the exact height and
+          rhythm of a real address, so nothing reflows, while being visibly
+          unreadable so nobody starts copying a placeholder.
+        */}
+        <div className="h-11 w-full animate-pulse rounded-xl bg-secondary" />
+      </div>
+    </Card>
   );
 }

@@ -62,6 +62,7 @@ const DOCUMENT_TYPE_LABELS: Record<KycDocumentType, string> = {
  */
 const RISK_FLAG_LABELS: Record<string, string> = {
   liveness_not_verified: "No automated liveness check",
+  documents_not_provided: "No documents attached",
 };
 
 /** The flag `submitKyc` sets when no provider was there to run a check. */
@@ -273,6 +274,28 @@ export function KycCasePanel({
         title="Documents"
         description="Held in private storage. Opening one mints a link that expires in two minutes."
       >
+        {submission.documents.length === 0 ? (
+          /*
+           * A case with nothing to look at, said plainly.
+           *
+           * Document upload is not enabled on this deployment
+           * (`KYC_REQUIRE_DOCUMENTS`), so a submission arriving with no files
+           * is the expected shape rather than a broken one — and the case is
+           * still reviewable, because the declared identity details are all
+           * present. What must not happen is a reviewer assuming the documents
+           * failed to load and approving on that basis, so the reason is
+           * stated instead of leaving an empty list.
+           */
+          <p className="rounded-xl border border-warning/40 bg-warning/8 p-3 text-sm leading-relaxed text-muted-foreground">
+            <strong className="font-medium text-foreground">
+              No documents are attached to this case.
+            </strong>{" "}
+            Document upload is not enabled on this deployment, so this
+            submission carries declared details only. Nothing failed to
+            upload — there was nothing to upload. Verify the identity by
+            whatever process is in place before approving.
+          </p>
+        ) : null}
         <ul className="grid gap-2 sm:grid-cols-2">
           {submission.documents.map((document) => (
             <li

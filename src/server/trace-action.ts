@@ -3,6 +3,8 @@ import "server-only";
 import { headers } from "next/headers";
 
 import {
+  describeError,
+  errorDiagnostics,
   flushTraceAfterResponse,
   recordPipelineEvent,
   withTrace,
@@ -141,12 +143,11 @@ export async function traceAction<T>(
             ? `Server action ${options.name} redirected`
             : `Server action ${options.name} failed`,
           durationMs: performance.now() - started,
-          errorMessage:
-            controlFlow || !(error instanceof Error)
-              ? controlFlow
-                ? null
-                : String(error)
-              : `${error.name}: ${error.message}`,
+          // The whole cause chain. Drizzle's wrapper message is the SQL text;
+          // the reason is a level below it, and recording only the wrapper is
+          // what made a production connection fault unreadable for weeks.
+          errorMessage: controlFlow ? null : describeError(error),
+          metadata: controlFlow ? null : errorDiagnostics(error),
         });
         await flushTraceAfterResponse();
         throw error;
@@ -198,12 +199,11 @@ export async function traceRender<T>(
             ? `${options.route} redirected`
             : `Render of ${options.route} failed`,
           durationMs: performance.now() - started,
-          errorMessage:
-            controlFlow || !(error instanceof Error)
-              ? controlFlow
-                ? null
-                : String(error)
-              : `${error.name}: ${error.message}`,
+          // The whole cause chain. Drizzle's wrapper message is the SQL text;
+          // the reason is a level below it, and recording only the wrapper is
+          // what made a production connection fault unreadable for weeks.
+          errorMessage: controlFlow ? null : describeError(error),
+          metadata: controlFlow ? null : errorDiagnostics(error),
         });
         await flushTraceAfterResponse();
         throw error;

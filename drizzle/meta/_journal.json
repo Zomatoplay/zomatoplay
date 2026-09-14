@@ -99,6 +99,27 @@
       "when": 1789323866192,
       "tag": "0013_absent_celestials",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789422328415,
+      "tag": "0014_ordinary_bloodstrike",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1789422329415,
+      "tag": "0015_deposit_address_history_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789424704859,
+      "tag": "0016_perfect_master_chief",
+      "breakpoints": true
     }
   ]
 }

@@ -58,7 +58,63 @@ const TRANSIENT_CODES = new Set([
   // the server is up but refusing, which is the definition of worth retrying.
   "57P01",
   "57P03",
+  // 53300 too_many_connections / 53400 configuration_limit_exceeded. Postgres
+  // itself refusing a *new* connection because the server is full. Nothing has
+  // been executed, so a later attempt is a fresh, safe attempt.
+  "53300",
+  "53400",
 ]);
+
+/**
+ * The connection pooler refusing a new client because the project is full.
+ *
+ * MEASURED, NOT GUESSED — AND THIS IS THE FAULT THE ADMIN LOGIN WAS HITTING.
+ * --------------------------------------------------------------------------
+ * Supavisor in **session** mode reserves one Postgres backend per client
+ * connection and caps the whole project. Past the cap it completes the TLS
+ * handshake and SCRAM authentication and *then* answers with a FATAL
+ * ErrorResponse instead of ReadyForQuery. Reproduced against the live project
+ * on 2026-09-14 by opening connections until one was refused:
+ *
+ *   name            PostgresError
+ *   code            XX000
+ *   severity_local  FATAL
+ *   message         (EMAXCONNSESSION) max clients reached in session mode
+ *                   - max clients are limited to pool_size: 15
+ *
+ * `XX000` is `internal_error`, which is emphatically **not** a code to retry
+ * on its own — it is what Postgres returns for "something unexpected happened
+ * inside the server", and retrying that class blindly would hide real faults.
+ * So the message is matched as well, and only together do they mean this.
+ *
+ * Why it is safe to retry: the connection was never established, so no
+ * statement of ours reached a backend. There is nothing to have half-happened.
+ * It is the same category as `CONNECT_TIMEOUT`, arriving by a different route.
+ *
+ * Why it needs a retry at all: the cap is shared by every deployed instance,
+ * every `npm run db:*`, the scanner and the test suite, and it frees up as
+ * connections idle out (`idle_timeout`, 30s) — so a refusal is nearly always
+ * transient on the order of seconds. Without this, one refused connection
+ * became a failed page, and `pipeline_events` on this project recorded five
+ * consecutive `admin.resolveOperator` failures over 78 seconds followed by a
+ * success, with no retry ever attempted.
+ */
+const POOL_EXHAUSTED_MESSAGE =
+  /max clients reached|EMAXCONNSESSION|too many clients|max_clients|remaining connection slots/i;
+
+export function isPoolExhaustionError(error: unknown, depth = 0): boolean {
+  if (!error || depth > 4) return false;
+  const e = error as DriverError;
+  const code = typeof e.code === "string" ? e.code : "";
+  const message = typeof e.message === "string" ? e.message : "";
+
+  // The two halves are required together. `XX000` alone is far too broad.
+  if ((code === "XX000" || code === "53300") && POOL_EXHAUSTED_MESSAGE.test(message)) {
+    return true;
+  }
+  if (e.cause && e.cause !== error) return isPoolExhaustionError(e.cause, depth + 1);
+  return false;
+}
 
 interface DriverError {
   name?: unknown;
@@ -82,6 +138,10 @@ export function isTransientConnectionError(error: unknown, depth = 0): boolean {
   // SQLSTATE class 08 — connection exception, every member of which describes a
   // connection that failed rather than a statement that was rejected.
   if (/^08/.test(code)) return true;
+  // The pooler refusing a new client because the project is at its ceiling.
+  // Checked here rather than folded into TRANSIENT_CODES because it needs the
+  // message as well as the code — see `isPoolExhaustionError`.
+  if (isPoolExhaustionError(error, depth)) return true;
 
   // Drizzle wraps driver errors, undici wraps socket errors. The real reason is
   // usually one level down.
@@ -108,7 +168,13 @@ export interface RetryOptions {
    */
   budgetMs?: number;
   /** Called before each retry. Used to record the attempt without importing a logger here. */
-  onRetry?: (info: { attempt: number; error: unknown; delayMs: number }) => void;
+  onRetry?: (info: {
+    attempt: number;
+    error: unknown;
+    delayMs: number;
+    /** Which fault is being waited out — they have different backoffs. */
+    reason: "pool_exhausted" | "connect_failure";
+  }) => void;
 }
 
 export const DEFAULT_RETRIES = Number(process.env.DATABASE_CONNECT_RETRIES ?? 2);
@@ -131,6 +197,36 @@ function backoffMs(attempt: number): number {
 }
 
 /**
+ * The backoff for a pooler that is *full*, which is a different wait.
+ *
+ * The endpoint fault above is fixed by landing on a different A record, so the
+ * delay barely matters and the jitter does. A refused client is the opposite:
+ * every endpoint will refuse until somebody's connection is handed back, which
+ * happens on `idle_timeout` (30s in `./client`) or when a process exits. Two
+ * attempts 200ms apart are effectively one attempt.
+ *
+ * A refused connect is also *cheap* — measured at ~1.3s, because the pooler
+ * answers after authentication rather than hanging — so the 12s budget affords
+ * several genuine chances if they are spread out. 700ms, 1.4s, 2.8s (plus
+ * jitter) puts four attempts across roughly ten seconds, which is where a
+ * freed slot actually turns up.
+ */
+function poolBackoffMs(attempt: number): number {
+  const base = 700 * 2 ** (attempt - 1);
+  return Math.round(base + Math.random() * base * 0.5);
+}
+
+/**
+ * Extra attempts allowed when the failure is a full pooler rather than a bad
+ * endpoint. Bounded by the same wall-clock budget, so this cannot make a
+ * caller wait longer than it was promised — it only spends the budget on more,
+ * later attempts instead of two early ones.
+ */
+export const POOL_EXHAUSTION_RETRIES = Number(
+  process.env.DATABASE_POOL_RETRIES ?? 4,
+);
+
+/**
  * Runs a **read**, retrying only transient connection failures.
  *
  * The operation must be idempotent. Nothing here inspects what it does, so
@@ -142,11 +238,14 @@ export async function withConnectionRetry<T>(
   operation: () => Promise<T>,
   options: RetryOptions = {},
 ): Promise<T> {
-  const retries = options.retries ?? DEFAULT_RETRIES;
+  const baseRetries = options.retries ?? DEFAULT_RETRIES;
   const budgetMs = options.budgetMs ?? DEFAULT_RETRY_BUDGET_MS;
   const startedAt = Date.now();
 
   let lastError: unknown;
+  // Raised in place the first time the failure turns out to be a full pooler,
+  // which wants more attempts spread further apart. The budget still bounds it.
+  let retries = baseRetries;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -157,16 +256,21 @@ export async function withConnectionRetry<T>(
       // A permanent error is re-thrown immediately and untouched. Hiding a
       // constraint violation behind three attempts helps nobody.
       if (!isTransientConnectionError(error)) throw error;
-      if (attempt === retries) break;
 
-      const delayMs = backoffMs(attempt + 1);
+      const exhausted = isPoolExhaustionError(error);
+      if (exhausted && options.retries === undefined) {
+        retries = Math.max(retries, POOL_EXHAUSTION_RETRIES);
+      }
+      if (attempt >= retries) break;
+
+      const delayMs = exhausted ? poolBackoffMs(attempt + 1) : backoffMs(attempt + 1);
       const spent = Date.now() - startedAt;
       // Only retry if there is room for the wait *and* a plausible attempt
       // after it. Starting an attempt the budget cannot contain just moves the
       // failure later.
       if (spent + delayMs >= budgetMs) break;
 
-      options.onRetry?.({ attempt: attempt + 1, error, delayMs });
+      options.onRetry?.({ attempt: attempt + 1, error, delayMs, reason: exhausted ? "pool_exhausted" : "connect_failure" });
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }

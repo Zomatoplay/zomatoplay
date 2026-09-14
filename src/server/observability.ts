@@ -334,12 +334,12 @@ export async function trackPipeline<T>(
       ...input,
       status: "failed",
       durationMs: performance.now() - started,
-      errorMessage:
-        error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      errorMessage: describeError(error),
       metadata: {
         ...(input.metadata ?? {}),
         errorCategory: category,
         expected: isExpected(category),
+        ...errorDiagnostics(error),
       },
     });
     throw error;
@@ -445,6 +445,73 @@ export async function flushTraceAfterResponse(): Promise<void> {
  * named, non-sensitive fields — is the one doing the real work. This is the
  * backstop for text this code did not compose.
  */
+/**
+ * An error, written down with the reason underneath it.
+ *
+ * WHY THIS EXISTS — IT IS THE REASON A PRODUCTION FAULT WENT UNDIAGNOSED
+ * ----------------------------------------------------------------------
+ * This used to be `${error.name}: ${error.message}`, one level deep. Drizzle
+ * wraps every driver failure in a `DrizzleQueryError` whose message is the SQL
+ * text ("Failed query: select …") and whose `cause` carries the thing that
+ * actually went wrong — the SQLSTATE, the severity, the driver's own words.
+ * So every database failure in `pipeline_events` recorded the *query* and
+ * threw away the *reason*.
+ *
+ * Concretely: five admin sign-in failures on 2026-09-14 were recorded as
+ * "Failed query: select … from admin_agents …", which says nothing about why.
+ * The cause was `PostgresError XX000 (EMAXCONNSESSION) max clients reached in
+ * session mode`, and one line of it would have named the fault immediately.
+ *
+ * Walks up to four levels, which covers Drizzle → postgres.js and undici →
+ * socket. Every level goes through `redact()`, because driver errors quote
+ * what they were given.
+ */
+export function describeError(error: unknown, depth = 0): string {
+  if (depth > 3) return "…";
+  if (!(error instanceof Error)) return redact(String(error));
+
+  const code = readCode(error);
+  const head = `${error.name}${code ? ` (${code})` : ""}: ${error.message}`;
+  const cause = (error as { cause?: unknown }).cause;
+  if (!cause || cause === error) return redact(head);
+  return redact(`${head}\ncaused by: ${describeError(cause, depth + 1)}`);
+}
+
+/**
+ * The machine-readable half of the same thing.
+ *
+ * `errorMessage` is for a person reading the system log; these are for
+ * filtering and grouping. Named scalars only — CLAUDE.md §22.2 — so nothing
+ * here can carry a body, a parameter or a connection string.
+ */
+export function errorDiagnostics(
+  error: unknown,
+): Record<string, string | number | boolean> {
+  const root = rootCause(error);
+  const out: Record<string, string | number | boolean> = {};
+  if (root instanceof Error) {
+    out.errorName = root.name;
+    const code = readCode(root);
+    if (code) out.errorCode = code;
+    const severity = (root as { severity_local?: unknown }).severity_local;
+    if (typeof severity === "string") out.errorSeverity = severity;
+  }
+  return out;
+}
+
+/** The deepest `cause`, which is where a driver error's real code lives. */
+function rootCause(error: unknown, depth = 0): unknown {
+  if (depth > 3 || !(error instanceof Error)) return error;
+  const cause = (error as { cause?: unknown }).cause;
+  if (!cause || cause === error) return error;
+  return rootCause(cause, depth + 1);
+}
+
+function readCode(error: Error): string {
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" || typeof code === "number" ? String(code) : "";
+}
+
 export function redact(message: string): string {
   return message
     .replace(/postgres(ql)?:\/\/[^\s"']+/gi, "postgres://[redacted]")

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
 import { config as loadEnv } from "dotenv";
-import { inArray } from "drizzle-orm";
+import { getTableName, inArray, is } from "drizzle-orm";
+import { PgTable } from "drizzle-orm/pg-core";
 
 loadEnv({ path: ".env.local", quiet: true });
 loadEnv({ path: ".env", quiet: true });
@@ -10,6 +11,7 @@ loadEnv({ path: ".env", quiet: true });
 import { closeAdminDb, createAdminDb, isDatabaseConfigured } from "@/db";
 import type { Database } from "@/db";
 import * as t from "@/db/schema";
+import * as schema from "@/db/schema";
 
 /**
  * The private KYC document bucket, against the real Supabase project.
@@ -367,27 +369,24 @@ describe("kyc document storage", { skip }, () => {
  * numbers, balances and KYC submissions. This is the regression test.
  */
 describe("postgrest exposure", { skip }, () => {
-  const TABLES = [
-    "users",
-    "wallet_balances",
-    "transactions",
-    "kyc_submissions",
-    "kyc_documents",
-    "deposits",
-    "withdrawals",
-    "investments",
-    // The investment engine's own tables (CLAUDE.md §10a): an earning is a
-    // credited amount and a rate change is who-changed-what-when, and neither
-    // belongs on PostgREST any more than a balance does.
-    "investment_earnings",
-    "plan_rate_history",
-    // The deposit-address pool maps a blockchain address to a user — exactly
-    // the kind of row PostgREST must never be able to enumerate, since that
-    // mapping is the entire attribution mechanism (CLAUDE.md §18.8).
-    "deposit_addresses",
-    "admin_agents",
-    "admin_agent_permissions",
-  ];
+  /**
+   * EVERY table in the schema, derived rather than listed.
+   *
+   * It used to be a hand-written list of thirteen, and a hand-written list is
+   * a list somebody forgets to add to. `deposit_address_assignments` — which
+   * maps a blockchain address to the user who held it, and to when, so it is
+   * precisely the attribution mechanism CLAUDE.md §18.8 says must never be
+   * enumerable — shipped with RLS off and this suite stayed green, because the
+   * new table was not in the list.
+   *
+   * Deriving it from `@/db/schema` makes "migrate, then secure" a test rather
+   * than a rule to remember: a table added without `npm run db:secure` fails
+   * here on the next run.
+   */
+  const TABLES = Object.values(schema)
+    .filter((value) => is(value, PgTable))
+    .map((value) => getTableName(value as PgTable))
+    .sort();
 
   async function readAs(token: string, table: string) {
     const response = await fetch(

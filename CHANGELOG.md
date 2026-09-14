@@ -4,6 +4,178 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-09-15 (Production hardening: connection faults, KYC without documents, deposit-address lifecycle)
+
+Migrations `0014` (generated) and `0015` (hand-written: a backfill and an
+index assertion). Four independent defects, one of which had two causes.
+
+### 1. Intermittent sign-in failure — the pooler refusing a connection
+
+**Symptom.** Admin sign-in failed five or six times in a row and then worked.
+The browser showed Drizzle's raw query text and the principal's uuid. Normal
+user sign-in showed the same behaviour: correct credentials, refused.
+
+**Evidence.** `pipeline_events` on the configured project, 2026-09-14:
+`admin.resolveOperator` failed at 21:18:48, 21:18:57, 21:19:19 and 21:20:06,
+then succeeded at 21:20:08 — with `auth.resolveAccount` failing at 21:18:50 in
+the same window. Every failure took ~0.9–1.3s, which is too fast for a connect
+timeout (6s) and far short of the read deadline (15s), and there was not one
+`database.connectRetry` row anywhere near them.
+
+**Reproduced.** Opening session-mode connections until one was refused, against
+the live project:
+
+    name            PostgresError
+    code            XX000
+    severity_local  FATAL
+    message         (EMAXCONNSESSION) max clients reached in session mode
+                    - max clients are limited to pool_size: 15
+
+`XX000` is `internal_error`, so it matched neither `TRANSIENT_CODES` nor the
+SQLSTATE class-08 test in `isTransientConnectionError` — the retry re-threw on
+the first attempt, every time.
+
+**Fixed, in four places, because it had four independent failure points.**
+
+- `db/resilience.ts` — `isPoolExhaustionError()` matches the code **and** the
+  message together. `XX000` alone is still never retried; there is a test for
+  that specifically. Postgres' own `53300`/`53400` are added outright. A refused
+  connection is retried with a *different* backoff (700ms → 1.4s → 2.8s, four
+  extra attempts) because a full pooler frees up on `idle_timeout`, not on
+  landing a different A record — two attempts 200ms apart are effectively one.
+  The 12s wall-clock budget is unchanged and still bounds it.
+- `server/errors.ts` — the refusal classifies as `DATABASE_UNAVAILABLE`, which
+  is `isRetryable`. New `toSafeFailure()` and `isInfrastructureFailure()`.
+- **The sign-in actions stopped reporting infrastructure as authorization.**
+  `completeOperatorSignIn` and `completeSignIn` caught everything and returned
+  `error.message` verbatim — that is how SQL and a uuid reached a browser, and
+  how a two-second database blip was described to somebody as a failed
+  sign-in. They now return a category and a `retryable` flag; only this
+  codebase's own error classes may speak.
+- **`AdminSignInForm` was destroying a valid session on every failure.** It
+  called `supabase.auth.signOut()` for any `!ok`, including "could not reach
+  the database to find out" — so each attempt threw away the half that had
+  worked, which is the mechanism behind "it took six tries". It now signs out
+  only on a real verdict.
+
+**And the reason it went undiagnosed for weeks.** `trackPipeline` recorded
+`${error.name}: ${error.message}`, one level deep. Drizzle wraps every driver
+failure in a `DrizzleQueryError` whose message is the SQL and whose `cause`
+carries the SQLSTATE — so every database failure in the system log recorded the
+query and threw away the reason. `describeError()` and `errorDiagnostics()`
+walk the cause chain (redacting at every level) and put `errorCode`,
+`errorName` and `errorSeverity` in `metadata`.
+
+**Degradation instead of crashes.** `(app)/layout.tsx` re-threw on a database
+fault, so one refused connection took out the whole document. Both gates now
+render a shell with a retry when they cannot *reach* an answer — `(console)`
+through the new `ConsoleUnavailable`, which renders no console and no operator
+data. Neither grants anything: the gate runs again on the retry.
+
+### 2. KYC could not be submitted without documents
+
+Document upload is not enabled on this deployment, and the flow required a
+document *and* a selfie unconditionally — so a correctly filled form was
+refused at the last step for not attaching something the product was not
+asking for. Verification was simply not completable.
+
+- `server/services/kyc-policy.ts` — one flag, `KYC_REQUIRE_DOCUMENTS`
+  (`NEXT_PUBLIC_` mirror for the form). Turning it on moves the validation, the
+  wording and the risk flag together.
+- **Optional means absent, never fabricated.** No `kyc_documents` row is
+  written for a file that does not exist: no placeholder filename, no null-path
+  row. A row in that table says "there is a document here" to the operator who
+  approves from it, and that is the same class of lie as a client-supplied
+  `liveness_check_passed` (§23). The case carries a `documents_not_provided`
+  risk flag instead, and the CRM renders it and says plainly that nothing
+  failed to upload because there was nothing to upload.
+- **Nothing else was relaxed.** Name, date of birth, document type and the last
+  four characters of the number are still required. A document that *is*
+  supplied is still verified against the caller's own `auth.uid()` folder and
+  re-read from Storage before any row claims it exists.
+- **Validation moved inside the trace.** It ran before `traceAction`, so every
+  failure in that half recorded nothing — which is exactly why the reported
+  submission error left no `kyc.*` rows to look at.
+
+### 3. Deposit-address release
+
+**Manual release had two causes, and the second is why it looked broken.**
+
+The Release button was disabled whenever `unresolvedDeposits > 0`, computed in
+the browser. The live shasta pool address carries two `confirmed`-but-never-
+attributed legacy deposits (2026-08-21 and 2026-09-06), so it was disabled
+permanently behind a tooltip that named the problem and not the remedy. And
+`releaseDepositAddressAction` revalidated `/admin/deposits` but **not**
+`/admin/deposits/addresses` — the screen the operator is standing on — so a
+release that did work left the row reading "assigned" until a hard reload.
+
+Both fixed. The verdict now comes from the server, the refusal names the count
+and says to resolve them in the deposits queue, there is a link to it, and the
+result names the address that actually changed.
+
+**Automatic release, which did not exist.** `deposit_addresses` said
+reassignment was never automatic. The reasoning was right and the conclusion
+too strong: an account that opened the deposit screen once and never paid held
+its address forever, and with a two-address pool that is a permanently
+exhausted pool. Observed: three rows, two retired, **zero available** on
+mainnet.
+
+Releasing is only safe if a late transfer cannot reach the wrong wallet, so
+that is closed structurally rather than by choosing a lucky timeout:
+
+- **`deposit_address_assignments`** — append-only intervals of who held what,
+  when. `findOwnerOfAddressAt` resolves a transfer against its **own block
+  timestamp**, so a late transfer belongs to whoever held the address when it
+  was *sent*, whoever holds it now. A transfer that falls in a gap matches no
+  interval and goes to the operator queue — slow and correct (§18.4).
+- **`quarantine_until`** — a released address is withheld from any *other*
+  account for 24h (configurable). The previous holder may take it straight
+  back, which carries no attribution risk at all.
+- **`last_user_id`** — so that preference is possible, and so a released row
+  still says who to ask when a late transfer turns up.
+
+`sweepDepositAddresses()` releases an address with no deposit at all after
+10 minutes (`idle_timeout`) or, once every deposit is terminal, 1 hour after
+the last one (`settled`). The pre-existing refusal is untouched: a `pending`,
+`confirming` or unattributed `confirmed` deposit blocks release at any age, for
+the sweep and for an operator alike, through one shared function.
+
+Three triggers, because one scheduler is not guaranteed:
+`/api/cron/release-deposit-addresses` (`*/15`), the tail of
+`/api/cron/scan-deposits` (Hobby caps the number of cron jobs), and
+`getOrCreateDepositAddress` **on pool exhaustion** — which makes the pool
+self-healing at the moment the capacity is needed, with no scheduler at all.
+
+### 4. Two bugs found while testing the above
+
+- `sweepDepositAddresses` typed a raw `sql` subquery as `Date`. A `sql`
+  fragment carries no column for Drizzle to map, so postgres.js returns text —
+  `lastDepositAt.getTime is not a function`, caught and reported as "the
+  release could not be completed" for every address that had ever received
+  anything. Same hazard as `@/db/sql-values`, from the other direction.
+- The claim ordering used `last_user_id = $1`, which is **NULL** for a
+  never-held row, and Postgres sorts NULLs first under `DESC` — silently
+  inverting the same-user preference. `IS NOT DISTINCT FROM` returns true or
+  false and never null.
+
+### Schema
+
+`0014` — `deposit_address_assignments`, plus `deposit_addresses.last_user_id`
+and `.quarantine_until`, plus `deposit_addresses_assigned_idx` for the sweep's
+own query. `0015` — backfills an open interval for every currently assigned
+address (so the first transfer to an existing assignment still attributes), and
+asserts `admin_agents_auth_user_id_key` with `IF NOT EXISTS`.
+
+**Note on that last one:** it was investigated as suspected schema drift and is
+**not** drift. The index is present on the production database; an earlier
+reading of `pg_indexes` was truncated output, not a missing index. The
+statement stays as a no-op assertion because `loadOperator` merges permissions
+across every returned row and takes `rows[0]` as the identity, so two agents
+sharing one `auth_user_id` would resolve to an arbitrary one of them holding
+the union of both permission sets.
+
+---
+
 ## 2026-09-14 (Plan rate tiers, deposit confirmation, address management, automatic commission release)
 
 Four features, one migration (`0012`) plus an enum addition (`0013`).

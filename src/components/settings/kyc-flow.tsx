@@ -106,6 +106,35 @@ const STEPS = [
   },
 ] as const;
 
+/**
+ * What each step says when the photograph on it is not required.
+ *
+ * Written out rather than appending "(optional)" to the existing sentence,
+ * because the useful information is not that it may be skipped — it is *why*,
+ * and that skipping costs the person nothing now and may be asked for later.
+ */
+const OPTIONAL_STEP_NOTE: Partial<Record<(typeof STEPS)[number]["id"], string>> = {
+  document:
+    "Attaching a photo is optional for now — your document type and number are what we need at this stage.",
+  selfie:
+    "A selfie is optional for now. You can submit without one, and we will ask for it if a reviewer needs it.",
+};
+
+/**
+ * Whether the photographs are mandatory in this build.
+ *
+ * Mirrors the server's `KYC_REQUIRE_DOCUMENTS` policy
+ * (`@/server/services/kyc-policy`). A client constant cannot be the boundary —
+ * the server validates independently — but it has to agree, or the form either
+ * blocks a submission the server would accept or offers one it would refuse.
+ *
+ * `NEXT_PUBLIC_` because this is the only way a client component can read a
+ * deployment setting, and there is nothing sensitive about "are documents
+ * required": the answer is visible from using the form for ten seconds.
+ */
+const DOCUMENTS_REQUIRED =
+  process.env.NEXT_PUBLIC_KYC_REQUIRE_DOCUMENTS === "true";
+
 /** Everything after the last four characters is dropped before anything is sent. */
 function lastFour(documentNumber: string): string {
   return documentNumber.replace(/[^A-Za-z0-9]/g, "").slice(-4).toUpperCase();
@@ -206,12 +235,26 @@ export function KycFlow({
   /* ---------------------------------------------------------------- */
   /* Interactive steps                                                 */
   /* ---------------------------------------------------------------- */
+  /*
+   * WHAT IS ACTUALLY REQUIRED TO SUBMIT, AND WHAT IS NOT.
+   *
+   * The identity details are: a name, a date of birth, a document type and the
+   * last four characters of the document number. Those are what make a case
+   * reviewable at all, and none of them has been relaxed.
+   *
+   * The photographs are not, on this deployment. `DOCUMENTS_REQUIRED` mirrors
+   * the server's `KYC_REQUIRE_DOCUMENTS` policy so the button and the
+   * validation agree; the server is still the boundary, and turning the policy
+   * on without changing this would produce a refusal rather than a bad
+   * submission.
+   */
   const canContinue =
     step === 0
       ? fullName.trim().length > 2 && dob.trim() !== ""
       : step === 1
-        ? document !== null && lastFour(documentNumber).length === 4
-        : selfie !== null;
+        ? lastFour(documentNumber).length === 4 &&
+          (!DOCUMENTS_REQUIRED || document !== null)
+        : !DOCUMENTS_REQUIRED || selfie !== null;
 
   function next() {
     if (step < STEPS.length - 1) {
@@ -224,35 +267,42 @@ export function KycFlow({
       return;
     }
 
-    if (!document || !selfie) return;
+    if (DOCUMENTS_REQUIRED && (!document || !selfie)) return;
 
     startTransition(async () => {
       /*
-       * The files go up first, and the submission only happens if they landed.
+       * Whatever the person actually attached goes up first, and the
+       * submission only happens if it landed.
        *
        * Uploading straight to Storage rather than through a server action is
        * what keeps a 10 MB scan working in production — see `uploadKycFile`.
        * Ordering matters: a submission written before the upload succeeded
        * would be a `pending_review` case pointing at nothing, which a reviewer
        * cannot progress and the person cannot understand.
+       *
+       * Nothing attached means nothing uploaded — not a placeholder, not an
+       * empty object. The absence is carried all the way through to the
+       * database as an absence.
        */
-      let documentPath: string;
-      let selfiePath: string;
-      try {
-        setUploading(true);
-        [documentPath, selfiePath] = await Promise.all([
-          uploadKycFile(document, "document"),
-          uploadKycFile(selfie, "selfie"),
-        ]);
-      } catch (error) {
-        toast.error(
-          error instanceof UploadError
-            ? error.message
-            : "Your documents could not be uploaded. Check your connection and try again.",
-        );
-        return;
-      } finally {
-        setUploading(false);
+      let documentPath: string | undefined;
+      let selfiePath: string | undefined;
+      if (document || selfie) {
+        try {
+          setUploading(true);
+          [documentPath, selfiePath] = await Promise.all([
+            document ? uploadKycFile(document, "document") : Promise.resolve(undefined),
+            selfie ? uploadKycFile(selfie, "selfie") : Promise.resolve(undefined),
+          ]);
+        } catch (error) {
+          toast.error(
+            error instanceof UploadError
+              ? error.message
+              : "Your documents could not be uploaded. Check your connection and try again.",
+          );
+          return;
+        } finally {
+          setUploading(false);
+        }
       }
 
       const result = await submitKycAction({
@@ -263,11 +313,11 @@ export function KycFlow({
         // mask, so there is no complete identity number in a request body, in a
         // server log, or in the database.
         documentNumberLast4: lastFour(documentNumber),
-        documentFileName: document.fileName,
-        documentByteSize: document.sizeBytes,
-        documentMimeType: document.mimeType,
+        documentFileName: document?.fileName,
+        documentByteSize: document?.sizeBytes,
+        documentMimeType: document?.mimeType,
         documentPath,
-        selfieFileName: selfie.fileName,
+        selfieFileName: selfie?.fileName,
         selfiePath,
       });
 
@@ -342,10 +392,22 @@ export function KycFlow({
             <ActiveIcon className="size-5" aria-hidden />
           </span>
           <div className="min-w-0">
-            <h2 className="text-base font-semibold">{STEPS[step].title}</h2>
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <h2 className="text-base font-semibold">{STEPS[step].title}</h2>
+              {!DOCUMENTS_REQUIRED && OPTIONAL_STEP_NOTE[STEPS[step].id] ? (
+                <span className="rounded-full border border-border bg-secondary px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                  Optional
+                </span>
+              ) : null}
+            </div>
             <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
               {STEPS[step].description}
             </p>
+            {!DOCUMENTS_REQUIRED && OPTIONAL_STEP_NOTE[STEPS[step].id] ? (
+              <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+                {OPTIONAL_STEP_NOTE[STEPS[step].id]}
+              </p>
+            ) : null}
           </div>
         </div>
 
@@ -421,11 +483,15 @@ export function KycFlow({
       */}
       <p className="rounded-xl border border-border bg-secondary/60 p-3.5 text-xs leading-relaxed text-muted-foreground">
         <strong className="font-medium text-foreground">
-          Your documents are uploaded to private storage.
+          {DOCUMENTS_REQUIRED
+            ? "Your documents are uploaded to private storage."
+            : "Photographs are optional at this stage."}
         </strong>{" "}
-        Only you and our verification team can open them — they have no public
-        address and are reached through a short-lived link that expires. Your
-        full document number is never sent; only its last four characters are.
+        {DOCUMENTS_REQUIRED
+          ? "Only you and our verification team can open them — they have no public address and are reached through a short-lived link that expires."
+          : "Anything you do attach is uploaded to private storage, where only you and our verification team can open it through a short-lived link. Nothing is recorded as attached unless it really was."}{" "}
+        Your full document number is never sent; only its last four characters
+        are.
       </p>
 
       <div className="space-y-2">
@@ -442,7 +508,12 @@ export function KycFlow({
               : pending
                 ? "Submitting…"
                 : "Submit for review"
-            : "Continue"}
+            : !DOCUMENTS_REQUIRED &&
+                OPTIONAL_STEP_NOTE[STEPS[step].id] &&
+                ((step === 1 && document === null) ||
+                  (step === 2 && selfie === null))
+              ? "Skip and continue"
+              : "Continue"}
         </Button>
         {step > 0 ? (
           <Button variant="ghost" size="lg" block onClick={() => setStep(step - 1)}>

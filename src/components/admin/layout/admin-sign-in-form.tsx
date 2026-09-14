@@ -40,11 +40,17 @@ export function AdminSignInForm({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  /**
+   * A failure that is worth trying again, kept on screen rather than in a
+   * toast that disappears while the operator is still reading it.
+   */
+  const [retryable, setRetryable] = useState<string | null>(null);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (busy || !email.trim() || !password) return;
     setBusy(true);
+    setRetryable(null);
     try {
       const supabase = getSupabaseBrowserClient();
       const { error } = await supabase.auth.signInWithPassword({
@@ -57,8 +63,29 @@ export function AdminSignInForm({
       // separate question, and only the server may answer it.
       const result = await completeOperatorSignIn();
       if (!result.ok) {
-        // Signed in as somebody, but not as an operator. The session is ended
-        // rather than left lying around inside an operations console.
+        /*
+         * THE SESSION IS ONLY DESTROYED ON AN ACTUAL VERDICT.
+         *
+         * This used to call `signOut()` for every `!ok`, including the case
+         * where the server could not *reach* the database to find out. So a
+         * pooler refusal cost the operator the session they had just paid a
+         * full password round trip for, and the next attempt started from
+         * nothing. That is why signing in took five or six tries rather than a
+         * reload: each failure was undoing the half that had worked.
+         *
+         * `retryable` is the server saying "no verdict was reached". The
+         * session stays, the form offers another go, and nothing is granted —
+         * the console's own gate resolves the operator again on every request
+         * and refuses when it cannot.
+         */
+        if (result.retryable) {
+          setRetryable(result.message);
+          return;
+        }
+
+        // A real answer: a valid credential that belongs to no operator. The
+        // session is ended rather than left lying around inside an operations
+        // console.
         await supabase.auth.signOut();
         toast.error(result.message);
         return;
@@ -93,6 +120,17 @@ export function AdminSignInForm({
         {reason ? (
           <Card className="border-destructive/40 bg-destructive/5 p-4">
             <p className="text-sm leading-relaxed text-destructive">{reason}</p>
+          </Card>
+        ) : null}
+
+        {retryable ? (
+          <Card className="space-y-2 border-warning/40 bg-warning/8 p-4">
+            <p className="text-sm font-medium text-foreground">
+              Your credentials were accepted
+            </p>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {retryable} Your session is still valid — press Sign in again.
+            </p>
           </Card>
         ) : null}
 

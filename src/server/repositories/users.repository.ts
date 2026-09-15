@@ -159,10 +159,42 @@ export async function listUserDeviceSessions(
 
 export async function listUserSecurityEvents(
   db: Database,
+  options: { limit?: number } = {},
 ): Promise<UserSecurityEvent[]> {
-  const rows = await db
+  /*
+   * `limit` is optional because two callers want different things: the user
+   * detail screen wants this account's whole history, and the dashboard panel
+   * wants the six most recent events on the platform. Without it the panel was
+   * reading every security event ever recorded to render six rows.
+   */
+  const query = db
     .select()
     .from(schema.userSecurityEvents)
     .orderBy(desc(schema.userSecurityEvents.createdAt));
+  const rows = options.limit ? await query.limit(options.limit) : await query;
   return rows.map(toUserSecurityEvent);
+}
+
+/**
+ * The most recently registered accounts, for the dashboard panel.
+ *
+ * A narrow projection and a `LIMIT`, where the panel used to be handed
+ * `listAdminUsers()` — every account on the platform joined to every wallet,
+ * sorted in the browser, sliced to five.
+ */
+export async function listRecentUsers(
+  db: Database,
+  limit: number,
+): Promise<AdminUser[]> {
+  const rows = await db
+    .select({ user: schema.users, wallet: schema.walletBalances })
+    .from(schema.users)
+    .leftJoin(
+      schema.walletBalances,
+      eq(schema.walletBalances.userId, schema.users.id),
+    )
+    .orderBy(desc(schema.users.registeredAt))
+    .limit(limit);
+
+  return rows.map(({ user, wallet }) => toAdminUser(user, wallet));
 }

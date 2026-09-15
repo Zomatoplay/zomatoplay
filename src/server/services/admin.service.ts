@@ -18,6 +18,7 @@ import {
 import { adminPlans as seedAdminPlans } from "@/data/admin/plans";
 import type {
   AdminAgent,
+  AdminDashboardMetrics,
   AdminDepositAddress,
   PipelineEvent,
   AdminCommissionEntry,
@@ -44,6 +45,7 @@ import {
   listAdminAgents,
   listAuditLog,
   listPlanRateHistory,
+  readDashboardMetrics,
   type PlanRateHistoryEntry,
 } from "../repositories/admin.repository";
 import { listAdminPlans } from "../repositories/catalogue.repository";
@@ -61,6 +63,7 @@ import {
 } from "../repositories/referrals.repository";
 import {
   listAdminUsers,
+  listRecentUsers,
   listUserDeviceSessions,
   listUserSecurityEvents,
 } from "../repositories/users.repository";
@@ -256,4 +259,118 @@ export interface AdminSliceData {
   campaigns?: AdminNotificationCampaign[];
   auditLog?: AuditLogEntry[];
   settings?: PlatformSettings;
+}
+
+/* -------------------------------------------------------------------------- */
+/* The dashboard                                                               */
+/* -------------------------------------------------------------------------- */
+
+/** How many rows each "recent activity" panel on `/admin` renders. */
+const RECENT_PANEL_ROWS = 5;
+/** The security timeline shows six, not five. */
+const RECENT_SECURITY_ROWS = 6;
+
+export interface AdminDashboardData {
+  metrics: AdminDashboardMetrics;
+  users: AdminUser[];
+  deposits: AdminDeposit[];
+  withdrawals: AdminWithdrawal[];
+  kyc: KycSubmission[];
+  investments: AdminInvestment[];
+  securityEvents: UserSecurityEvent[];
+}
+
+/**
+ * Everything `/admin` renders, and nothing else.
+ *
+ * WHAT THIS REPLACED
+ * ------------------
+ * Four unbounded reads — `getAdminUsers()`, `getAdminDeposits()`,
+ * `getAdminWithdrawals()`, `getKycSubmissions()` — whose results were
+ * serialised whole into the RSC payload so that the browser could derive six
+ * counts with `filter`/`reduce` and slice five rows off each list. The KYC one
+ * was three unbounded queries by itself, because attaching documents and notes
+ * read every document and every note on the platform.
+ *
+ * Now: one aggregate statement for the six figures, and six small `LIMIT`ed
+ * reads for the six panels. The payload stops growing with the platform.
+ *
+ * IT ALSO FIXES TWO PANELS THAT WERE ALWAYS EMPTY
+ * -----------------------------------------------
+ * `RecentInvestments` and `RecentSecurityEvents` read `investments` and
+ * `securityEvents` from the admin store, and the dashboard page never provided
+ * either. Unprovided slices fall back to `[]` (see `admin-store.tsx`), so both
+ * panels rendered "nothing recent" regardless of what had happened — silently,
+ * because an empty list is indistinguishable from an empty platform. They are
+ * fetched here.
+ *
+ * One wave. Seven reads against a five-connection pool is two waves of round
+ * trips rather than one, which is the honest cost of this change; it buys a
+ * payload that no longer scales with the number of accounts, and it is why
+ * each read is `LIMIT`ed rather than merely projected.
+ */
+export async function getAdminDashboard(): Promise<AdminDashboardData> {
+  const [metrics, users, deposits, withdrawals, kyc, investments, securityEvents] =
+    await Promise.all([
+      fromDatabase(readDashboardMetrics, () => seedDashboardMetrics()),
+      fromDatabase(
+        (db) => listRecentUsers(db, RECENT_PANEL_ROWS),
+        () => seedUsers.slice(0, RECENT_PANEL_ROWS),
+      ),
+      fromDatabase(
+        (db) => listAdminDeposits(db, { limit: RECENT_PANEL_ROWS }),
+        () => seedDeposits.slice(0, RECENT_PANEL_ROWS),
+      ),
+      fromDatabase(
+        (db) => listAdminWithdrawals(db, { limit: RECENT_PANEL_ROWS }),
+        () => seedWithdrawals.slice(0, RECENT_PANEL_ROWS),
+      ),
+      fromDatabase(
+        (db) => listKycSubmissions(db, { limit: RECENT_PANEL_ROWS }),
+        () => seedKycSubmissions.slice(0, RECENT_PANEL_ROWS),
+      ),
+      fromDatabase(
+        (db) => listAdminInvestments(db, { limit: RECENT_PANEL_ROWS }),
+        () => seedInvestments.slice(0, RECENT_PANEL_ROWS),
+      ),
+      fromDatabase(
+        (db) => listUserSecurityEvents(db, { limit: RECENT_SECURITY_ROWS }),
+        () => seedSecurityEvents.slice(0, RECENT_SECURITY_ROWS),
+      ),
+    ]);
+
+  return { metrics, users, deposits, withdrawals, kyc, investments, securityEvents };
+}
+
+/**
+ * The same six figures, derived from the seed modules when no database is
+ * configured.
+ *
+ * Counted from the fixtures rather than invented, so the no-database mode
+ * shows numbers that match the lists beside them — which is the whole point of
+ * the fallback (CLAUDE.md §16.3).
+ */
+function seedDashboardMetrics(): AdminDashboardMetrics {
+  const depositsPending = seedDeposits.filter((deposit) =>
+    ["pending", "detected", "confirming", "confirmed"].includes(deposit.status),
+  );
+  const withdrawalsPending = seedWithdrawals.filter((withdrawal) =>
+    ["pending", "under_review", "approved", "processing"].includes(withdrawal.status),
+  );
+
+  return {
+    kycPending: seedKycSubmissions.filter((submission) =>
+      ["pending", "under_review"].includes(submission.status),
+    ).length,
+    depositsPending: depositsPending.length,
+    depositsPendingUsdt: depositsPending.reduce((sum, d) => sum + d.amountUsdt, 0),
+    withdrawalsPending: withdrawalsPending.length,
+    withdrawalsPendingUsdt: withdrawalsPending.reduce(
+      (sum, w) => sum + w.amountUsdt,
+      0,
+    ),
+    usersRestricted: seedUsers.filter((user) =>
+      ["blocked", "suspended"].includes(user.status),
+    ).length,
+  };
 }

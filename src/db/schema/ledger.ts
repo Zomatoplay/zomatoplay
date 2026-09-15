@@ -57,6 +57,26 @@ export const transactions = pgTable(
   (table) => [
     index("transactions_user_idx").on(table.userId),
     index("transactions_occurred_idx").on(table.occurredAt),
+    /*
+     * "This account's ledger, newest first" — the hottest read in the product.
+     *
+     * Home, Wallet and the history screen all run
+     * `where user_id = $1 order by occurred_at desc limit $2`. The two indexes
+     * above cannot serve it together: Postgres uses `transactions_user_idx` to
+     * find the account's rows and then **sorts every one of them** to take the
+     * top N. That sort is invisible at 200 rows and is the whole cost at
+     * 20,000 — it grows with an account's history on a query that runs on
+     * every navigation.
+     *
+     * Ordered `desc` to match the query exactly, so the scan walks the index
+     * backwards from the newest entry and stops at the limit. Added with the
+     * limits, not before them: the limit is what turns this from "avoid a
+     * sort" into "read N rows and stop".
+     */
+    index("transactions_user_recent_idx").on(
+      table.userId,
+      table.occurredAt.desc(),
+    ),
     index("transactions_type_idx").on(table.type),
     index("transactions_status_idx").on(table.status),
   ],

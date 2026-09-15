@@ -16,15 +16,29 @@ import { toAdminDeposit, toAdminWithdrawal, toTransaction } from "./mappers";
  * for that reason, not by accident — see the schema.
  */
 
+/**
+ * One account's ledger, newest first.
+ *
+ * `limit` is optional and every caller should pass one. Home renders five
+ * entries and Wallet six, and both used to read an account's **entire**
+ * history to do it — fine at 200 rows, a growing per-render cost at 20,000,
+ * and all of it serialised into the RSC payload on every navigation.
+ *
+ * Unbounded remains available because `/wallet/transactions` is the screen
+ * that genuinely browses the history; it passes an explicit ceiling rather
+ * than relying on the absence of one.
+ */
 export async function listTransactionsForUser(
   db: Database,
   userId: string,
+  options: { limit?: number } = {},
 ): Promise<Transaction[]> {
-  const rows = await db
+  const query = db
     .select()
     .from(schema.transactions)
     .where(eq(schema.transactions.userId, userId))
     .orderBy(desc(schema.transactions.occurredAt));
+  const rows = options.limit ? await query.limit(options.limit) : await query;
   return rows.map(toTransaction);
 }
 
@@ -35,12 +49,16 @@ export async function listTransactionsForUser(
  * user row to join to, and an inner join would quietly drop exactly the rows
  * an operator opens this screen to deal with.
  */
-export async function listAdminDeposits(db: Database): Promise<AdminDeposit[]> {
-  const rows = await db
+export async function listAdminDeposits(
+  db: Database,
+  options: { limit?: number } = {},
+): Promise<AdminDeposit[]> {
+  const query = db
     .select({ deposit: schema.deposits, user: schema.users })
     .from(schema.deposits)
     .leftJoin(schema.users, eq(schema.users.id, schema.deposits.userId))
     .orderBy(desc(schema.deposits.createdAt));
+  const rows = options.limit ? await query.limit(options.limit) : await query;
 
   return rows.map(({ deposit, user }) =>
     toAdminDeposit(
@@ -62,12 +80,14 @@ export async function findDepositById(db: Database, id: string) {
 
 export async function listAdminWithdrawals(
   db: Database,
+  options: { limit?: number } = {},
 ): Promise<AdminWithdrawal[]> {
-  const rows = await db
+  const base = db
     .select({ withdrawal: schema.withdrawals, user: schema.users })
     .from(schema.withdrawals)
     .innerJoin(schema.users, eq(schema.users.id, schema.withdrawals.userId))
     .orderBy(desc(schema.withdrawals.requestedAt));
+  const rows = options.limit ? await base.limit(options.limit) : await base;
 
   return rows.map(({ withdrawal, user }) =>
     toAdminWithdrawal(withdrawal, {

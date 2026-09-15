@@ -97,6 +97,33 @@ describe("development dataset", { skip }, () => {
     assert.ok(n <= SEED_USER_COUNT + 20, `unexpectedly many users: ${n}`);
   });
 
+  test("member ids are unique and none was generated from the clock", async () => {
+    /*
+     * `display_id` carries a unique index and used to be the last seven digits
+     * of `Date.now()` — a value that repeats every 2 h 46 m, so two signups
+     * that interval apart (or in the same millisecond) collided and the unique
+     * violation failed the whole registration.
+     *
+     * Two properties, checked against the live table rather than the
+     * generator, because the index is what actually has to hold.
+     */
+    const rows = await db
+      .select({ displayId: t.users.displayId })
+      .from(t.users);
+
+    const seen = new Set<string>();
+    for (const { displayId } of rows) {
+      assert.ok(!seen.has(displayId), `duplicate member id: ${displayId}`);
+      seen.add(displayId);
+      assert.match(
+        displayId,
+        /^NT-\d{7,10}$/,
+        `member id is not in the documented shape: ${displayId}`,
+      );
+    }
+    assert.ok(rows.length > 0);
+  });
+
   test("every account has a wallet", async () => {
     const orphans = await db.execute<{ id: string }>(sql`
       select u.id from users u

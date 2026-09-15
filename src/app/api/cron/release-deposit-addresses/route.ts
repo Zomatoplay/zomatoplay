@@ -8,6 +8,7 @@ import {
 } from "@/server/services/deposit-address-policy";
 import { sweepDepositAddresses } from "@/server/services/deposit-address-sweep.service";
 import { withTrace } from "@/server/observability";
+import { prunePipelineEvents } from "@/server/services/diagnostics-retention.service";
 
 /**
  * The scheduled deposit-address release.
@@ -47,9 +48,34 @@ async function runRelease(request: NextRequest) {
   }
 
   try {
-    const summary = await withTrace(
+    const { summary, prune } = await withTrace(
       { route: "/api/cron/release-deposit-addresses", actorType: "system" },
-      () => sweepDepositAddresses(),
+      async () => {
+        const swept = await sweepDepositAddresses();
+
+        /*
+         * Diagnostics retention rides this job rather than a fifth cron.
+         *
+         * Vercel's Hobby plan caps the *number* of cron jobs as well as their
+         * frequency, and this deployment already schedules four. This route is
+         * the one scheduled job that is pure housekeeping — it moves no money,
+         * touches no ledger and makes no chain call — so it is the right place
+         * for the other piece of housekeeping the platform needs.
+         *
+         * After the sweep and never allowed to fail it: returning an address
+         * to the pool is the job somebody is waiting on, and a log table that
+         * stays large for another day costs nobody anything. The prune's own
+         * instrumentation records why it failed.
+         */
+        let pruned: Awaited<ReturnType<typeof prunePipelineEvents>> | null = null;
+        try {
+          pruned = await prunePipelineEvents();
+        } catch {
+          // Reported as null below rather than swallowed silently.
+        }
+
+        return { summary: swept, prune: pruned };
+      },
     );
 
     return NextResponse.json({
@@ -76,6 +102,8 @@ async function runRelease(request: NextRequest) {
         settledReleaseMs: SETTLED_RELEASE_MS,
         reassignQuarantineMs: REASSIGN_QUARANTINE_MS,
       },
+      // Null when the prune failed; its own instrumentation carries the reason.
+      diagnosticsPrune: prune,
     });
   } catch (error) {
     // A 500, so a sweep that has been failing since Tuesday is visible in the

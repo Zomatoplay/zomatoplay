@@ -26,6 +26,23 @@ Migration `0012` (four column groups + `plan_rate_tiers`) and `0013` (one enum
 value). Two product decisions came out of that work and are recorded at the end
 of this file; neither blocks anything.
 
+**2026-09-15:** production hardening — connection-fault classification and
+retry, KYC without documents, the deposit-address lifecycle. Migrations
+`0014`–`0016`.
+
+**2026-09-16 — performance and scale pass.** H9, M12 and M10 resolved; M1 and
+M2 substantially resolved on the user side and the dashboard; migration `0017`
+(one composite index). A new section, "Scale ceiling", works through the
+connection-budget arithmetic.
+
+> **This pass had no network access to the database.** Typecheck, lint, the
+> production build and the 115 database-independent tests all pass; the
+> integration suites and every live measurement are **unrun**. Every
+> performance claim below is reasoned from the code and from previously
+> recorded telemetry, not measured this session. The specific things to verify
+> when a database is reachable are listed under "Unverified after 2026-09-16"
+> near the end of this file.
+
 ---
 
 # P0 — must fix before real users
@@ -76,19 +93,28 @@ the recoverable notice, not a 500.
 
 # P1 — high
 
-## H9 — `pipeline_events` has no retention and is already the largest table
+## H9 — RESOLVED 2026-09-16: `pipeline_events` retention
 
-**Was H5; now measured.** 28,464 rows, **10 MB** — larger than every business
-table combined (`users` 256 kB, `transactions` 248 kB, `audit_logs` 192 kB).
-1,529 rows written on 2026-09-13 alone, from one developer and a handful of
-test runs. Nothing prunes it.
+**Was:** 28,464 rows / 10 MB — larger than every business table combined
+(`users` 256 kB, `transactions` 248 kB, `audit_logs` 192 kB) — from one
+developer and a handful of test runs, with nothing pruning it. It grew again
+when error recording began keeping whole cause chains.
 
-**Fix:** a scheduled delete by age (30–90 days), or partition by month. Note
-`audit_logs` must **not** be pruned — it is evidence; `pipeline_events` is
-diagnostics and the schema already says so.
+**Now:** `prunePipelineEvents()`
+(`server/services/diagnostics-retention.service.ts`) deletes rows past
+`PIPELINE_EVENT_RETENTION_DAYS` (default 30) in bounded batches, with a per-run
+ceiling so a first prune of a never-pruned table cannot run unbounded on a
+serverless platform. `more: true` in the result distinguishes "caught up" from
+"still behind" — without it the two look identical.
 
-**Complexity:** low. **Risk if ignored:** storage cost, then slow diagnostics
-exactly when an incident needs them.
+It runs from `/api/cron/release-deposit-addresses` rather than a fifth cron
+job: that route is the one scheduled job that moves no money, touches no ledger
+and makes no chain call, and the plan already caps the number of jobs (H4). The
+prune runs *after* the sweep and can never fail it.
+
+**`audit_logs` is untouched and must stay so** — it is evidence, kept; the
+schema and §22 both say so, and there is no code path from the retention
+service to it. Four tests pin the stop conditions without needing a database.
 
 ## H4 — Scheduled jobs run once a day
 
@@ -121,6 +147,27 @@ pool.
 **Fix:** a per-user floor stored alongside the session, or a small
 `rate_limits` table. **Complexity:** medium. Do it with or shortly after H7.
 
+**Assessed 2026-09-16 and deliberately not implemented in this pass.** Not
+because it is unimportant, but because every honest implementation needs
+storage and this session had **no network access to the database**, so nothing
+touching a new table could be tested. The three candidate shapes, so the next
+pass does not re-derive them:
+
+1. **A `rate_limits` table** keyed on `(user_id, action)` with a window — exact
+   and durable, and it costs a round trip on the very paths being protected.
+2. **In-process, per-instance** like `scan-trigger.ts`'s single-flight floor —
+   free, and worth almost nothing on a platform that answers load by adding
+   instances, since the limit multiplies by the instance count.
+3. **Postgres advisory locks / a token bucket in an unlogged table** — cheaper
+   than (1), still a round trip.
+
+The highest-value target is unchanged: `checkForDepositsAction`, which any
+authenticated account can drive and which spends TronGrid quota and connections
+out of a five-connection pool. Note its server-side floor already bounds *chain
+scans* globally per instance — what is unbounded is the cheap database read.
+Supabase's own limits still cover the auth endpoints.
+
+
 ## H1 — Wrong-asset transfers are invisible
 
 Unchanged. Every TRC-20 deposit address is also a valid TRX address, and a
@@ -135,6 +182,20 @@ on mainnet and the funds are real.
 and record what arrives as an `ignored`/`wrong_asset` deposit an operator can
 see. **Complexity:** medium.
 
+**Assessed 2026-09-16 and deliberately not implemented in this pass.** It
+touches `scanner.ts` and `recordObservedDeposit` — the money-critical path that
+has processed real mainnet funds — and this session had no database and no
+TronGrid reachability, so nothing written could have been tested against either.
+Changing the deposit scanner blind is the one thing this codebase should not do.
+
+The shape is still the one described above: query the native-transfer endpoint
+for pool addresses on the same pass and record what arrives as an `ignored`
+deposit with a `wrong_asset` reason, so an operator can see it. Two constraints
+for whoever picks it up: it must **not** widen what counts as creditable (a TRX
+transfer is visible, never credited), and it must not add a second pass over
+the addresses — the existing pass already has the address list in hand.
+
+
 ## H6 — Operator provisioning has no credential step
 
 Unchanged. Creating an operator in the CRM writes an `invited` row with no
@@ -144,54 +205,107 @@ credential; linking a Supabase account still needs `npm run db:dev-accounts`.
 
 # P2 — important
 
-## M10 — `nextDisplayId()` is a wasted round trip and can collide
+## M10 — RESOLVED 2026-09-16: member ids no longer collide
 
-**NEW, 2026-09-13.** `src/server/auth/account.ts`:
+**Was:** a query on every signup whose result was discarded (`void row`), then
+`NT-${Date.now().toString().slice(-7)}` — the last seven digits of a
+millisecond clock, against a **unique index**. That value repeats every
+10,000,000 ms, so two signups in the same millisecond *or exactly 2 h 46 m
+apart* failed the whole registration with an opaque constraint error. A
+scheduled failure window, not bad luck.
 
-```ts
-const [row] = await tx.select({ max: t.users.displayId })
-  .from(t.users).orderBy(t.users.displayId).limit(1);
-void row;                                   // ← the query result is discarded
-return `NT-${Date.now().toString().slice(-7)}`;
-```
+**Now:** the same one round trip generates five cryptographically random
+candidates and asks which are already taken, returning a free one — so the
+query that was wasted is the query that does the work. Random rather than a
+sequence, deliberately: a sequential member id would publish signup order and
+total user count to anybody who registers twice. If every candidate collides it
+widens rather than failing a registration, and the unique index remains the
+real guarantee. A test asserts uniqueness and shape across the live table.
 
-Three problems in six lines: the query runs on **every signup** and its result
-is thrown away (a wasted round trip, ~200 ms); the doc comment claims it
-"continues the seeded sequence" and it does not; and `display_id` carries a
-**unique index** while the value is the last 7 digits of a millisecond clock,
-which repeats every 10,000 s (~2.8 h). Two signups in the same millisecond, or
-exactly 2.8 h apart to the millisecond, fail the whole registration with an
-opaque constraint error.
+## M1 — Unbounded list reads *(user side and dashboard done; CRM lists open)*
 
-**Fix:** either use the sequence the comment promises, or a random suffix wide
-enough to make collision negligible — and delete the dead query either way.
-**Complexity:** low.
+**Done 2026-09-16 — the reads that ran on every navigation:**
 
-## M1 — Unbounded per-user and per-platform list reads
+- **`listTransactionsForUser()` now takes a limit, and the default is bounded.**
+  Home renders 5 entries and Wallet 6; both read an account's *entire* ledger to
+  do it, on every navigation. Default is now `RECENT_TRANSACTIONS` (50);
+  `/wallet/transactions` raises it to 250 **and says so on screen** when the
+  result hits the ceiling, rather than letting the list end and read as "that
+  is everything". A limit a reader is not told about is a lie, not an
+  optimisation.
+- **A composite index for that query.** `transactions_user_recent_idx` on
+  `(user_id, occurred_at desc)` — migration `0017`. The existing
+  `transactions_user_idx` found the account's rows and Postgres then **sorted
+  every one of them** to take the top N; the sort grew with an account's
+  history on the hottest query in the product. Added *with* the limits, because
+  the limit is what turns it from "avoid a sort" into "read N rows and stop".
+- **`TopBar` stopped reading the notification list.** It rendered an unread
+  badge on Home, Wallet, Referral, Plans and Settings, and derived the number
+  by fetching **every notification the account had ever received** and calling
+  `.filter(n => !n.read).length`. That is a `count(*)` written as a full table
+  read. It is now `countUnreadNotifications()`, served by the
+  `notifications_unread_idx` on `(user_id, read)` that already existed and that
+  nothing was using for this. Five pages stopped requesting the slice entirely;
+  only `/settings/notifications` renders the list, and it is capped at 100.
+- **The CRM dashboard stopped reading the platform.** See below.
 
-Confirmed still open, and now specific:
+**`investments` is deliberately NOT limited**, and this is the interesting one:
+every other list here is "the most recent N", which is a safe truncation
+because what falls off the end is history. An allocation is not — a fixed-term
+investment opened a year ago can still be `active`, and ordering by
+`started_at` and taking the most recent N would silently drop it from Home's
+"your investments" and from the totals beside it. If it ever needs bounding it
+must be by **status**, not by recency.
 
-- `listTransactionsForUser()` (`ledger.repository.ts:19`) has **no `LIMIT`** —
-  it reads every transaction an account has ever had, on every wallet and
-  transactions render.
-- The CRM dashboard reads **all** users, **all** deposits, **all** withdrawals
-  and **all** KYC rows (`admin/(console)/page.tsx`) and derives its counts in
-  JavaScript.
+**Still open — the CRM list screens.** `/admin/users`, `/admin/deposits`,
+`/admin/withdrawals`, `/admin/investments`, `/admin/kyc`, `/admin/referrals`
+and `/admin/audit-logs` each read their whole table (`select *`, joined, no
+`LIMIT`) and paginate and filter in the browser. `/admin/deposits` also reads
+the **entire user directory** for the assignment dialog's account picker.
 
-Harmless at today's 36 users / 210 transactions. At 10,000 accounts the
-dashboard loads the platform into memory on every view.
+This was left alone on purpose rather than capped. A silent cap on a CRM list
+hides rows from an operator working a queue, which is worse than a slow page;
+the correct fix is server-side pagination with the search and filter predicates
+moved into SQL, and that is a real piece of work across seven screens plus URL
+state — not something to bolt on during a performance pass. These screens are
+also visited deliberately and one at a time, unlike the dashboard, which every
+operator lands on.
 
-**Fix:** `LIMIT` + cursor pagination on the user list; `count(*)`/`sum()`
-aggregates for the dashboard counters. **Complexity:** medium.
+**Fix when it is due:** cursor pagination + server-side filters per screen;
+a typeahead server action for the deposit-assignment picker. **Complexity:**
+medium-high. **Trigger:** roughly 5k rows in any one of those tables, or the
+first operator complaint about a list screen.
 
-## M2 — CRM dashboard headline metrics and charts are fixtures
+## M2 — CRM dashboard *(queue counts done; headline totals and charts remain fixtures)*
 
-Still true, now precisely: the queue counts and the six recent-activity panels
-read the database; the headline aggregates and the four chart series still come
-from `@/data/admin/metrics` (`dashboard-view.tsx:45`). An operator reads real
-queues beside invented totals with nothing marking the difference.
+**Done 2026-09-16.** The six "needs attention" figures — KYC awaiting review,
+deposits not yet credited (and their USDT), withdrawals in progress (and
+theirs), and blocked/suspended accounts — are now counted in SQL by
+`readDashboardMetrics()`: one statement of scalar subqueries, one round trip,
+six numbers, every count served by an index that already existed.
 
-**Fix:** a reporting service with real aggregates — pairs naturally with M1.
+They used to be derived in the browser with `filter`/`reduce` over four
+unbounded reads the page had fetched for the purpose — every user joined to
+every wallet, every deposit, every withdrawal, and every KYC case. The KYC one
+was three unbounded queries by itself, because attaching documents and notes
+read **every document and every note on the platform**. All four were
+serialised whole into the RSC payload so the client could count them.
+
+The six recent-activity panels now read `LIMIT 5` (6 for the security
+timeline) instead of sorting and slicing a whole table.
+
+**This also fixed a live bug.** `RecentInvestments` and `RecentSecurityEvents`
+were rendered on the dashboard but the page never provided their slices, and
+the admin store falls back to `[]` for anything a page does not supply — so
+both panels showed "nothing recent" regardless of what had happened, silently,
+because an empty list is indistinguishable from an empty platform. Both slices
+are now fetched.
+
+**Still fixtures:** the platform-wide totals and the four chart series, from
+`@/data/admin/metrics`. The `PrototypeNote` at the top of the screen says so.
+Replacing them needs a reporting service with real aggregates over date
+ranges — a different shape of query from the six counts above, and not one to
+fake by summing a page of rows. **Complexity:** medium.
 
 ## M3 — Test suite cannot exercise server actions
 
@@ -203,17 +317,16 @@ is the sole exception and shows the shape is possible.
 
 Unchanged. Nothing exercises sign-in → deposit → allocate → settle in a browser.
 
-## M12 — Instrumentation records bound query parameters in error text
+## M12 — RESOLVED 2026-09-16: bound parameters are redacted
 
-**NEW, 2026-09-13, minor.** `redact()` strips connection strings, API keys and
-JWTs from error messages, but driver errors quote the failing statement *and
-its parameters*: `pipeline_events` now contains rows reading
-`params: b0271b3e-…,1` — a user's `auth_user_id`.
+`redact()` now drops the `params:` tail of a driver error, so
+`pipeline_events` no longer stores rows reading `params: b0271b3e-…,1` — a
+real `auth_user_id`. The **statement is kept**: which query failed is the whole
+diagnostic value, and it is schema rather than data.
 
-Not a credential and not a secret, but it is account-identifying data in a
-diagnostics table that an operator browses, and §22.2's rule is that
-`metadata` carries named scalars rather than raw payloads. Extend `redact()` to
-drop the `params:` tail of driver errors. **Complexity:** trivial.
+More urgent than when first written, because error recording began walking the
+whole cause chain in September — and the driver error is exactly the level that
+quotes its parameters. Regression test in `server/errors.test.ts`.
 
 ---
 
@@ -337,6 +450,93 @@ advisory lock when the schedule tightens (H4).
 
 ---
 
+## Unverified after 2026-09-16 — run these when a database is reachable
+
+This pass was written and checked without network access. Typecheck, lint, the
+production build and 115 database-independent tests pass. **The integration
+suites did not run at all**, and nothing was measured. In order:
+
+1. **`npm test` in both modes** (CLAUDE.md §12): with `DATABASE_URL` set and
+   with it unset. The suites that did not run this session are every
+   `*.integration.test.ts`, plus `deposit-check.test.ts`.
+2. **`npm run db:migrate`** to apply `0017`
+   (`transactions_user_recent_idx`), then **`npm run db:secure`** — the
+   migrate-then-secure rule. `0017` adds no table, so `db:secure` is a no-op
+   here, but the habit is the rule.
+3. **Confirm the new index is used.** `explain (analyze)` on
+   `select * from transactions where user_id = $1 order by occurred_at desc
+   limit 50` should show an index scan on `transactions_user_recent_idx` with
+   **no sort node**. If a sort appears, the index is not matching the query.
+4. **Confirm the dashboard aggregate runs.** `readDashboardMetrics()` is one
+   hand-written statement of scalar subqueries issued through `db.execute`;
+   it typechecks but has never executed. Open `/admin` and check the six
+   figures against the list screens.
+5. **Confirm the two previously-dead dashboard panels now populate** —
+   "Recent investments" and "Recent security events". They rendered empty for
+   as long as they have existed.
+6. **Confirm `nextDisplayId`.** Register a new account and check the member id
+   is `NT-` + 7 digits and unique. The five-candidate query is new.
+7. **Confirm the prune.** Call `/api/cron/release-deposit-addresses` with
+   `CRON_SECRET` and check `diagnosticsPrune` in the response, then re-check
+   `pipeline_events` row count. On a table that has never been pruned expect
+   `more: true` on the first runs.
+8. **Measure.** Route timings for `/`, `/wallet`, `/wallet/transactions`,
+   `/referral`, `/plans` and `/admin` against a production build with a real
+   session and idle gaps between requests. The claims worth checking are the
+   dashboard payload and the `TopBar` notification read.
+
+---
+
+## Scale ceiling — the connection budget, worked through 2026-09-16
+
+The question "what happens at 1k / 2k / 5k / 10k users" has an answer, and it
+is not about users at all.
+
+**The binding constraint is concurrent serverless instances, not accounts.**
+Supavisor session mode allows **15 client connections for the whole project**.
+Each application instance holds up to `DATABASE_POOL_MAX` (5) and warms
+`DATABASE_WARM_CONNECTIONS` (3) *before serving a request*. So:
+
+| Instances | Held | Result |
+|---|---|---|
+| 1 | up to 5 | fine |
+| 2 | up to 10 | fine; 5 spare for cron, scripts, the scanner |
+| 3 | up to 15 | at the ceiling — scripts and cron start being refused |
+| 4+ | — | `EMAXCONNSESSION` |
+
+Vercel scales instances by **concurrent requests**, not by registered users. A
+Node serverless instance serves roughly one request at a time, and an
+authenticated page here does ~2 round trips at ~200 ms each. So the ceiling is
+reached at somewhere around **3 concurrent requests**, whether the platform has
+100 users or 100,000. Ten thousand mostly-idle accounts are fine; two hundred
+of them clicking at the same moment are not.
+
+**What is already true and helps:** a refused connection is now classified as
+transient and retried with a pool-aware backoff (see `db/resilience.ts`), so
+the failure mode is a slower request rather than a failed sign-in. That is
+mitigation, not headroom.
+
+**Do not raise `DATABASE_POOL_MAX` to fix this.** It does not create
+connections; it only changes how fast one instance consumes the shared 15, and
+raising it makes the third instance fail sooner. The three real options, in
+order of cost:
+
+1. **Raise the project's pool size** in the Supabase dashboard. One setting.
+2. **Move off session mode by changing driver** — `node-postgres` does not
+   pipeline, so the simple-query protocol that rules out the transaction pooler
+   for postgres.js is harmless there (`db/env.ts` has the measurements). This
+   is the real fix and it is a deliberate migration: `db.execute()` returns a
+   `QueryResult` rather than a row array, so every caller changes.
+3. **Fewer round trips per page**, which is what this pass and the previous one
+   have been doing, and which raises the ceiling proportionally rather than
+   removing it.
+
+**Unverified:** none of the above was re-measured this session — the machine
+had no network access to the database. The arithmetic is from the configured
+constants and the documented Supavisor limit, both of which are in the code.
+
+---
+
 ## Known limitations (unchanged, deliberate)
 
 - **No outbound blockchain.** No signing, no key custody, no sending. Deposits
@@ -389,12 +589,21 @@ two measured performance regressions on the deposit path (H7, H8).
 *(M11, H7, H8 and C3a are done — see Resolved. NEW-1, NEW-2, NEW-3 and C1a
 landed on 2026-09-14 — see the end of this file.)*
 
-1. **H4 + the three-cron problem** (a daily cron is a customer-visible defect
-   on mainnet, and there are now three jobs on a plan that caps them)
-2. **H9 + M12** (retention and redaction — cheap, and both get worse with time)
-3. **Monitoring + backups** (the smallest work with the largest downside if skipped)
-4. **H10**, then **M10**
-5. **H1** (wrong-asset visibility)
+*(H9, M12 and M10 landed 2026-09-16, along with most of M1 and the queue half
+of M2.)*
+
+0. **Verify the 2026-09-16 pass against a live database** — see "Unverified"
+   below. Nothing in it is measured yet.
+1. **H4 + the cron-count problem** (a daily scan is a customer-visible defect on
+   mainnet, and there are now **four** scheduled jobs against a plan that caps
+   both the count and the frequency — the deployment is already committed to
+   Pro or to an external scheduler, and that should be a stated decision rather
+   than an accident)
+2. **Monitoring + backups** (the smallest work with the largest downside if skipped)
+3. **H10** (rate limiting — the three candidate designs are assessed above)
+4. **H1** (wrong-asset visibility)
+5. **M1's remaining half** — server-side pagination for the seven CRM list
+   screens, when any of those tables passes roughly 5k rows
 6. **C3** (payout rail — the largest piece, and it depends on all of the above)
 
 Two product decisions are open and neither blocks code: the initial tier rates,

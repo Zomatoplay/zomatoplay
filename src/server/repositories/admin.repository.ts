@@ -1,9 +1,14 @@
 import "server-only";
 
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq, sql } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
-import type { AdminAgent, AuditLogEntry, PlatformSettings } from "@/types/admin";
+import type {
+  AdminAgent,
+  AdminDashboardMetrics,
+  AuditLogEntry,
+  PlatformSettings,
+} from "@/types/admin";
 
 import { toAuditLogEntry, toPermissionSet, toPlatformSettings } from "./mappers";
 
@@ -135,4 +140,106 @@ export async function findPlatformSettings(
     .where(eq(schema.platformSettings.id, "default"))
     .limit(1);
   return row ? toPlatformSettings(row) : null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* The CRM dashboard                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The six numbers on the dashboard's "needs attention" row.
+ *
+ * WHY THIS EXISTS: THE DASHBOARD USED TO READ THE WHOLE PLATFORM
+ * --------------------------------------------------------------
+ * `/admin` fetched every user, every deposit, every withdrawal and every KYC
+ * case — four unbounded `select *` reads with joins — serialised all four into
+ * the RSC payload, and then derived these six figures in the browser with
+ * `Array.filter` and `Array.reduce`. `listKycSubmissions` alone is three
+ * unbounded queries, because it also reads every document and every note on
+ * the platform to attach them.
+ *
+ * At 36 accounts that is invisible. At 10,000 accounts with a year of
+ * deposits it is the entire database, over the wire, on every dashboard view —
+ * and the counts are the only thing most of it was fetched for.
+ *
+ * Six scalar subqueries in **one statement**, so the whole row costs one round
+ * trip (~200 ms on this deployment) and transfers six numbers.
+ *
+ * THE MONEY FIGURES ARE DISPLAY AGGREGATES, AND THAT IS DELIBERATE
+ * ----------------------------------------------------------------
+ * `::float8` converts once, at the end, after Postgres has summed the
+ * `numeric` column exactly. The code this replaces summed JavaScript floats
+ * one row at a time, so this is strictly *more* accurate, not less. Nothing
+ * here is an accounting figure — these are "how much is in flight" indicators
+ * beside a queue count, and no balance, ledger entry or payout is derived from
+ * them. Money that decides anything still goes through `@/db/money`.
+ */
+export async function readDashboardMetrics(
+  db: Database,
+): Promise<AdminDashboardMetrics> {
+  /*
+   * The status sets are the ones the dashboard has always used, moved from
+   * four client-side `filter` predicates into SQL unchanged. They are written
+   * out rather than derived from the enums on purpose: "which statuses count
+   * as needing attention" is a product decision, and enumerating it here means
+   * adding a status to the schema cannot silently change what an operator is
+   * told is outstanding.
+   *
+   * One statement of scalar subqueries, issued through `db.execute` — the form
+   * this codebase already uses for a statement that selects from no table.
+   * Every count is served by an existing index (`kyc_submissions_status_idx`,
+   * `deposits_status_idx`, `withdrawals_status_idx`, `users_status_idx`); none
+   * of them was added for this.
+   */
+  const rows = await db.execute<{
+    kyc_pending: number;
+    deposits_pending: number;
+    deposits_pending_usdt: number;
+    withdrawals_pending: number;
+    withdrawals_pending_usdt: number;
+    users_restricted: number;
+  }>(sql`
+    select
+      (select count(*)::int from ${schema.kycSubmissions}
+        where ${schema.kycSubmissions.status} in ('pending', 'under_review'))
+        as kyc_pending,
+      (select count(*)::int from ${schema.deposits}
+        where ${schema.deposits.status} in ('pending', 'detected', 'confirming', 'confirmed'))
+        as deposits_pending,
+      (select coalesce(sum(${schema.deposits.amountUsdt}), 0)::float8 from ${schema.deposits}
+        where ${schema.deposits.status} in ('pending', 'detected', 'confirming', 'confirmed'))
+        as deposits_pending_usdt,
+      (select count(*)::int from ${schema.withdrawals}
+        where ${schema.withdrawals.status} in ('pending', 'under_review', 'approved', 'processing'))
+        as withdrawals_pending,
+      (select coalesce(sum(${schema.withdrawals.amountUsdt}), 0)::float8 from ${schema.withdrawals}
+        where ${schema.withdrawals.status} in ('pending', 'under_review', 'approved', 'processing'))
+        as withdrawals_pending_usdt,
+      (select count(*)::int from ${schema.users}
+        where ${schema.users.status} in ('blocked', 'suspended'))
+        as users_restricted
+  `);
+
+  const row = rows[0];
+  if (!row) {
+    // Unreachable — the statement selects from no table and always returns one
+    // row — but a dashboard that renders zeros beats one that throws.
+    return {
+      kycPending: 0,
+      depositsPending: 0,
+      depositsPendingUsdt: 0,
+      withdrawalsPending: 0,
+      withdrawalsPendingUsdt: 0,
+      usersRestricted: 0,
+    };
+  }
+
+  return {
+    kycPending: Number(row.kyc_pending),
+    depositsPending: Number(row.deposits_pending),
+    depositsPendingUsdt: Number(row.deposits_pending_usdt),
+    withdrawalsPending: Number(row.withdrawals_pending),
+    withdrawalsPendingUsdt: Number(row.withdrawals_pending_usdt),
+    usersRestricted: Number(row.users_restricted),
+  };
 }

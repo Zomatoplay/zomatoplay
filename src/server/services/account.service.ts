@@ -20,6 +20,7 @@ import type {
 
 import { requireCurrentUserIdForPage, resolveUserId } from "../current-user";
 import {
+  countUnreadNotifications,
   listNotificationPreferences,
   listNotificationsForUser,
 } from "../repositories/engagement.repository";
@@ -126,11 +127,14 @@ const cachedSupportTickets = cache((id: string) =>
 const cachedInvestments = cache((id: string) =>
   read((db) => listInvestmentsForUser(db, id)),
 );
-const cachedTransactions = cache((id: string) =>
-  read((db) => listTransactionsForUser(db, id)),
+const cachedTransactions = cache((id: string, limit: number) =>
+  read((db) => listTransactionsForUser(db, id, { limit })),
 );
-const cachedNotifications = cache((id: string) =>
-  read((db) => listNotificationsForUser(db, id)),
+const cachedNotifications = cache((id: string, limit: number) =>
+  read((db) => listNotificationsForUser(db, id, { limit })),
+);
+const cachedUnreadNotificationCount = cache((id: string) =>
+  read((db) => countUnreadNotifications(db, id)),
 );
 const cachedNotificationPreferences = cache((id: string) =>
   read((db) => listNotificationPreferences(db, id)),
@@ -193,14 +197,66 @@ export async function getInvestments(userId?: string): Promise<Investment[]> {
   return cachedInvestments(id);
 }
 
-export async function getTransactions(userId?: string): Promise<Transaction[]> {
+/**
+ * How many ledger entries a screen reads when it does not say otherwise.
+ *
+ * Home renders five and Wallet six, and both used to read an account's
+ * **entire** history to do it — every row transferred from Postgres and
+ * serialised into the RSC payload on every navigation, for five rows of
+ * output. Fifty is far more than either renders and still leaves the Wallet
+ * screen's type filters (deposits / withdrawals / investments / rewards /
+ * referral) something real to select from, since they filter the fetched set
+ * before slicing.
+ *
+ * It is a **default**, not a maximum, and that is the point: a screen added
+ * later that forgets to think about this gets a bounded read rather than an
+ * unbounded one.
+ */
+export const RECENT_TRANSACTIONS = 50;
+
+/**
+ * The ceiling for the screen that genuinely browses history.
+ *
+ * `/wallet/transactions` is the one place an account looks through its past,
+ * so it asks for far more — but still asks. An unbounded read there is a page
+ * that gets slower every month a person uses the product, and the honest
+ * alternative to a limit is not "no limit", it is a limit the screen tells
+ * the reader about. See the notice on that page.
+ */
+export const TRANSACTION_HISTORY_LIMIT = 250;
+
+export async function getTransactions(
+  userId?: string,
+  limit: number = RECENT_TRANSACTIONS,
+): Promise<Transaction[]> {
   const id = await resolveUserId(userId);
-  return cachedTransactions(id);
+  // Memoised on `(id, limit)`, so two screens asking for different windows in
+  // one render would be two reads. They never do — each page asks once — but
+  // asking for the *same* window twice is free, which is the common case.
+  return cachedTransactions(id, limit);
 }
 
-export async function getNotifications(userId?: string): Promise<AppNotification[]> {
+/**
+ * How many notifications this account has to read.
+ *
+ * `TopBar` renders this on every primary section and used to derive it from
+ * the full notification list — see `countUnreadNotifications`, which is the
+ * indexed count that replaced the full read.
+ */
+export async function getUnreadNotificationCount(userId?: string): Promise<number> {
   const id = await resolveUserId(userId);
-  return cachedNotifications(id);
+  return cachedUnreadNotificationCount(id);
+}
+
+/** The window `/settings/notifications` reads. Nothing else renders the list. */
+export const NOTIFICATION_HISTORY_LIMIT = 100;
+
+export async function getNotifications(
+  userId?: string,
+  limit: number = NOTIFICATION_HISTORY_LIMIT,
+): Promise<AppNotification[]> {
+  const id = await resolveUserId(userId);
+  return cachedNotifications(id, limit);
 }
 
 export async function getNotificationPreferences(
@@ -264,9 +320,18 @@ export type LoadedSlices<K extends keyof UserSliceData> = {
   [P in K]-?: NonNullable<UserSliceData[P]>;
 };
 
+export interface UserSliceOptions {
+  /**
+   * How far back the `transactions` slice reads. Defaults to
+   * `RECENT_TRANSACTIONS`; only the history screen raises it.
+   */
+  transactionLimit?: number;
+}
+
 export async function getUserSlices<K extends keyof UserSliceData>(
   keys: readonly K[],
   userId?: string,
+  options: UserSliceOptions = {},
 ): Promise<LoadedSlices<K>> {
   // Page-only, so a missing session redirects rather than throwing — see
   // `requireCurrentUserIdForPage`. Every `(app)` page reads through here.
@@ -275,8 +340,22 @@ export async function getUserSlices<K extends keyof UserSliceData>(
   const loaders: { [P in keyof UserSliceData]-?: () => Promise<unknown> } = {
     profile: () => getUserProfile(id),
     balance: () => getWalletBalance(id),
+    /*
+     * `investments` is deliberately **not** limited.
+     *
+     * Every other list here is "the most recent N", which is a safe truncation
+     * because what falls off the end is history. An allocation is not: a
+     * fixed-term investment opened a year ago can still be `active`, and
+     * ordering by `started_at` and taking the most recent N would silently
+     * drop it from Home's "your investments" and from the totals beside it.
+     * Hiding somebody's live allocation to save a round trip is not a trade
+     * worth making. Allocations also accumulate far more slowly than ledger
+     * entries — one per deliberate decision, against one per deposit, reward
+     * and commission. If this ever needs bounding it must be by *status*, not
+     * by recency.
+     */
     investments: () => getInvestments(id),
-    transactions: () => getTransactions(id),
+    transactions: () => getTransactions(id, options.transactionLimit),
     notifications: () => getNotifications(id),
     notificationPreferences: () => getNotificationPreferences(id),
   };

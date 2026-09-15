@@ -12,7 +12,10 @@ import { StatTile } from "@/components/shared/stat-tile";
 import { REFERRAL_BASE_URL } from "@/constants/app";
 import { referralSteps } from "@/data/referrals";
 import { generateQrSvg } from "@/lib/qr";
-import { getUserSlices } from "@/server/services/account.service";
+import {
+  getUnreadNotificationCount,
+  getUserSlices,
+} from "@/server/services/account.service";
 import {
   SectionBoundary,
   deferred,
@@ -48,11 +51,13 @@ export default async function ReferralPage() {
   const commissions = deferred(getCommissionHistory());
 
   const [{ profile }, summary, vipLevels] = await Promise.all([
-    // `notifications` is for `TopBar` — see the note in the other sections:
-    // a component in the returned tree reads it a round trip too late.
-    getUserSlices(["profile", "notifications"] as const),
+    // `profile` and the unread count are for `TopBar` — see the note in the
+    // other sections: a component in the returned tree reads a round trip too
+    // late, so its reads are named in the page's own wave.
+    getUserSlices(["profile"] as const),
     getReferralSummary(),
     getVipLevels(),
+    getUnreadNotificationCount(),
   ]);
 
   const link = `${REFERRAL_BASE_URL}?ref=${profile.referralCode}`;

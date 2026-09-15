@@ -1,6 +1,6 @@
 import "server-only";
 
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
 import type { KycSubmission } from "@/types/admin";
@@ -16,21 +16,42 @@ import { toKycSubmission } from "./mappers";
  */
 export async function listKycSubmissions(
   db: Database,
+  options: { limit?: number } = {},
 ): Promise<KycSubmission[]> {
-  const submissions = await db
+  const base = db
     .select({ submission: schema.kycSubmissions, user: schema.users })
     .from(schema.kycSubmissions)
     .innerJoin(schema.users, eq(schema.users.id, schema.kycSubmissions.userId))
     .orderBy(desc(schema.kycSubmissions.submittedAt));
+  const submissions = options.limit ? await base.limit(options.limit) : await base;
 
   if (submissions.length === 0) return [];
+
+  /*
+   * Scoped to the submissions actually returned.
+   *
+   * These two reads had no `WHERE` at all: fetching a page of cases also
+   * fetched **every KYC document and every note on the platform**, then threw
+   * away everything that did not belong to a returned case. Harmless while the
+   * caller always wanted every case; wrong the moment one wants five, which is
+   * what the dashboard panel asks for.
+   *
+   * Filtering by the returned ids also means the review queue stops paying for
+   * notes on closed cases it is not showing.
+   */
+  const submissionIds = submissions.map(({ submission }) => submission.id);
 
   const [documents, notes] = await Promise.all([
     db
       .select()
       .from(schema.kycDocuments)
+      .where(inArray(schema.kycDocuments.submissionId, submissionIds))
       .orderBy(asc(schema.kycDocuments.uploadedAt)),
-    db.select().from(schema.kycNotes).orderBy(asc(schema.kycNotes.createdAt)),
+    db
+      .select()
+      .from(schema.kycNotes)
+      .where(inArray(schema.kycNotes.submissionId, submissionIds))
+      .orderBy(asc(schema.kycNotes.createdAt)),
   ]);
 
   const documentsBySubmission = new Map<string, typeof documents>();

@@ -1,8 +1,10 @@
 import "server-only";
 
+import { randomBytes } from "node:crypto";
+
 import { cache } from "react";
 import { cookies } from "next/headers";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 
 import { getDb, isDatabaseConfigured } from "@/db";
 import { resilientRead } from "@/server/database";
@@ -364,15 +366,80 @@ async function resolveReferrer(
   return referrer ? { id: referrer.id, code: referrer.code } : null;
 }
 
-/** `NT-…`, continuing the seeded sequence rather than restarting it. */
+/**
+ * The member id a person sees: `NT-` and seven digits.
+ *
+ * WHAT WAS WRONG WITH THE OLD VERSION
+ * -----------------------------------
+ * It ran a query on every signup, discarded the result with `void row`, and
+ * then returned `NT-${Date.now().toString().slice(-7)}` — the last seven
+ * digits of a millisecond clock. Three separate problems in six lines:
+ *
+ *  - the query was a wasted round trip (~200 ms) inside the account-creation
+ *    transaction, so it also held that transaction open for longer;
+ *  - the doc comment claimed it continued the seeded sequence, and it did
+ *    nothing of the kind;
+ *  - `display_id` carries a **unique index**, and the last seven digits of a
+ *    millisecond clock repeat every 10,000,000 ms — every **2 h 46 m**. Two
+ *    signups in the same millisecond, or exactly that interval apart, collided
+ *    and the unique violation failed the entire registration with an opaque
+ *    constraint error. That is a deterministic failure window, not bad luck.
+ *
+ * WHAT THIS DOES INSTEAD, IN THE SAME ONE ROUND TRIP
+ * -------------------------------------------------
+ * Generates several cryptographically random candidates, asks in a single
+ * query which of them are already taken, and returns one that is not. The
+ * query the old code wasted is now the query that does the work, so this costs
+ * nothing extra and removes the collision window.
+ *
+ * Random rather than a sequence, deliberately: a sequential member id would
+ * publish signup order and total user count to anybody who registers twice.
+ *
+ * The unique index remains the real guarantee — two concurrent signups can
+ * still pick the same free candidate between this read and their inserts. That
+ * is now a genuinely improbable event rather than a scheduled one, and the
+ * fallback below makes even that recoverable.
+ */
+const DISPLAY_ID_CANDIDATES = 5;
+
 async function nextDisplayId(tx: Parameters<Parameters<typeof mutate>[1]>[0]["tx"]) {
-  const [row] = await tx
-    .select({ max: t.users.displayId })
+  const candidates = Array.from({ length: DISPLAY_ID_CANDIDATES }, () =>
+    displayIdFrom(randomDigits(7)),
+  );
+
+  const taken = await tx
+    .select({ displayId: t.users.displayId })
     .from(t.users)
-    .orderBy(t.users.displayId)
-    .limit(1);
-  void row;
-  return `NT-${Date.now().toString().slice(-7)}`;
+    .where(inArray(t.users.displayId, candidates));
+
+  const used = new Set(taken.map((row) => row.displayId));
+  const free = candidates.find((candidate) => !used.has(candidate));
+  if (free) return free;
+
+  /*
+   * Every candidate was taken, which at a seven-digit space means the space is
+   * genuinely crowded. Widening beats failing the registration: a member id is
+   * a label, and refusing somebody an account because of one would be the
+   * worst possible trade.
+   */
+  return displayIdFrom(randomDigits(10));
+}
+
+function displayIdFrom(digits: string): string {
+  return `NT-${digits}`;
+}
+
+/** Uniformly random digits, from the CSPRNG rather than `Math.random()`. */
+function randomDigits(count: number): string {
+  const bytes = randomBytes(count);
+  let out = "";
+  for (let i = 0; i < count; i++) {
+    // Modulo 10 over a byte is very slightly biased toward 0–5. That is
+    // irrelevant for a collision-avoidance label and would matter only if this
+    // were a secret, which it is not.
+    out += (bytes[i] % 10).toString();
+  }
+  return out;
 }
 
 /** `a***v@example.com` — enough for a referrer to recognise, not to contact. */

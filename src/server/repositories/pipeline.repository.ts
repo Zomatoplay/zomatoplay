@@ -1,6 +1,6 @@
 import "server-only";
 
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray, lt } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
 import type { PipelineEvent } from "@/types/admin";
@@ -75,4 +75,46 @@ export async function listPipelineEvents(
     errorMessage: event.errorMessage,
     metadata: event.metadata,
   }));
+}
+
+/**
+ * Deletes one batch of diagnostics older than `cutoff`, returning how many
+ * rows went.
+ *
+ * BATCHED, AND THAT IS THE POINT
+ * ------------------------------
+ * A single `delete from pipeline_events where occurred_at < $1` is one
+ * statement and one very long transaction: it takes row locks on everything it
+ * removes and holds a connection out of a five-connection pool (CLAUDE.md
+ * §16.1a) for as long as it runs. On the first prune of a table that has never
+ * been pruned that is tens of thousands of rows at once.
+ *
+ * Deleting a bounded slice at a time keeps each transaction short, lets the
+ * caller stop when it has done enough, and makes an interrupted run
+ * harmless — the next pass simply continues, because "older than the cutoff"
+ * stays true for whatever is left.
+ *
+ * `occurred_at` is indexed (`pipeline_events_occurred_idx`), so selecting the
+ * batch is a range scan rather than a table scan.
+ */
+export async function deleteOldPipelineEvents(
+  db: Database,
+  cutoff: Date,
+  batchSize: number,
+): Promise<number> {
+  const deleted = await db
+    .delete(schema.pipelineEvents)
+    .where(
+      inArray(
+        schema.pipelineEvents.id,
+        db
+          .select({ id: schema.pipelineEvents.id })
+          .from(schema.pipelineEvents)
+          .where(lt(schema.pipelineEvents.occurredAt, cutoff))
+          .limit(batchSize),
+      ),
+    )
+    .returning({ id: schema.pipelineEvents.id });
+
+  return deleted.length;
 }

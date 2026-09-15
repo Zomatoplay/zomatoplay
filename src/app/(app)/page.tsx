@@ -1,5 +1,8 @@
 import { UserDataProvider } from "@/lib/prototype-store";
-import { getUserSlices } from "@/server/services/account.service";
+import {
+  getUnreadNotificationCount,
+  getUserSlices,
+} from "@/server/services/account.service";
 import { AddFundsCard } from "@/components/home/balance-card";
 import { EarningsCard } from "@/components/home/earnings-card";
 import {
@@ -23,7 +26,8 @@ export default async function HomePage() {
    * One wave, not several: these are independent reads and awaiting them in
    * sequence would add a round trip each.
    *
-   * `notifications` and `profile` are read here for `TopBar`, not for this page.
+   * `profile` and the unread count are read here for `TopBar`, not for this
+   * page.
    *
    * `TopBar` is an async server component in the tree this page *returns*, so
    * its own reads cannot begin until this function has already resolved — a
@@ -47,13 +51,17 @@ export default async function HomePage() {
    */
   const earnings = deferred(getEarningsSummary());
 
-  const slices = await getUserSlices([
-    "profile",
-    "balance",
-    "investments",
-    "transactions",
-    "notifications",
-  ] as const);
+  const [slices] = await Promise.all([
+    getUserSlices([
+      "profile",
+      "balance",
+      "investments",
+      "transactions",
+    ] as const),
+    // `TopBar`'s unread badge. Named here so it rides this wave; it is
+    // request-memoised, so `TopBar` awaiting it a moment later is free.
+    getUnreadNotificationCount(),
+  ]);
   const firstName = slices.profile.fullName.split(" ")[0];
 
   return (

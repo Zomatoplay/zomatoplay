@@ -1,6 +1,6 @@
 import "server-only";
 
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
 import type { AppNotification, NotificationPreference } from "@/types";
@@ -13,13 +13,47 @@ import { toAdminNotificationCampaign, toAppNotification } from "./mappers";
 export async function listNotificationsForUser(
   db: Database,
   userId: string,
+  options: { limit?: number } = {},
 ): Promise<AppNotification[]> {
-  const rows = await db
+  const query = db
     .select()
     .from(schema.notifications)
     .where(eq(schema.notifications.userId, userId))
     .orderBy(desc(schema.notifications.createdAt));
+  const rows = options.limit ? await query.limit(options.limit) : await query;
   return rows.map(toAppNotification);
+}
+
+/**
+ * How many notifications this account has not read.
+ *
+ * WHY A COUNT AND NOT A LIST
+ * --------------------------
+ * `TopBar` renders a small badge with this number, and it renders on Home,
+ * Wallet, Referral, Plans and Settings — every primary section. To produce it
+ * the page fetched **every notification the account had ever received**,
+ * shipped all of them into the RSC payload, and called
+ * `.filter(n => !n.read).length` in the browser. The list itself was rendered
+ * by exactly one screen, `/settings/notifications`.
+ *
+ * So this is a `count(*)` that had been written as a full table read. It is
+ * served by the existing `notifications_unread_idx` on `(user_id, read)` —
+ * the index was already there; nothing was using it for this.
+ */
+export async function countUnreadNotifications(
+  db: Database,
+  userId: string,
+): Promise<number> {
+  const [row] = await db
+    .select({ unread: sql<number>`count(*)::int` })
+    .from(schema.notifications)
+    .where(
+      and(
+        eq(schema.notifications.userId, userId),
+        eq(schema.notifications.read, false),
+      ),
+    );
+  return row?.unread ?? 0;
 }
 
 /**

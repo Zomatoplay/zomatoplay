@@ -44,7 +44,7 @@ import {
   registrationsMonthly,
 } from "@/data/admin/metrics";
 import { formatUsdt, formatUsdtCompact } from "@/lib/currency";
-import { useAdminStore } from "@/lib/admin-store";
+import type { AdminDashboardMetrics } from "@/types/admin";
 
 /**
  * Plan-mix segment colours, in the order the plans are listed. Slots are
@@ -63,45 +63,30 @@ const PLAN_MIX_COLORS = [
  * The CRM's landing screen: platform totals, the queues that need attention,
  * four charts and six "what just happened" panels.
  *
- * Pending counts come from the live store rather than the static metrics
- * module, so crediting a deposit or approving a withdrawal is visibly reflected
- * here. The platform-wide aggregates stay in `@/data/admin/metrics` because a
- * real deployment computes them server-side rather than by summing rows on the
- * client.
+ * The queue counts are **counted in SQL** (`readDashboardMetrics`) and arrive
+ * as a prop, so crediting a deposit or approving a withdrawal is reflected here
+ * on the next render. They used to be derived in this component from four
+ * whole platform tables the page had fetched for the purpose.
+ *
+ * The platform-wide totals and the four chart series below still come from
+ * `@/data/admin/metrics` and are still fixtures — the `PrototypeNote` at the
+ * top of the screen is what says so. Replacing them needs a reporting service
+ * with real aggregates rather than sums over a page of rows; that is tracked
+ * as M2 in `FUTURE_TASKS.md` and is deliberately not what this screen's queue
+ * figures do.
  */
-export function DashboardView() {
-  const { users, deposits, withdrawals, kyc } = useAdminStore();
-
-  const pendingDeposits = deposits.filter(
-    (deposit) =>
-      deposit.status === "pending" ||
-      deposit.status === "detected" ||
-      deposit.status === "confirming" ||
-      deposit.status === "confirmed",
-  );
-  const pendingWithdrawals = withdrawals.filter(
-    (withdrawal) =>
-      withdrawal.status === "pending" ||
-      withdrawal.status === "under_review" ||
-      withdrawal.status === "approved" ||
-      withdrawal.status === "processing",
-  );
-  const pendingKyc = kyc.filter(
-    (submission) =>
-      submission.status === "pending" || submission.status === "under_review",
-  );
-  const blockedUsers = users.filter(
-    (user) => user.status === "blocked" || user.status === "suspended",
-  );
-
-  const pendingDepositValue = pendingDeposits.reduce(
-    (sum, deposit) => sum + deposit.amountUsdt,
-    0,
-  );
-  const pendingWithdrawalValue = pendingWithdrawals.reduce(
-    (sum, withdrawal) => sum + withdrawal.amountUsdt,
-    0,
-  );
+export function DashboardView({ metrics }: { metrics: AdminDashboardMetrics }) {
+  /*
+   * The queue figures arrive already counted.
+   *
+   * They used to be derived here with `filter` and `reduce` over four full
+   * platform tables the page had fetched for the purpose. The predicates moved
+   * into SQL unchanged — see `readDashboardMetrics` — so the numbers are the
+   * same ones, counted where the rows already are.
+   *
+   * The store slices below are now five-row "recent activity" windows, and the
+   * panels that read them sort and slice their own, so they are unaffected.
+   */
 
   return (
     <>
@@ -125,33 +110,33 @@ export function DashboardView() {
           <AdminStatGrid className="xl:grid-cols-4">
             <AdminStatCard
               label="KYC awaiting review"
-              value={pendingKyc.length}
+              value={metrics.kycPending}
               icon={BadgeCheck}
-              tone={pendingKyc.length > 0 ? "warning" : "default"}
+              tone={metrics.kycPending > 0 ? "warning" : "default"}
               hint="Pending and under review"
               href="/admin/kyc"
             />
             <AdminStatCard
               label="Deposits not yet credited"
-              value={pendingDeposits.length}
+              value={metrics.depositsPending}
               icon={Wallet}
-              tone={pendingDeposits.length > 0 ? "warning" : "default"}
-              hint={`${formatUsdt(pendingDepositValue, { withSymbol: false })} USDT in flight`}
+              tone={metrics.depositsPending > 0 ? "warning" : "default"}
+              hint={`${formatUsdt(metrics.depositsPendingUsdt, { withSymbol: false })} USDT in flight`}
               href="/admin/deposits"
             />
             <AdminStatCard
               label="Withdrawals in progress"
-              value={pendingWithdrawals.length}
+              value={metrics.withdrawalsPending}
               icon={Banknote}
-              tone={pendingWithdrawals.length > 0 ? "warning" : "default"}
-              hint={`${formatUsdt(pendingWithdrawalValue, { withSymbol: false })} USDT to pay out`}
+              tone={metrics.withdrawalsPending > 0 ? "warning" : "default"}
+              hint={`${formatUsdt(metrics.withdrawalsPendingUsdt, { withSymbol: false })} USDT to pay out`}
               href="/admin/withdrawals"
             />
             <AdminStatCard
               label="Blocked or suspended"
-              value={blockedUsers.length}
+              value={metrics.usersRestricted}
               icon={Ban}
-              tone={blockedUsers.length > 0 ? "negative" : "default"}
+              tone={metrics.usersRestricted > 0 ? "negative" : "default"}
               hint="Accounts under a restriction"
               href="/admin/users"
             />

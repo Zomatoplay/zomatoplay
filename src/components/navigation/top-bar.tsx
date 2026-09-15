@@ -2,7 +2,10 @@ import Link from "next/link";
 import { Bell } from "lucide-react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { getUserSlices } from "@/server/services/account.service";
+import {
+  getUnreadNotificationCount,
+  getUserSlices,
+} from "@/server/services/account.service";
 import { initials } from "@/utils/format";
 import { cn } from "@/lib/utils";
 
@@ -29,15 +32,27 @@ export async function TopBar({
   showActions = true,
   className,
 }: TopBarProps) {
-  // Through the page funnel, so an absent session redirects rather than
-  // throwing — this renders inside pages, which race the layout's gate.
-  const { profile, notifications } = await getUserSlices([
-    "profile",
-    "notifications",
-  ] as const);
-  const unreadCount = notifications.filter(
-    (notification) => !notification.read,
-  ).length;
+  /*
+   * A name and a number, and nothing else.
+   *
+   * This used to read the `notifications` slice — every notification the
+   * account had ever received — purely to compute `unreadCount` with a
+   * `filter().length`. That is a `count(*)` written as a full table read, and
+   * because `TopBar` renders on Home, Wallet, Referral, Plans and Settings,
+   * every one of those pages fetched and serialised the whole list to render a
+   * badge. The list itself is rendered by exactly one screen,
+   * `/settings/notifications`.
+   *
+   * Both reads are request-memoised and are named by the *page* so they ride
+   * its own wave rather than opening a second one here (CLAUDE.md §16.1a
+   * item 6).
+   */
+  const [{ profile }, unreadCount] = await Promise.all([
+    // Through the page funnel, so an absent session redirects rather than
+    // throwing — this renders inside pages, which race the layout's gate.
+    getUserSlices(["profile"] as const),
+    getUnreadNotificationCount(),
+  ]);
 
   return (
     <header

@@ -1,0 +1,1 @@
+CREATE INDEX "transactions_user_recent_idx" ON "transactions" USING btree ("user_id","occurred_at" DESC NULLS LAST);

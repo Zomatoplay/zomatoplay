@@ -525,5 +525,25 @@ export function redact(message: string): string {
     )
     // Supabase publishable/secret keys and similar opaque prefixed tokens.
     .replace(/\b(sb|sk|pk)_[A-Za-z0-9_-]{12,}/g, "[redacted-key]")
+    /*
+     * The bound parameters of a failed statement.
+     *
+     * Drizzle's `DrizzleQueryError` message is the SQL followed by a
+     * `params:` line carrying the actual values — so a failed account lookup
+     * wrote a real `auth_user_id` into `pipeline_events`, and a failed deposit
+     * read wrote a user id and an address. None of it is a credential, which
+     * is why the rules above never caught it, and all of it is
+     * account-identifying data in a diagnostics table an operator browses.
+     * §22.2's rule is that `metadata` carries *named scalars* rather than raw
+     * payloads, and this is the one path that was smuggling a payload past it.
+     *
+     * The SQL itself is kept: knowing which statement failed is the whole
+     * diagnostic value, and it is schema, not data. Only the values go.
+     *
+     * This matters more since error recording began walking the whole cause
+     * chain — that reaches the driver error, which is exactly the level that
+     * quotes its parameters.
+     */
+    .replace(/\bparams:[^\n]*/gi, "params: [redacted]")
     .slice(0, 2000);
 }

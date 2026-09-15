@@ -30,12 +30,14 @@ export async function listInvestmentsForUser(
  */
 export async function listAdminInvestments(
   db: Database,
+  options: { limit?: number } = {},
 ): Promise<AdminInvestment[]> {
-  const rows = await db
+  const base = db
     .select({ investment: schema.investments, user: schema.users })
     .from(schema.investments)
     .innerJoin(schema.users, eq(schema.users.id, schema.investments.userId))
     .orderBy(desc(schema.investments.startedAt));
+  const rows = options.limit ? await base.limit(options.limit) : await base;
 
   return rows.map(({ investment, user }) =>
     toAdminInvestment(investment, {

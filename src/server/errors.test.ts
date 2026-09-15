@@ -155,6 +155,33 @@ test("what an operator is allowed to see", async (t) => {
     assert.ok(!redact("password=hunter2").includes("hunter2"));
   });
 
+  await t.test("bound query parameters never reach the log", () => {
+    /*
+     * `pipeline_events` contained rows reading `params: b0271b3e-…,1` — a real
+     * `auth_user_id`, written by a failed account lookup. Not a credential,
+     * which is why none of the other redaction rules caught it, and still
+     * account-identifying data in a table an operator browses.
+     *
+     * The statement is kept deliberately: which query failed is the entire
+     * diagnostic value, and it is schema rather than data.
+     */
+    const wrapped = new Error(
+      'Failed query: select "id" from "users" where "users"."auth_user_id" = $1 limit $2\n' +
+        "params: b0271b3e-7a1d-43b3-a7a3-a6bbe3988d54,1",
+      { cause: Object.assign(new Error("boom"), { code: "57014" }) },
+    );
+
+    const described = describeError(wrapped);
+    assert.ok(!described.includes("b0271b3e"), described);
+    assert.match(described, /params: \[redacted\]/);
+    // The statement survives — that is what makes the row worth keeping.
+    assert.match(described, /select "id" from "users"/);
+
+    // Directly, too, since `redact` is the backstop for text this code did
+    // not compose.
+    assert.ok(!redact("params: usr_8c41a2,TQw6kB9nM3v").includes("usr_8c41a2"));
+  });
+
   await t.test("a self-referential cause does not hang the describer", () => {
     const loop: Error & { cause?: unknown } = new Error("loop");
     loop.cause = loop;

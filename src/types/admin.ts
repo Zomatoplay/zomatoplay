@@ -502,6 +502,25 @@ export interface AdminDepositAddress {
   autoReleaseBlockedBy: string | null;
 }
 
+/**
+ * The six figures on the CRM dashboard's "needs attention" row.
+ *
+ * Counted in SQL (`readDashboardMetrics`) rather than derived in the browser
+ * from four full platform tables, which is what the dashboard used to do.
+ *
+ * The two USDT figures are **display aggregates** — "how much is in flight"
+ * beside a queue count. Nothing is derived from them: no balance, no ledger
+ * entry and no payout. Money that decides anything goes through `@/db/money`.
+ */
+export interface AdminDashboardMetrics {
+  kycPending: number;
+  depositsPending: number;
+  depositsPendingUsdt: number;
+  withdrawalsPending: number;
+  withdrawalsPendingUsdt: number;
+  usersRestricted: number;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Devices, sessions & security                                                */
 /* -------------------------------------------------------------------------- */

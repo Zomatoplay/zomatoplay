@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 
 import { UserDataProvider } from "@/lib/prototype-store";
-import { getUserSlices } from "@/server/services/account.service";
+import {
+  getUnreadNotificationCount,
+  getUserSlices,
+} from "@/server/services/account.service";
 import {
   Bell,
   BookOpen,
@@ -34,7 +37,8 @@ export const metadata: Metadata = {
 
 export default async function SettingsPage() {
   /*
-   * `notifications` and `profile` are read here for `TopBar`, not for this page.
+   * `profile` and the unread count are read here for `TopBar`, not for this
+   * page.
    *
    * `TopBar` is an async server component in the tree this page *returns*, so
    * its own reads cannot begin until this function has already resolved — a
@@ -43,7 +47,11 @@ export default async function SettingsPage() {
    * everything else; the reads are request-memoised, so `TopBar` awaiting them
    * a moment later costs nothing.
    */
-  const slices = await getUserSlices(["profile", "notifications"] as const);
+  const [slices] = await Promise.all([
+    getUserSlices(["profile"] as const),
+    // `TopBar`'s unread badge, in this page's wave rather than a later one.
+    getUnreadNotificationCount(),
+  ]);
 
   return (
     <UserDataProvider data={slices}>

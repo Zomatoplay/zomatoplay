@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 
 import { UserDataProvider } from "@/lib/prototype-store";
-import { getUserSlices } from "@/server/services/account.service";
+import {
+  getUnreadNotificationCount,
+  getUserSlices,
+} from "@/server/services/account.service";
 
 import { PageContainer } from "@/components/navigation/app-shell";
 import { TopBar } from "@/components/navigation/top-bar";
@@ -17,7 +20,8 @@ export const metadata: Metadata = {
 
 export default async function PlansPage() {
   /*
-   * `notifications` and `profile` are read here for `TopBar`, not for this page.
+   * `profile` and the unread count are read here for `TopBar`, not for this
+   * page.
    *
    * `TopBar` is an async server component in the tree this page *returns*, so
    * its own reads cannot begin until this function has already resolved — a
@@ -28,7 +32,9 @@ export default async function PlansPage() {
    */
   const [plans, slices] = await Promise.all([
     getPlans(),
-    getUserSlices(["balance", "profile", "notifications"] as const),
+    getUserSlices(["balance", "profile"] as const),
+    // `TopBar`'s unread badge, in this page's wave rather than a later one.
+    getUnreadNotificationCount(),
   ]);
 
 

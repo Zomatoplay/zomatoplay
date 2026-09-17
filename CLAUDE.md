@@ -983,6 +983,69 @@ place:
   default `min-width: auto` lets a 12-point axis widen the track past the
   viewport.
 
+### 15.5a The list screens page in Postgres, and the URL is their state
+
+Every CRM list screen — users, deposits, withdrawals, investments, KYC and both
+tables on referrals — reads **one page of ten rows**, filtered, searched and
+sorted by the database. They used to read the whole table and do all of that in
+the browser.
+
+The rules, because the pattern is meant to be copied:
+
+- **The URL is the state.** A server component reads its inputs from the URL
+  and nowhere else, so filters cannot live in `useState`.
+  `@/lib/admin-list-query` parses and builds that URL and is imported by
+  **both** sides — the server validates with the same spec the client renders
+  controls from, so a token an operator can click is by construction a token
+  the query accepts. The specs live in `ADMIN_LIST_SPECS`
+  (`@/constants/admin`), written out rather than derived from the schema
+  enums, because that file is in the browser bundle and the schema should not
+  be.
+- **Everything from the URL is untrusted.** `page` is clamped positive *and*
+  capped (`OFFSET` is a `bigint`, and `?page=99999999999999999999` parses to a
+  finite number that overflows it and renders the error page — there is a
+  check for exactly that). `status` and `sort` are matched against the
+  screen's allowlist so neither reaches SQL as text. **`pageSize` is not read
+  from the URL at all**: a caller-chosen page size is an unbounded read
+  wearing a parameter. Search is length-capped and its `LIKE` wildcards are
+  escaped by `likePattern` — without that, searching `%` returns the whole
+  table.
+- **One statement per page.** The pager's total rides along as
+  `count(*) over()` on the same filtered scan (`@/server/repositories/paginate`).
+  A round trip is the unit of cost here (§16.1a), so a separate `count(*)` would
+  double the page's cost for a number the same scan already knows.
+- **A page past the end returns page 1**, never an empty screen implying the
+  queue is clear.
+- **Chip counts are a second, parallel query**, because they must ignore the
+  status filter while the page applies it. Issued in the page's own
+  `Promise.all`.
+- **Figures above a paginated table must be SQL aggregates.** The stat cards
+  describe the whole table. Left reducing over `rows`, they silently become
+  "of the ten on screen" — which is not a smaller number, it is a false one.
+- **`/admin/referrals` carries two independent lists**, so each owns a URL
+  prefix (`a`, `c`) and the builder passes the sibling's parameters through
+  untouched.
+- **A picker is a server search, not a prop.** The deposit-assignment dialog
+  took the entire `users` array to show eight matches; it calls a
+  permission-gated action returning at most eight narrow rows, from two
+  characters, discarding out-of-order responses.
+
+Two things about how it *feels*, which is the reason the work was worth doing
+at this data volume — at 44 accounts the paged read is marginally **slower**
+than reading the table, and the win is that the cost stops growing:
+
+- Each page emits its header and permission gate **before** its Suspense
+  boundary, so the screen the operator clicked paints immediately and only the
+  rows stream.
+- An in-page filter change goes through one shared `useTransition`
+  (`useAdminListNavigation`), so the current rows **dim rather than blank**
+  while the next page is fetched. A list that empties on every click reads as
+  slower than one that stays put.
+
+**Search is `ILIKE '%needle%'` and no btree can serve it.** Fine at these
+volumes, and the first thing to bite at scale; the fix is `pg_trgm` and it is
+in FUTURE_TASKS with a trigger rather than being done speculatively.
+
 ### 15.6 Charts
 
 `admin/shared/admin-charts.tsx`: `PlatformFlowChart` (deposits above a zero
@@ -1487,6 +1550,21 @@ without a database.
 - **Both applications read the same rows.** Plans, VIP levels and wallets are
   one table each. The CRM must never be able to show a commission rate the user
   was not promised.
+- **An ordered index must match its query's NULL placement, not just its
+  direction.** Drizzle's `.desc()` on an *index* column emits
+  `DESC NULLS LAST`; `orderBy(desc(...))` in a *query* emits a bare `DESC`,
+  which SQL defines as NULLS **FIRST**. Postgres matches an ordering by null
+  placement as well as direction and does so literally — so the two disagree,
+  the planner silently refuses the index, and the sort the index was added to
+  remove happens anyway. It does this even when the column is `not null` and
+  the orderings therefore cannot produce different output. That is how
+  `transactions_user_recent_idx` shipped in migration `0017` and was never
+  once used; `0018` rebuilds it, and the schema now says `.nullsFirst()`
+  explicitly with a comment. **When you add an ordered index, check the plan
+  for a sort node rather than assuming.** `explain (analyze)` on a table with
+  realistic skew — the planner correctly prefers a sort on a small table, so a
+  fixture of a few hundred rows proves nothing either way.
+
 - **Only masked account numbers and document numbers are stored.** There is no
   payout rail and no document store; a prototype should not accumulate the data
   it cannot yet protect. No password column exists either — auth brings its own.
@@ -1571,6 +1649,9 @@ appears twice, that there are *at least* `SEED_USER_COUNT` accounts.
 | `server/tron/tron.test.ts` | no | TRON config validation and transfer parsing/filtering, against fixtures |
 | `server/referrals.integration.test.ts` | yes | commission accrual, tiers, and that it credits nobody |
 | `server/plan-tiers.test.ts` | no | the rate ladder's boundaries and validation, exhaustively |
+| `lib/admin-list-query.test.ts` | no | the CRM list URL contract — allowlists, the page clamp, the LIKE escape, two lists on one URL |
+| `server/repositories/paginate.test.ts` | no | page-past-the-end, the filtered total, and `likePattern` |
+| `server/auth/member-id.test.ts` | no | the member-id generator's shape and randomness |
 | `server/plan-tiers.integration.test.ts` | yes | tier resolution at allocation time, the snapshot, and that a tier edit never reprices an allocation already made |
 | `server/deposit-confirmation.integration.test.ts` | yes | which deposits are announced as new, and that acknowledgement is owner-scoped, one-way and idempotent |
 | `server/commission-release.integration.test.ts` | partly | the release schedule with no database; eligibility, missed-midnight recovery and pay-once-under-race with one |

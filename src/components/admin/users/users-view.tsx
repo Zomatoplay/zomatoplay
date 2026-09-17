@@ -1,11 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
 import Link from "next/link";
 import { UsersRound } from "lucide-react";
 
-import { AdminHeader } from "@/components/admin/layout/admin-header";
-import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
+import { AdminSection } from "@/components/admin/layout/admin-shell";
 import { AdminStatusBadge } from "@/components/admin/shared/admin-status-badge";
 import {
   DataCard,
@@ -14,22 +12,19 @@ import {
   PrimaryCell,
   type DataTableColumn,
 } from "@/components/admin/shared/data-table";
+import type { FilterOption } from "@/components/admin/shared/filter-bar";
 import {
-  ClearFiltersButton,
-  FilterBar,
-  FilterChips,
-  FilterSelect,
-  SearchField,
-  type FilterOption,
-} from "@/components/admin/shared/filter-bar";
-import { PermissionGate } from "@/components/admin/shared/permission-gate";
+  AdminListBody,
+  AdminListControls,
+  AdminListPager,
+  useAdminListNavigation,
+} from "@/components/admin/shared/admin-list-controls";
 import { UserActionMenu } from "@/components/admin/shared/user-action-menu";
 import { EmptyState } from "@/components/shared/empty-state";
 import { RateNote } from "@/components/shared/notices";
-import { ADMIN_PAGE_SIZE } from "@/constants/admin";
+import { ADMIN_LIST_SPECS } from "@/constants/admin";
 import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
-import { useAdminStore } from "@/lib/admin-store";
-import type { AdminUser } from "@/types/admin";
+import type { AdminListPage, AdminListQuery, AdminUser } from "@/types/admin";
 import { formatDate } from "@/utils/format";
 
 /**
@@ -40,47 +35,32 @@ import { formatDate } from "@/utils/format";
  * which one the caller has to hand is not predictable.
  */
 
-type StatusFilter =
-  | "all"
-  | "active"
-  | "inactive"
-  | "blocked"
-  | "suspended"
-  | "deactivated";
+const SPEC = ADMIN_LIST_SPECS.users;
 
-type KycFilter = "all" | "pending" | "approved" | "rejected";
+/** The status chips, in the order an operator triages them. */
+const STATUS_LABELS: Record<string, string> = {
+  all: "All",
+  active: "Active",
+  inactive: "Inactive",
+  blocked: "Blocked",
+  suspended: "Suspended",
+  deactivated: "Deactivated",
+};
 
-/** Fields the search box matches against. */
-function searchIndex(user: AdminUser) {
-  return [
-    user.fullName,
-    user.email,
-    user.id,
-    user.displayId,
-    user.phone,
-    user.walletAddress,
-    user.referralCode,
-  ]
-    .join(" ")
-    .toLowerCase();
-}
+const KYC_OPTIONS: FilterOption<string>[] = [
+  { value: "all", label: "Any KYC status" },
+  { value: "pending", label: "KYC pending" },
+  { value: "approved", label: "KYC approved" },
+  { value: "rejected", label: "KYC rejected" },
+];
 
-function matchesKyc(user: AdminUser, filter: KycFilter) {
-  switch (filter) {
-    case "all":
-      return true;
-    case "approved":
-      return user.kycStatus === "verified";
-    case "rejected":
-      return user.kycStatus === "rejected";
-    case "pending":
-      return (
-        user.kycStatus === "pending_review" ||
-        user.kycStatus === "in_progress" ||
-        user.kycStatus === "not_started"
-      );
-  }
-}
+const SORT_OPTIONS: FilterOption<string>[] = [
+  { value: "recent", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "name", label: "Name A-Z" },
+  { value: "balance", label: "Largest balance" },
+  { value: "active", label: "Recently active" },
+];
 
 /** The reviewer's status vocabulary, derived from the user's KYC state. */
 function reviewStatus(user: AdminUser) {
@@ -96,93 +76,33 @@ function reviewStatus(user: AdminUser) {
   }
 }
 
-export function UsersView() {
-  return (
-    <>
-      <AdminHeader
-        title="Users"
-        description="Search, filter and administer every account on the platform."
-      />
-      <AdminPage>
-        <PermissionGate permission="users">
-          <UsersBrowser />
-        </PermissionGate>
-      </AdminPage>
-    </>
-  );
-}
+/**
+ * The directory.
+ *
+ * Every predicate here used to run in the browser over a complete copy of the
+ * `users` table: the page fetched every account joined to every wallet, and
+ * this component filtered, sorted and sliced it to ten. The search box, the
+ * chips and the sort now write the URL and Postgres answers them — so what
+ * crosses the wire is ten rows and six counts, whatever the platform grows to.
+ *
+ * What did not change is the vocabulary: the same statuses, the same KYC
+ * groupings and the same searchable fields, moved rather than redesigned.
+ */
+export function UsersBrowser({
+  page,
+  query,
+}: {
+  page: AdminListPage<AdminUser>;
+  query: AdminListQuery;
+}) {
+  const nav = useAdminListNavigation(query, SPEC);
+  const { result, statusCounts } = page;
 
-function UsersBrowser() {
-  const { users } = useAdminStore();
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("all");
-  const [kyc, setKyc] = useState<KycFilter>("all");
-
-  const statusOptions: FilterOption<StatusFilter>[] = useMemo(
-    () => [
-      { value: "all", label: "All", count: users.length },
-      {
-        value: "active",
-        label: "Active",
-        count: users.filter((u) => u.status === "active").length,
-      },
-      {
-        value: "inactive",
-        label: "Inactive",
-        count: users.filter((u) => u.status === "inactive").length,
-      },
-      {
-        value: "blocked",
-        label: "Blocked",
-        count: users.filter((u) => u.status === "blocked").length,
-      },
-      {
-        value: "suspended",
-        label: "Suspended",
-        count: users.filter((u) => u.status === "suspended").length,
-      },
-      {
-        value: "deactivated",
-        label: "Deactivated",
-        count: users.filter((u) => u.status === "deactivated").length,
-      },
-    ],
-    [users],
-  );
-
-  const kycOptions: FilterOption<KycFilter>[] = useMemo(
-    () => [
-      { value: "all", label: "Any KYC status" },
-      {
-        value: "pending",
-        label: "KYC pending",
-        count: users.filter((u) => matchesKyc(u, "pending")).length,
-      },
-      {
-        value: "approved",
-        label: "KYC approved",
-        count: users.filter((u) => matchesKyc(u, "approved")).length,
-      },
-      {
-        value: "rejected",
-        label: "KYC rejected",
-        count: users.filter((u) => matchesKyc(u, "rejected")).length,
-      },
-    ],
-    [users],
-  );
-
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return users.filter((user) => {
-      if (status !== "all" && user.status !== status) return false;
-      if (!matchesKyc(user, kyc)) return false;
-      if (needle && !searchIndex(user).includes(needle)) return false;
-      return true;
-    });
-  }, [users, query, status, kyc]);
-
-  const hasFilters = query !== "" || status !== "all" || kyc !== "all";
+  const statusOptions: FilterOption<string>[] = SPEC.statuses.map((value) => ({
+    value,
+    label: STATUS_LABELS[value] ?? value,
+    count: statusCounts[value] ?? 0,
+  }));
 
   const columns: DataTableColumn<AdminUser>[] = [
     {
@@ -317,103 +237,88 @@ function UsersBrowser() {
 
   return (
     <AdminSection className="space-y-4">
-      <FilterBar>
-        <SearchField
-          value={query}
-          onChange={setQuery}
-          label="Search users"
-          placeholder="Name, email, user ID, phone, wallet address or referral code"
-        />
-        <FilterSelect
-          options={kycOptions}
-          value={kyc}
-          onChange={setKyc}
-          label="KYC"
-        />
-        <ClearFiltersButton
-          disabled={!hasFilters}
-          onClear={() => {
-            setQuery("");
-            setStatus("all");
-            setKyc("all");
-          }}
-        />
-      </FilterBar>
-
-      <FilterChips
-        options={statusOptions}
-        value={status}
-        onChange={setStatus}
-        label="Filter by account status"
+      <AdminListControls
+        nav={nav}
+        query={query}
+        spec={SPEC}
+        searchLabel="Search users"
+        searchPlaceholder="Name, email, user ID, phone, wallet address or referral code"
+        statusOptions={statusOptions}
+        filterOptions={KYC_OPTIONS}
+        filterLabel="KYC"
+        sortOptions={SORT_OPTIONS}
+        statusLabel="Filter by account status"
       />
 
-      <DataTable
-        rows={filtered}
-        columns={columns}
-        getRowKey={(user) => user.id}
-        caption="Platform users with balances, verification state and activity"
-        pageSize={ADMIN_PAGE_SIZE}
-        resetKey={`${query}|${status}|${kyc}`}
-        empty={
-          <EmptyState
-            icon={UsersRound}
-            title="No matching users"
-            description="No account matches this search and filter combination."
-          />
-        }
-        renderCard={(user) => (
-          <DataCard>
-            <div className="flex items-start justify-between gap-3">
-              <Link
-                href={`/admin/users/${user.id}`}
-                className="min-w-0 rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-              >
-                <p className="truncate text-sm font-medium text-brand">
-                  {user.fullName}
-                </p>
-                <p className="tabular truncate text-xs text-muted-foreground">
-                  {user.displayId}
-                </p>
-              </Link>
-              <UserActionMenu user={user} editHref={`/admin/users/${user.id}`} />
-            </div>
+      <AdminListBody nav={nav}>
+        <DataTable
+          rows={result.rows}
+          columns={columns}
+          getRowKey={(user) => user.id}
+          caption="Platform users with balances, verification state and activity"
+          empty={
+            <EmptyState
+              icon={UsersRound}
+              title="No matching users"
+              description="No account matches this search and filter combination."
+            />
+          }
+          renderCard={(user) => (
+            <DataCard>
+              <div className="flex items-start justify-between gap-3">
+                <Link
+                  href={`/admin/users/${user.id}`}
+                  className="min-w-0 rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                >
+                  <p className="truncate text-sm font-medium text-brand">
+                    {user.fullName}
+                  </p>
+                  <p className="tabular truncate text-xs text-muted-foreground">
+                    {user.displayId}
+                  </p>
+                </Link>
+                <UserActionMenu user={user} editHref={`/admin/users/${user.id}`} />
+              </div>
 
-            <div className="flex flex-wrap gap-1.5">
-              <AdminStatusBadge kind="user" status={user.status} />
-              <AdminStatusBadge kind="kyc" status={reviewStatus(user)} />
-            </div>
+              <div className="flex flex-wrap gap-1.5">
+                <AdminStatusBadge kind="user" status={user.status} />
+                <AdminStatusBadge kind="kyc" status={reviewStatus(user)} />
+              </div>
 
-            <DataCardRow label="Email">
-              <span className="break-all font-normal text-muted-foreground">
-                {user.email}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Balance">
-              <span className="tabular block">
-                {formatUsdt(user.totals.availableUsdt)}
-              </span>
-              <span className="tabular block text-xs font-normal text-muted-foreground">
-                {formatUsdtAsInr(user.totals.availableUsdt)}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Invested">
-              <span className="tabular">
-                {formatUsdt(user.totals.totalInvested)}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Profit">
-              <span className="tabular text-positive">
-                {formatUsdt(user.totals.totalProfit)}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Registered">
-              <span className="tabular font-normal text-muted-foreground">
-                {formatDate(user.registeredAt)}
-              </span>
-            </DataCardRow>
-          </DataCard>
-        )}
-      />
+              <DataCardRow label="Email">
+                <span className="break-all font-normal text-muted-foreground">
+                  {user.email}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Balance">
+                <span className="tabular block">
+                  {formatUsdt(user.totals.availableUsdt)}
+                </span>
+                <span className="tabular block text-xs font-normal text-muted-foreground">
+                  {formatUsdtAsInr(user.totals.availableUsdt)}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Invested">
+                <span className="tabular">
+                  {formatUsdt(user.totals.totalInvested)}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Profit">
+                <span className="tabular text-positive">
+                  {formatUsdt(user.totals.totalProfit)}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Registered">
+                <span className="tabular font-normal text-muted-foreground">
+                  {formatDate(user.registeredAt)}
+                </span>
+              </DataCardRow>
+            </DataCard>
+          )}
+        />
+      </AdminListBody>
+
+      <AdminListPager nav={nav} result={result} label="users" />
 
       <RateNote />
     </AdminSection>

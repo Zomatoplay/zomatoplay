@@ -4,6 +4,241 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-09-17 (Verification of the 2026-09-16 pass, an index that never matched its query, and CRM server-side pagination)
+
+Migration `0018`. The database was reachable this session; the previous one's
+was not, and two of its assumptions turned out to be wrong.
+
+### 1. Migration `0017` had never been applied
+
+`drizzle.__drizzle_migrations` held 17 rows against 18 journal entries, and
+`transactions_user_recent_idx` did not exist. The previous pass generated the
+migration without a database and could not apply it. Applied, followed by
+`npm run db:secure` — the migrate-then-secure rule (§16.1b). RLS re-asserted on
+36 tables; the `kyc-documents` bucket and its four policies unchanged.
+
+### 2. The index could never have been used
+
+With `0017` applied, `explain (analyze)` on the query it was built for still
+showed a sort.
+
+**Cause.** Drizzle's `.desc()` on an *index* column emits `DESC NULLS LAST`.
+`orderBy(desc(...))` in a *query* emits a bare `DESC`, which SQL defines as
+NULLS **FIRST**. Postgres matches an ordering by null placement as well as by
+direction, and it does so literally: `occurred_at` is `not null`, so the two
+orderings cannot actually produce different output, and the planner refused the
+index anyway.
+
+**Measured** on a 202k-row scratch table with rows spread over ten years and
+one account holding 2,000 of them — the shape the index exists for:
+
+| `ORDER BY occurred_at …` | plan | time |
+|---|---|---|
+| `DESC` (what the app emits), index `DESC NULLS LAST` | timestamp index backwards + filter, 5,135 rows discarded | 3.9–6.3 ms |
+| `DESC NULLS LAST` | composite index, no filter | 2.6 ms |
+| `DESC`, index rebuilt as `DESC` | composite index, no sort, no filter | **1.2 ms** |
+
+The first fixture attempt was thrown away: it gave the heavy account the
+*newest* rows in the table, so a backward scan on the timestamp index found
+them immediately and flattered it.
+
+Migration `0018` drops and recreates the index as `(user_id, occurred_at DESC)`.
+`.nullsFirst()` is now explicit in `db/schema/ledger.ts` with a comment saying
+it is load-bearing. At the production table's current 244 rows the planner still
+prefers a sort, correctly.
+
+### 3. The member-id test asserted a fact about a shared table
+
+`member ids are unique and none was generated from the clock` failed: 19 rows in
+`users` do not match `NT-` + 7 digits.
+
+All 19 are **integration-test fixtures** — `money-test-…@example.invalid`,
+`referral-test-…`, `deposit-conf-…` — inserted directly by other test files
+with ids in their own shape. None is a real registration. This is §16.7's rule
+again: assert the property the test owns, not a fact about a table several
+other files write to.
+
+- The table test now asserts **uniqueness**, which is what the unique index owes.
+- The id's shape is asserted against the generator in the new
+  `src/server/auth/member-id.test.ts`, which needs no database: 2,000 draws
+  checked for shape, distinctness, non-monotonicity and digit spread.
+- `generateMemberId()` is exported from `server/auth/account.ts` for that.
+
+### 4. The rest of the 2026-09-16 pass, verified
+
+- `readDashboardMetrics()` executes; all six figures match an independent
+  cross-check exactly.
+- The two previously-dead dashboard panels are provided by the page.
+- `redact()` drops `params:` while keeping the SQL text.
+- `runPrune` bounds hold: ten full batches stop at 20,000 with `more: true`.
+  `pipeline_events` holds 30,684 rows and **none is yet older than 30 days**,
+  so the job has nothing to delete until about 2026-09-21.
+
+### 5. CRM list screens: real server-side pagination, search, filtering, sorting
+
+Six screens — users, deposits, withdrawals, investments, KYC, referrals — read
+their whole table and filtered, sorted and paginated in the browser. They now
+page in Postgres, ten rows at a time.
+
+- `@/lib/admin-list-query` parses and builds the URL state, and is shared by
+  server and client so a clickable token is by construction an accepted one.
+- `page` clamped positive; `status` and `sort` allowlisted per screen;
+  `pageSize` deliberately **not** readable from the URL; search capped at 100
+  characters with LIKE wildcards escaped (searching `%` returns nothing, not
+  everything — there is a live check).
+- The pager's total rides along as `count(*) over()` on the same scan, so a
+  page is one statement. A page past the end returns page 1.
+- The stat cards above these tables became SQL aggregates. They described the
+  whole table; left alone they would have silently become "of the ten rows on
+  screen" — not a smaller number, a false one.
+- Chip counts are a second query, because they must ignore the status filter
+  while the page applies it. Issued in the same `Promise.all`: 608 ms parallel
+  against 820 ms sequential.
+- `/admin/referrals` carries two independent lists, so each owns a URL prefix
+  (`a`, `c`) and the builder passes the sibling's parameters through.
+- The deposit-assignment picker took the entire `users` array as a prop to show
+  eight matches. It now calls a permission-gated server action returning at
+  most eight narrow rows, from two characters, with out-of-order responses
+  discarded.
+- Each page emits its header and permission gate **before** the Suspense
+  boundary, so the screen paints before Postgres answers; in-page filter
+  changes run through `useTransition` and dim the current rows rather than
+  blanking them.
+
+**Measured, including the part that is not a win.** At today's volume this is
+not faster: `listAdminUsers()` over 44 accounts has a median of 387 ms against
+416 ms for the paged read — the window function and `OFFSET` cost slightly more
+than reading 44 rows. What changed is that the cost stops growing. Serialised
+payload per screen fell about 4.5x (users 29.3 kB → 6.5 kB, investments
+15.0 → 4.5, deposits 21.7 → 7.5) and is now flat in table size.
+
+### 5c. Three screens were reading the user directory for something that was not a directory
+
+`getAdminUsers()` — `users LEFT JOIN wallet_balances`, no limit — had ended up
+serving three things that each needed far less:
+
+| Screen | What it actually needed |
+|---|---|
+| `/admin/deposits` | a type-ahead showing eight candidates |
+| `/admin/notifications` | one account, resolved from a typed name |
+| `/admin/users/[id]` | one row, by primary key |
+
+All three now have their own bounded read — `findUsersForPicker` (at most eight
+narrow rows: name, email, member id, no balance and no KYC state) and
+`findAdminUserById` (`where id = $1`). `searchUsersAction` is gated on
+**`users: view`** rather than on the calling screen's permission, because what
+it reads *is* the user directory and an operator who may not browse accounts
+should not enumerate them eight at a time through a side door; the
+consequential half of each flow keeps its own gate.
+
+`getAdminUsers()` is **deleted**. Nothing called it any more, and leaving an
+unbounded full-table read exported under an inviting name is how the next
+screen acquires one. The repository's `listAdminUsers` remains for the test
+that exercises the mapping.
+
+### 5a. `/admin/users/[id]` rendered "This user is no longer available" — every time
+
+Found while auditing what still read a whole table. `UserDetailView` takes the
+account out of the admin store, and the page rendered it bare — no
+`AdminDataProvider` — so `users` was the empty default and the `find()` missed.
+All ten tabs showed the fallback. The `<title>` was correct throughout, because
+`generateMetadata` did its own read, which is exactly what made the screen look
+like it worked.
+
+Unchanged since before this session; reproduced against `HEAD`. The page now
+provides its own slice (§4.2), and does it with a **single-row read** —
+`findAdminUserById`, `where id = $1` against the primary key — rather than
+`getAdminUsers()` plus a `find()`, which scanned the whole directory to render
+one account and got slower with every registration.
+
+### 5b. A crafted `?page=` broke a list screen
+
+`?page=99999999999999999999` parses to a finite number, becomes
+`OFFSET 999999999999999990000`, overflows Postgres's `bigint`, and
+`pg_strtoint64_safe` raises — rendering the error page. `page` is now clamped
+to a million as an overflow guard, after which `readPage` turns an empty page
+back into page 1. Verified along with `page=-5`, `page=abc`, unknown
+`status`/`sort`/`filter` tokens, quoted SQL fragments in every parameter, and
+`?pageSize=100000` — all degrade to page 1 of 10 rows, and `?q=%` still returns
+nothing rather than everything.
+
+### 6. Concurrency, measured
+
+Production build, real operator session, one instance, `DATABASE_POOL_MAX` 5 —
+with the integration suite running against the same project throughout, so the
+budget was tighter than five:
+
+| Concurrent | Wall | Slowest | Failures |
+|---|---|---|---|
+| 1 (cold) | 2.32 s | 2.30 s | 0 |
+| 6 | 2.93 s | 2.89 s | 0 |
+| 12 | 3.56 s | 3.51 s | 0 |
+
+No `EMAXCONNSESSION`. Requests queue rather than fail, and latency degrades
+roughly linearly — a saturated pool, not an exhausted one. This does not
+exercise the multi-instance case, which is the one that actually produces the
+error.
+
+**The ceiling was then reached by accident, and the symptom is worth knowing.**
+Running the integration suite while a production build was also serving
+requests, the suite stopped making progress: five lines of TAP output in about
+fifteen minutes, no error and no timeout. Its very first query — `select 1` —
+had failed after 133 seconds. Killing the web server unblocked it within
+seconds. At the budget's edge this deployment **stalls** rather than failing:
+connection refusals are retried with backoff, so exhaustion presents as a hung
+process. Two local processes were enough to do it.
+
+Recovery is not immediate either. Killing the blocked run left its session-mode
+clients held — `npm run db:check` failed outright afterwards and the project
+stayed unreachable for minutes, because session mode reserves a backend for the
+life of a connection and an abandoned one is only reclaimed at `max_lifetime`.
+A crash loop here is self-amplifying: each restart claims fresh connections
+while the dead instance still holds its share.
+
+### Verification
+
+`npm run typecheck`, `npm run lint` and `npm run build` clean — 0 warnings,
+15/15 static pages, shared first-load JS 102 kB. `npm test` with a database:
+314 tests, 313 pass, the one failure being the member-id test above; clean after
+the fix. Every CRM screen exercised over HTTP with a real operator session —
+pagination, page-past-end, status filters, search including the `%` escape case,
+sorts, and the two independent referral tables.
+
+**Not verified: nothing was looked at in a browser.** The Chrome extension was
+not connected, so no visual check, no 360 px check, no console. That is the
+first item in FUTURE_TASKS' recommended order.
+
+---
+
+## 2026-09-16 (Performance and scale pass: bounded reads, dashboard aggregates, retention)
+
+Committed as `ebb1655`. **This session had no network access to the database**,
+so everything in it was reasoned from the code; it was verified the following
+day — see above, including two things that turned out to be wrong.
+
+- **`pipeline_events` retention (H9).** `diagnostics-retention.service.ts`
+  deletes by age in bounded batches with a per-run ceiling, driven from the one
+  cron that moves no money. `audit_logs` untouched.
+- **Bound parameters redacted (M12).** `redact()` drops the `params:` line while
+  keeping the SQL text — real `auth_user_id`s were reaching diagnostics.
+- **Member ids (M10).** `nextDisplayId` ran a query per signup, discarded the
+  result, and built an id from a millisecond clock against a unique index —
+  repeating every 2 h 46 m. Replaced with five CSPRNG candidates checked in one
+  `inArray` query.
+- **The CRM dashboard.** Four unbounded reads (KYC alone was three queries
+  reading every document and note on the platform) became one aggregate
+  statement plus six `LIMIT 5` reads. This also fixed two panels that had
+  always rendered empty because the page never provided their slices.
+- **`TopBar` stopped reading the notification list** to render an unread count;
+  five pages dropped the slice.
+- **Transactions bounded** — 50 by default, 250 on the history screen, which
+  says so on screen when it hits the ceiling. Migration `0017` added the
+  composite index for it (see above for why it did not work).
+- `investments` deliberately left unbounded: an allocation opened a year ago can
+  still be active, so truncating by recency would hide live money.
+
+---
+
 ## 2026-09-15 (Production hardening: connection faults, KYC without documents, deposit-address lifecycle)
 
 Migrations `0014` (generated) and `0015` (hand-written: a backfill and an

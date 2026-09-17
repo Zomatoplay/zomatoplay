@@ -1,9 +1,6 @@
 import { NotificationsView } from "@/components/admin/notifications/notifications-view";
 import { AdminDataProvider } from "@/lib/admin-store";
-import {
-  getAdminUsers,
-  getNotificationCampaigns,
-} from "@/server/services/admin.service";
+import { getNotificationCampaigns } from "@/server/services/admin.service";
 
 export const metadata = { title: "Notifications" };
 
@@ -14,16 +11,18 @@ export const metadata = { title: "Notifications" };
  * navigation and on `router.refresh()`, so this is what keeps the screen in
  * step with the database. It also means this route pays for its own queries and
  * nobody else's.
+ *
+ * It used to read the **entire user directory** as well, purely so the
+ * composer's single-user audience could resolve a typed name with a `find()`
+ * in the browser. That is now `searchUsersAction` — gated on `users: view`,
+ * at most eight narrow rows, nothing under two characters — so this screen no
+ * longer pays for the platform in order to address one person.
  */
 export default async function Page() {
-  const [campaigns, users] = await Promise.all([
-    getNotificationCampaigns(),
-    // The composer resolves a single-user audience against the directory.
-    getAdminUsers(),
-  ]);
+  const campaigns = await getNotificationCampaigns();
 
   return (
-    <AdminDataProvider data={{ campaigns, users }}>
+    <AdminDataProvider data={{ campaigns }}>
       <NotificationsView />
     </AdminDataProvider>
   );

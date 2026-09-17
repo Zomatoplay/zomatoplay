@@ -27,8 +27,15 @@ import type {
   AdminNotificationCampaign,
   AdminPlan,
   AdminReferralAccount,
+  AdminReferralsSummary,
   AdminUser,
+  AdminUserOption,
   AdminWithdrawal,
+  AdminDepositsSummary,
+  AdminInvestmentsSummary,
+  AdminListPage,
+  AdminListQuery,
+  AdminWithdrawalsSummary,
   AuditLogEntry,
   KycSubmission,
   PlatformSettings,
@@ -39,6 +46,11 @@ import type {
 import { isDatabaseConfigured } from "@/db";
 
 import { fromDatabase } from "../database";
+import {
+  pageSeed,
+  seedSearchMatches,
+  seedStatusCounts,
+} from "./admin-seed-page";
 import { listDepositAddressesForAdmin } from "./deposit-address.service";
 import {
   findPlatformSettings,
@@ -50,22 +62,45 @@ import {
 } from "../repositories/admin.repository";
 import { listAdminPlans } from "../repositories/catalogue.repository";
 import { listNotificationCampaigns } from "../repositories/engagement.repository";
-import { listAdminInvestments } from "../repositories/investments.repository";
-import { listKycSubmissions } from "../repositories/kyc.repository";
+import {
+  countAdminInvestmentsByStatus,
+  listAdminInvestments,
+  pageAdminInvestments,
+  readInvestmentsSummary,
+} from "../repositories/investments.repository";
+import {
+  countKycSubmissionsByStatus,
+  listKycSubmissions,
+  pageKycSubmissions,
+} from "../repositories/kyc.repository";
 import { listPipelineEvents } from "../repositories/pipeline.repository";
 import {
+  countAdminDepositsByStatus,
+  countAdminWithdrawalsByStatus,
   listAdminDeposits,
   listAdminWithdrawals,
+  pageAdminDeposits,
+  pageAdminWithdrawals,
+  readDepositsSummary,
+  readWithdrawalsSummary,
 } from "../repositories/ledger.repository";
 import {
+  countCommissionsByStatus,
+  countReferralAccountsByVip,
   listAdminCommissionLedger,
   listAdminReferralAccounts,
+  pageAdminCommissionLedger,
+  pageAdminReferralAccounts,
+  readReferralsSummary,
 } from "../repositories/referrals.repository";
 import {
-  listAdminUsers,
+  countAdminUsersByStatus,
+  findAdminUserById,
   listRecentUsers,
   listUserDeviceSessions,
   listUserSecurityEvents,
+  pageAdminUsers,
+  searchUsersForPicker,
 } from "../repositories/users.repository";
 
 /**
@@ -96,8 +131,323 @@ import {
  * dataset with no database configured shows nobody anybody else's balance.
  */
 
-export async function getAdminUsers(): Promise<AdminUser[]> {
-  return fromDatabase(listAdminUsers, () => seedUsers);
+/**
+ * The fixture equivalent of `pageAdminUsers`'s predicates — see `pageSeed`.
+ */
+const SEED_KYC_FILTERS: Record<string, readonly AdminUser["kycStatus"][]> = {
+  pending: ["not_started", "in_progress", "pending_review"],
+  approved: ["verified"],
+  rejected: ["rejected"],
+};
+
+function seedUserMatcher(user: AdminUser, query: AdminListQuery): boolean {
+  if (query.status !== "all" && user.status !== query.status) return false;
+  const kyc = SEED_KYC_FILTERS[query.filter];
+  if (kyc && !kyc.includes(user.kycStatus)) return false;
+  return seedSearchMatches(query.search, [
+    user.fullName,
+    user.email,
+    user.id,
+    user.displayId,
+    user.phone,
+    user.walletAddress,
+    user.referralCode,
+  ]);
+}
+
+/**
+ * One page of the user directory.
+ *
+ * There is deliberately **no `getAdminUsers()`** beside this any more. It read
+ * every account joined to every wallet, and by the end three screens were
+ * calling it for things that were not a directory: the deposit screen wanted a
+ * type-ahead, the notification composer wanted one name, and the user detail
+ * page wanted one row. All three are now their own bounded read
+ * (`findUsersForPicker`, `findAdminUserById`), and leaving an unbounded
+ * full-table read exported with an inviting name is how the next screen
+ * acquires one.
+ */
+export async function getAdminUsersPage(
+  query: AdminListQuery,
+): Promise<AdminListPage<AdminUser>> {
+  return fromDatabase(
+    async (db) => {
+      // One wave: the page and the chip counts are independent queries over
+      // the same table, so issuing them together costs one round trip of wall
+      // time rather than two (CLAUDE.md §16.1a).
+      const [result, statusCounts] = await Promise.all([
+        pageAdminUsers(db, query),
+        countAdminUsersByStatus(db, query),
+      ]);
+      return { result, statusCounts };
+    },
+    () => ({
+      result: pageSeed(seedUsers, query, seedUserMatcher),
+      statusCounts: seedStatusCounts(
+        seedUsers,
+        query,
+        seedUserMatcher,
+        (user) => user.status,
+      ),
+    }),
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* The paginated queue screens                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Each of these reads one page and the chip counts in a single wave, and each
+ * falls back to slicing the fixture array when no database is configured.
+ *
+ * The fixture matchers below are the only place a screen's predicates are
+ * written twice — once in SQL, once over `@/data/admin`. That is the cost of
+ * the no-database path (CLAUDE.md §16.3); keeping them adjacent to the service
+ * that pairs them is what makes a divergence visible.
+ */
+
+/** The fixture path's equivalent of a filtered `sum()`. */
+function sumWhere<T>(
+  rows: readonly T[],
+  keep: (row: T) => boolean,
+  value: (row: T) => number,
+): number {
+  return rows.reduce((sum, row) => (keep(row) ? sum + value(row) : sum), 0);
+}
+
+function seedDepositMatcher(
+  deposit: AdminDeposit,
+  query: AdminListQuery,
+): boolean {
+  if (query.status !== "all" && deposit.status !== query.status) return false;
+  return seedSearchMatches(query.search, [
+    deposit.txHash,
+    deposit.walletAddress,
+    deposit.id,
+    deposit.userName,
+    deposit.userDisplayId,
+  ]);
+}
+
+export async function getAdminDepositsPage(
+  query: AdminListQuery,
+): Promise<AdminListPage<AdminDeposit> & { summary: AdminDepositsSummary }> {
+  return fromDatabase(
+    async (db) => {
+      const [result, statusCounts, summary] = await Promise.all([
+        pageAdminDeposits(db, query),
+        countAdminDepositsByStatus(db, query),
+        readDepositsSummary(db),
+      ]);
+      return { result, statusCounts, summary };
+    },
+    () => ({
+      result: pageSeed(seedDeposits, query, seedDepositMatcher),
+      statusCounts: seedStatusCounts(
+        seedDeposits,
+        query,
+        seedDepositMatcher,
+        (deposit) => deposit.status,
+      ),
+      summary: {
+        creditedUsdt: sumWhere(
+          seedDeposits,
+          (d) => d.status === "credited",
+          (d) => d.amountUsdt,
+        ),
+        inFlightCount: seedDeposits.filter(
+          (d) => d.status !== "credited" && d.status !== "failed",
+        ).length,
+        inFlightUsdt: sumWhere(
+          seedDeposits,
+          (d) => d.status !== "credited" && d.status !== "failed",
+          (d) => d.amountUsdt,
+        ),
+      },
+    }),
+  );
+}
+
+function seedWithdrawalMatcher(
+  withdrawal: AdminWithdrawal,
+  query: AdminListQuery,
+): boolean {
+  if (query.status !== "all" && withdrawal.status !== query.status) return false;
+  return seedSearchMatches(query.search, [
+    withdrawal.id,
+    withdrawal.userName,
+    withdrawal.userDisplayId,
+  ]);
+}
+
+export async function getAdminWithdrawalsPage(
+  query: AdminListQuery,
+): Promise<AdminListPage<AdminWithdrawal> & { summary: AdminWithdrawalsSummary }> {
+  const isOpen = (w: AdminWithdrawal) =>
+    w.status === "pending" ||
+    w.status === "under_review" ||
+    w.status === "approved" ||
+    w.status === "processing";
+
+  return fromDatabase(
+    async (db) => {
+      const [result, statusCounts, summary] = await Promise.all([
+        pageAdminWithdrawals(db, query),
+        countAdminWithdrawalsByStatus(db, query),
+        readWithdrawalsSummary(db),
+      ]);
+      return { result, statusCounts, summary };
+    },
+    () => ({
+      result: pageSeed(seedWithdrawals, query, seedWithdrawalMatcher),
+      statusCounts: seedStatusCounts(
+        seedWithdrawals,
+        query,
+        seedWithdrawalMatcher,
+        (withdrawal) => withdrawal.status,
+      ),
+      summary: {
+        openCount: seedWithdrawals.filter(isOpen).length,
+        openUsdt: sumWhere(seedWithdrawals, isOpen, (w) => w.amountUsdt),
+        paidNetInr: sumWhere(
+          seedWithdrawals,
+          (w) => w.status === "paid",
+          (w) => w.netInr,
+        ),
+      },
+    }),
+  );
+}
+
+function seedInvestmentMatcher(
+  investment: AdminInvestment,
+  query: AdminListQuery,
+): boolean {
+  if (query.status !== "all" && investment.status !== query.status) return false;
+  if (query.filter !== "all" && investment.planId !== query.filter) return false;
+  return seedSearchMatches(query.search, [
+    investment.id,
+    investment.planName,
+    investment.userName,
+    investment.userDisplayId,
+  ]);
+}
+
+export async function getAdminInvestmentsPage(
+  query: AdminListQuery,
+): Promise<AdminListPage<AdminInvestment> & { summary: AdminInvestmentsSummary }> {
+  return fromDatabase(
+    async (db) => {
+      const [result, statusCounts, summary] = await Promise.all([
+        pageAdminInvestments(db, query),
+        countAdminInvestmentsByStatus(db, query),
+        readInvestmentsSummary(db),
+      ]);
+      return { result, statusCounts, summary };
+    },
+    () => ({
+      result: pageSeed(seedInvestments, query, seedInvestmentMatcher),
+      statusCounts: seedStatusCounts(
+        seedInvestments,
+        query,
+        seedInvestmentMatcher,
+        (investment) => investment.status,
+      ),
+      summary: {
+        activeCount: seedInvestments.filter((i) => i.status === "active").length,
+        totalCount: seedInvestments.length,
+        allocatedUsdt: sumWhere(
+          seedInvestments,
+          (i) => i.status === "active",
+          (i) => i.amountUsdt,
+        ),
+        accruedProfitUsdt: sumWhere(
+          seedInvestments,
+          () => true,
+          (i) => i.profitUsdt,
+        ),
+      },
+    }),
+  );
+}
+
+function seedKycMatcher(
+  submission: KycSubmission,
+  query: AdminListQuery,
+): boolean {
+  if (query.status !== "all" && submission.status !== query.status) return false;
+  return seedSearchMatches(query.search, [
+    submission.id,
+    submission.details.legalName,
+    submission.userName,
+    submission.userDisplayId,
+  ]);
+}
+
+export async function getKycSubmissionsPage(
+  query: AdminListQuery,
+): Promise<AdminListPage<KycSubmission>> {
+  return fromDatabase(
+    async (db) => {
+      const [result, statusCounts] = await Promise.all([
+        pageKycSubmissions(db, query),
+        countKycSubmissionsByStatus(db, query),
+      ]);
+      return { result, statusCounts };
+    },
+    () => ({
+      result: pageSeed(seedKycSubmissions, query, seedKycMatcher),
+      statusCounts: seedStatusCounts(
+        seedKycSubmissions,
+        query,
+        seedKycMatcher,
+        (submission) => submission.status,
+      ),
+    }),
+  );
+}
+
+/**
+ * Accounts matching a search, for an operator picker. At most eight.
+ *
+ * Called from a server action rather than rendered into the page, so the
+ * directory never has to be in the browser for the dialog to work.
+ */
+export async function findUsersForPicker(
+  search: string,
+): Promise<AdminUserOption[]> {
+  return fromDatabase(
+    (db) => searchUsersForPicker(db, search),
+    () =>
+      seedUsers
+        .filter((user) =>
+          seedSearchMatches(search, [
+            user.fullName,
+            user.email,
+            user.id,
+            user.displayId,
+            user.phone,
+            user.walletAddress,
+            user.referralCode,
+          ]),
+        )
+        .slice(0, 8)
+        .map((user) => ({
+          id: user.id,
+          fullName: user.fullName,
+          email: user.email,
+          displayId: user.displayId,
+        })),
+  );
+}
+
+/** One account, for the CRM detail screen. `null` when there is no such id. */
+export async function getAdminUser(id: string): Promise<AdminUser | null> {
+  return fromDatabase(
+    (db) => findAdminUserById(db, id),
+    () => seedUsers.find((user) => user.id === id) ?? null,
+  );
 }
 
 export async function getAdminPlans(): Promise<AdminPlan[]> {
@@ -154,6 +504,96 @@ export async function getAdminCommissionLedger(): Promise<
   AdminCommissionEntry[]
 > {
   return fromDatabase(listAdminCommissionLedger, () => seedCommissionLedger);
+}
+
+/**
+ * One page of referral accounts. The VIP level rides in the `status` slot —
+ * it is the dimension this table is triaged by.
+ */
+export async function getAdminReferralAccountsPage(
+  query: AdminListQuery,
+): Promise<AdminListPage<AdminReferralAccount>> {
+  const matcher = (account: AdminReferralAccount, q: AdminListQuery) => {
+    if (q.status !== "all" && account.vipLevel !== q.status) return false;
+    return seedSearchMatches(q.search, [
+      account.userName,
+      account.userDisplayId,
+      account.referralCode,
+    ]);
+  };
+
+  return fromDatabase(
+    async (db) => {
+      const [result, statusCounts] = await Promise.all([
+        pageAdminReferralAccounts(db, query),
+        countReferralAccountsByVip(db, query),
+      ]);
+      return { result, statusCounts };
+    },
+    () => ({
+      result: pageSeed(seedReferralAccounts, query, matcher),
+      statusCounts: seedStatusCounts(
+        seedReferralAccounts,
+        query,
+        matcher,
+        (account) => account.vipLevel,
+      ),
+    }),
+  );
+}
+
+/** One page of the commission ledger. */
+export async function getAdminCommissionLedgerPage(
+  query: AdminListQuery,
+): Promise<AdminListPage<AdminCommissionEntry>> {
+  const matcher = (entry: AdminCommissionEntry, q: AdminListQuery) => {
+    if (q.status !== "all" && entry.status !== q.status) return false;
+    return seedSearchMatches(q.search, [
+      entry.beneficiaryName,
+      entry.sourceUserName,
+      entry.id,
+    ]);
+  };
+
+  return fromDatabase(
+    async (db) => {
+      const [result, statusCounts] = await Promise.all([
+        pageAdminCommissionLedger(db, query),
+        countCommissionsByStatus(db, query),
+      ]);
+      return { result, statusCounts };
+    },
+    () => ({
+      result: pageSeed(seedCommissionLedger, query, matcher),
+      statusCounts: seedStatusCounts(
+        seedCommissionLedger,
+        query,
+        matcher,
+        (entry) => entry.status,
+      ),
+    }),
+  );
+}
+
+/** The referral screen's stat cards, platform-wide. */
+export async function getAdminReferralsSummary(): Promise<AdminReferralsSummary> {
+  return fromDatabase(readReferralsSummary, () => ({
+    creditedCommissionUsdt: sumWhere(
+      seedCommissionLedger,
+      (entry) => entry.status === "credited",
+      (entry) => entry.amountUsdt,
+    ),
+    pendingCommissionUsdt: sumWhere(
+      seedCommissionLedger,
+      (entry) => entry.status === "pending",
+      (entry) => entry.amountUsdt,
+    ),
+    totalTeamVolumeUsdt: sumWhere(
+      seedReferralAccounts,
+      () => true,
+      (account) => account.teamVolumeUsdt,
+    ),
+  }));
 }
 
 export async function getAdminAgents(): Promise<AdminAgent[]> {

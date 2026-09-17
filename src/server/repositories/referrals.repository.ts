@@ -1,11 +1,18 @@
 import "server-only";
 
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
 import type { CommissionEntry, Referral, ReferralSummary, VipLevel } from "@/types";
-import type { AdminCommissionEntry, AdminReferralAccount } from "@/types/admin";
+import type {
+  AdminCommissionEntry,
+  AdminListQuery,
+  AdminReferralAccount,
+  AdminReferralsSummary,
+  PagedResult,
+} from "@/types/admin";
 
+import { likePattern, pageTotal, readPage } from "./paginate";
 import {
   toAdminCommissionEntry,
   toAdminReferralAccount,
@@ -171,4 +178,197 @@ export async function findReferrerByCode(
 /** Ordered by the catalogue's own sequence, not by name. */
 export async function listVipLevelsOrdered(db: Database) {
   return db.select().from(schema.vipLevels).orderBy(asc(schema.vipLevels.sortOrder));
+}
+
+/* -------------------------------------------------------------------------- */
+/* The paginated referral screens                                              */
+/* -------------------------------------------------------------------------- */
+
+function referralPersonSearch(search: string) {
+  if (!search) return undefined;
+  const pattern = likePattern(search);
+  return or(
+    ilike(schema.users.fullName, pattern),
+    ilike(schema.users.email, pattern),
+    ilike(schema.users.displayId, pattern),
+    ilike(schema.users.referralCode, pattern),
+  );
+}
+
+const REFERRAL_ACCOUNT_SORTS = {
+  earnings: () => desc(schema.referralAccounts.commissionEarnedUsdt),
+  referrals: () => desc(schema.referralAccounts.activeReferrals),
+  recent: () => desc(schema.referralAccounts.joinedAt),
+} as const;
+
+/**
+ * One page of referral accounts.
+ *
+ * `status` is the VIP level here rather than a lifecycle state — it is the one
+ * dimension this table is triaged by, and reusing the `status` slot keeps it
+ * on the same chips every other list screen uses.
+ */
+export async function pageAdminReferralAccounts(
+  db: Database,
+  query: AdminListQuery,
+): Promise<PagedResult<AdminReferralAccount>> {
+  const where = and(
+    query.status === "all"
+      ? undefined
+      : eq(
+          schema.users.vipLevel,
+          query.status as (typeof schema.users.vipLevel.enumValues)[number],
+        ),
+    referralPersonSearch(query.search),
+  );
+
+  return readPage(query, async (page) => {
+    const rows = await db
+      .select({
+        account: schema.referralAccounts,
+        user: schema.users,
+        total: pageTotal,
+      })
+      .from(schema.referralAccounts)
+      .innerJoin(
+        schema.users,
+        eq(schema.users.id, schema.referralAccounts.userId),
+      )
+      .where(where)
+      .orderBy(
+        REFERRAL_ACCOUNT_SORTS[
+          query.sort as keyof typeof REFERRAL_ACCOUNT_SORTS
+        ](),
+      )
+      .limit(query.pageSize)
+      .offset((page - 1) * query.pageSize);
+
+    return {
+      rows: rows.map(({ account, user }) =>
+        toAdminReferralAccount(account, user),
+      ),
+      total: Number(rows[0]?.total ?? 0),
+    };
+  });
+}
+
+export async function countReferralAccountsByVip(
+  db: Database,
+  query: AdminListQuery,
+): Promise<Record<string, number>> {
+  const rows = await db
+    .select({ level: schema.users.vipLevel, count: sql<number>`count(*)::int` })
+    .from(schema.referralAccounts)
+    .innerJoin(schema.users, eq(schema.users.id, schema.referralAccounts.userId))
+    .where(referralPersonSearch(query.search))
+    .groupBy(schema.users.vipLevel);
+
+  const counts: Record<string, number> = { all: 0 };
+  for (const row of rows) {
+    counts[row.level] = Number(row.count);
+    counts.all += Number(row.count);
+  }
+  return counts;
+}
+
+const COMMISSION_SORTS = {
+  recent: () => desc(schema.commissionEntries.createdAt),
+  oldest: () => asc(schema.commissionEntries.createdAt),
+  amount: () => desc(schema.commissionEntries.amountUsdt),
+} as const;
+
+/** One page of the commission ledger — the fastest-growing table here. */
+export async function pageAdminCommissionLedger(
+  db: Database,
+  query: AdminListQuery,
+): Promise<PagedResult<AdminCommissionEntry>> {
+  const where = and(
+    query.status === "all"
+      ? undefined
+      : eq(
+          schema.commissionEntries.status,
+          query.status as (typeof schema.commissionEntries.status.enumValues)[number],
+        ),
+    referralPersonSearch(query.search),
+  );
+
+  return readPage(query, async (page) => {
+    const rows = await db
+      .select({
+        entry: schema.commissionEntries,
+        beneficiary: schema.users,
+        total: pageTotal,
+      })
+      .from(schema.commissionEntries)
+      .innerJoin(
+        schema.users,
+        eq(schema.users.id, schema.commissionEntries.beneficiaryUserId),
+      )
+      .where(where)
+      .orderBy(COMMISSION_SORTS[query.sort as keyof typeof COMMISSION_SORTS]())
+      .limit(query.pageSize)
+      .offset((page - 1) * query.pageSize);
+
+    return {
+      rows: rows.map(({ entry, beneficiary }) =>
+        toAdminCommissionEntry(entry, beneficiary.fullName),
+      ),
+      total: Number(rows[0]?.total ?? 0),
+    };
+  });
+}
+
+export async function countCommissionsByStatus(
+  db: Database,
+  query: AdminListQuery,
+): Promise<Record<string, number>> {
+  const rows = await db
+    .select({
+      status: schema.commissionEntries.status,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(schema.commissionEntries)
+    .innerJoin(
+      schema.users,
+      eq(schema.users.id, schema.commissionEntries.beneficiaryUserId),
+    )
+    .where(referralPersonSearch(query.search))
+    .groupBy(schema.commissionEntries.status);
+
+  const counts: Record<string, number> = { all: 0 };
+  for (const row of rows) {
+    counts[row.status] = Number(row.count);
+    counts.all += Number(row.count);
+  }
+  return counts;
+}
+
+/**
+ * The referral screen's three figures. Display aggregates only — see
+ * `readDepositsSummary` in the ledger repository for why `float8` is fine
+ * here and nowhere that moves money.
+ */
+export async function readReferralsSummary(
+  db: Database,
+): Promise<AdminReferralsSummary> {
+  const [commission, volume] = await Promise.all([
+    db.execute<{ credited: number; pending: number }>(sql`
+      select
+        coalesce(sum(${schema.commissionEntries.amountUsdt})
+          filter (where ${schema.commissionEntries.status} = 'credited'), 0)::float8 as credited,
+        coalesce(sum(${schema.commissionEntries.amountUsdt})
+          filter (where ${schema.commissionEntries.status} = 'pending'), 0)::float8 as pending
+      from ${schema.commissionEntries}
+    `),
+    db.execute<{ team_volume: number }>(sql`
+      select coalesce(sum(${schema.referralAccounts.teamVolumeUsdt}), 0)::float8 as team_volume
+      from ${schema.referralAccounts}
+    `),
+  ]);
+
+  return {
+    creditedCommissionUsdt: Number(commission[0]?.credited ?? 0),
+    pendingCommissionUsdt: Number(commission[0]?.pending ?? 0),
+    totalTeamVolumeUsdt: Number(volume[0]?.team_volume ?? 0),
+  };
 }

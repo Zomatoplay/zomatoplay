@@ -35,13 +35,23 @@ M2 substantially resolved on the user side and the dashboard; migration `0017`
 (one composite index). A new section, "Scale ceiling", works through the
 connection-budget arithmetic.
 
-> **This pass had no network access to the database.** Typecheck, lint, the
-> production build and the 115 database-independent tests all pass; the
-> integration suites and every live measurement are **unrun**. Every
-> performance claim below is reasoned from the code and from previously
-> recorded telemetry, not measured this session. The specific things to verify
-> when a database is reachable are listed under "Unverified after 2026-09-16"
-> near the end of this file.
+> The 2026-09-16 pass had **no network access to the database**, so nothing in
+> it was measured or migrated. Everything it left unverified was verified on
+> **2026-09-17**; see immediately below.
+
+**2026-09-17 — verification, an index defect, and CRM server-side pagination.**
+The database was reachable. Migration `0017` turned out **not to have been
+applied**, and once applied the index it adds was **never used** — it was built
+`DESC NULLS LAST` while the query orders by a bare `DESC`, which is NULLS
+FIRST, and Postgres matches an ordering by null placement as well as direction.
+Migration `0018` rebuilds it to match. Measured on a 202k-row fixture with one
+account holding 2,000 rows: 3.9-6.3 ms scanning the timestamp index and
+discarding 5,135 rows, against 1.2 ms scanning the composite one with no filter
+and no sort.
+
+The seven CRM list screens in M1 were converted to real server-side pagination,
+search, filtering and sorting — ten rows per page, the predicates in SQL, the
+state in the URL. M1 is now resolved.
 
 ---
 
@@ -167,6 +177,24 @@ out of a five-connection pool. Note its server-side floor already bounds *chain
 scans* globally per instance — what is unbounded is the cheap database read.
 Supabase's own limits still cover the auth endpoints.
 
+**Re-assessed 2026-09-17, with a database available, and still not
+implemented — for a better reason than last time.** The blocker is no longer
+testability, it is the connection budget, which was measured this session (see
+"Scale ceiling"). Shape (1) adds a **write** to the hot path of exactly the
+requests being protected, against a project-wide ceiling of 15 session-mode
+connections; a limiter that consumes the scarcest resource on the deployment in
+order to protect it is close to self-defeating. Shape (2) is free and multiplies
+by the instance count, so it bounds nothing that matters. Shape (3) is cheaper
+but still a round trip.
+
+The honest conclusion is that rate limiting here wants the driver migration
+(option 2 under "Scale ceiling") or an out-of-band store, and should be
+sequenced **after** one of those rather than bolted on before. Until then the
+exposure is bounded by what `checkForDepositsAction` actually costs: one
+throttled chain scan per instance per 4 s, plus one database read per call.
+That is a real cost and a small one. **Trigger:** the driver migration, or the
+first sign of a single account driving TronGrid quota.
+
 
 ## H1 — Wrong-asset transfers are invisible
 
@@ -195,6 +223,21 @@ for whoever picks it up: it must **not** widen what counts as creditable (a TRX
 transfer is visible, never credited), and it must not add a second pass over
 the addresses — the existing pass already has the address list in hand.
 
+**Re-assessed 2026-09-17. Still not implemented, and the reason has narrowed.**
+The database is reachable now, so the storage half could be tested. The half
+that still cannot be is the one that matters: verifying this needs a *real
+wrong-asset transfer* to a pool address on the network being scanned, and the
+only ways to produce one are to send TRX on mainnet — real money, deliberately
+misdirected — or to move the deployment to a testnet and back. Neither is a
+change to make in passing, and a scanner change validated only against fixtures
+is a scanner change validated against the author's own assumptions.
+
+What would make this safe to pick up: a testnet pool address, a small TRX
+transfer to it, and `tron:inspect` extended to show native transfers before any
+code writes a row. That sequence is cheap and it is the right first step —
+**do the read-only half first**, confirm the endpoint returns what is expected,
+and only then let anything write a `deposits` row.
+
 
 ## H6 — Operator provisioning has no credential step
 
@@ -222,7 +265,7 @@ total user count to anybody who registers twice. If every candidate collides it
 widens rather than failing a registration, and the unique index remains the
 real guarantee. A test asserts uniqueness and shape across the live table.
 
-## M1 — Unbounded list reads *(user side and dashboard done; CRM lists open)*
+## M1 — RESOLVED 2026-09-17: unbounded list reads
 
 **Done 2026-09-16 — the reads that ran on every navigation:**
 
@@ -257,24 +300,90 @@ investment opened a year ago can still be `active`, and ordering by
 "your investments" and from the totals beside it. If it ever needs bounding it
 must be by **status**, not by recency.
 
-**Still open — the CRM list screens.** `/admin/users`, `/admin/deposits`,
-`/admin/withdrawals`, `/admin/investments`, `/admin/kyc`, `/admin/referrals`
-and `/admin/audit-logs` each read their whole table (`select *`, joined, no
-`LIMIT`) and paginate and filter in the browser. `/admin/deposits` also reads
-the **entire user directory** for the assignment dialog's account picker.
+**RESOLVED 2026-09-17 — the CRM list screens.** `/admin/users`,
+`/admin/deposits`, `/admin/withdrawals`, `/admin/investments`, `/admin/kyc` and
+`/admin/referrals` each read their whole table (`select *`, joined, no `LIMIT`)
+and paginated and filtered in the browser. All six now page in Postgres, ten
+rows at a time, with search, status filtering and sorting as SQL predicates.
 
-This was left alone on purpose rather than capped. A silent cap on a CRM list
-hides rows from an operator working a queue, which is worse than a slow page;
-the correct fix is server-side pagination with the search and filter predicates
-moved into SQL, and that is a real piece of work across seven screens plus URL
-state — not something to bolt on during a performance pass. These screens are
-also visited deliberately and one at a time, unlike the dashboard, which every
-operator lands on.
+How it is built, because the shape is reusable:
 
-**Fix when it is due:** cursor pagination + server-side filters per screen;
-a typeahead server action for the deposit-assignment picker. **Complexity:**
-medium-high. **Trigger:** roughly 5k rows in any one of those tables, or the
-first operator complaint about a list screen.
+- **The URL is the state.** A server component reads its inputs from the URL and
+  nowhere else, so filters had to leave `useState`. `@/lib/admin-list-query`
+  parses and builds it, and the same module is used by the server (to validate)
+  and the client (to construct links) — so a token an operator can click is by
+  construction one the query accepts. Three things come free: an operator can
+  send a colleague a link to the exact queue they are looking at, Back works,
+  and a refresh keeps the view.
+- **Untrusted input is treated as such.** `page` is clamped positive; `status`
+  and `sort` are matched against a per-screen allowlist so neither reaches SQL
+  as text; `pageSize` is **not readable from the URL at all**, because a
+  caller-chosen page size is an unbounded read wearing a parameter. Search is
+  capped at 100 characters and its LIKE wildcards are escaped — without that,
+  searching `%` returns the whole table. There is a live check for that.
+- **One statement per page, not two.** The row count the pager needs rides
+  along as `count(*) over()` on the same filtered scan.
+- **A page past the end returns page 1**, rather than an empty screen implying
+  the queue is clear.
+- **The stat cards became SQL aggregates.** The figures above these tables
+  described the whole table, computed by reducing over every row in the
+  browser. Left alone they would have silently become "of the ten rows on
+  screen" — not a smaller number, a false one.
+- **Chip counts are a second, parallel query**, because they must ignore the
+  status filter while the page applies it. Issued in the same `Promise.all`, so
+  the screen costs one round trip of wall time: measured 608 ms parallel
+  against 820 ms sequential.
+- **`/admin/referrals` carries two independent lists**, so each owns a URL
+  prefix (`a`, `c`) and the query builder passes the sibling's parameters
+  through untouched.
+- **The deposit-assignment picker no longer needs the directory.** It took the
+  whole `users` array as a prop and filtered it in the browser to show eight
+  matches; it now calls a permission-gated server action that returns at most
+  eight narrow rows, and only from two characters.
+
+**Measured 2026-09-17, and the honest part:** at today's volume this is **not a
+speed-up**. `listAdminUsers()` over 44 accounts has a median of 387 ms; the
+paged read is 416 ms — the window function and `OFFSET` cost slightly more than
+reading 44 rows. What changes is that the cost stops growing: the serialised
+payload per screen fell 4.5x (users 29.3 kB → 6.5 kB, investments 15.0 → 4.5,
+deposits 21.7 → 7.5) and is now flat in table size rather than linear. This was
+a scalability change, and reporting it as a latency win would be wrong.
+
+Two defects surfaced while doing it, both fixed and both older than this pass:
+
+- **`/admin/users/[id]` showed "This user is no longer available" for every
+  account.** The page rendered `UserDetailView` without an `AdminDataProvider`,
+  so the store's `users` was empty and the lookup missed — all ten tabs. The
+  title was right the whole time, because `generateMetadata` did its own read.
+  Now provides its slice, from a single-row `where id = $1` rather than a scan
+  of the directory.
+- **Three screens were reading the whole user directory** for a type-ahead
+  (deposits), one resolved name (notifications) and one row (user detail).
+  Each has its own bounded read now, and `getAdminUsers()` was deleted rather
+  than left exported.
+- **`?page=99999999999999999999` rendered the error page**, by overflowing
+  `OFFSET`'s `bigint`. `page` is clamped as an overflow guard.
+
+**Still open, and deliberately.** Not every list needed this:
+
+| Screen | Read | Why it is left alone |
+|---|---|---|
+| `/admin/audit-logs` | capped at 500 | bounded, but an operator cannot reach row 501 |
+| `/admin/system-logs` | capped at 200 | same, over the fastest-growing table on the platform |
+| `/admin/notifications` | every campaign | grows only when somebody sends one |
+| `/admin/agents` | every operator | bounded by the size of the staff |
+| `/admin/deposits/addresses` | the whole pool | bounded by configuration (§18.8) |
+
+The two capped ones are the only real gap: a cap is not pagination, and
+"there is more history than this and you cannot see it" is a thing the screen
+does not say. Same treatment when it is due.
+
+**Search is unindexed.** Every screen's search is `ILIKE '%needle%'`, which no
+btree can serve — it is a sequential scan of the filtered set. Invisible at
+these volumes and the first thing to bite at scale; the fix is a `pg_trgm`
+GIN index per searched column, which means enabling the extension. Not done
+because nothing here justifies it yet. **Trigger:** ~50k rows in `users`, or a
+search that takes more than a second.
 
 ## M2 — CRM dashboard *(queue counts done; headline totals and charts remain fixtures)*
 
@@ -450,44 +559,71 @@ advisory lock when the schedule tightens (H4).
 
 ---
 
-## Unverified after 2026-09-16 — run these when a database is reachable
+## Verified 2026-09-17 — the 2026-09-16 checklist, closed
 
-This pass was written and checked without network access. Typecheck, lint, the
-production build and 115 database-independent tests pass. **The integration
-suites did not run at all**, and nothing was measured. In order:
+Every item the previous pass left open was run against the live database.
 
-1. **`npm test` in both modes** (CLAUDE.md §12): with `DATABASE_URL` set and
-   with it unset. The suites that did not run this session are every
-   `*.integration.test.ts`, plus `deposit-check.test.ts`.
-2. **`npm run db:migrate`** to apply `0017`
-   (`transactions_user_recent_idx`), then **`npm run db:secure`** — the
-   migrate-then-secure rule. `0017` adds no table, so `db:secure` is a no-op
-   here, but the habit is the rule.
-3. **Confirm the new index is used.** `explain (analyze)` on
-   `select * from transactions where user_id = $1 order by occurred_at desc
-   limit 50` should show an index scan on `transactions_user_recent_idx` with
-   **no sort node**. If a sort appears, the index is not matching the query.
-4. **Confirm the dashboard aggregate runs.** `readDashboardMetrics()` is one
-   hand-written statement of scalar subqueries issued through `db.execute`;
-   it typechecks but has never executed. Open `/admin` and check the six
-   figures against the list screens.
-5. **Confirm the two previously-dead dashboard panels now populate** —
-   "Recent investments" and "Recent security events". They rendered empty for
-   as long as they have existed.
-6. **Confirm `nextDisplayId`.** Register a new account and check the member id
-   is `NT-` + 7 digits and unique. The five-candidate query is new.
-7. **Confirm the prune.** Call `/api/cron/release-deposit-addresses` with
-   `CRON_SECRET` and check `diagnosticsPrune` in the response, then re-check
-   `pipeline_events` row count. On a table that has never been pruned expect
-   `more: true` on the first runs.
-8. **Measure.** Route timings for `/`, `/wallet`, `/wallet/transactions`,
-   `/referral`, `/plans` and `/admin` against a production build with a real
-   session and idle gaps between requests. The claims worth checking are the
-   dashboard payload and the `TopBar` notification read.
+1. **`npm test` with `DATABASE_URL` set:** 314 tests, 313 pass. The one failure
+   was `member ids are unique and none was generated from the clock`, and it
+   was a real defect in the test rather than in the code — see item 6.
+   Re-run after the fix: clean.
+2. **`npm run db:migrate`** — `0017` was **pending, not applied**. The previous
+   pass generated it without a database and could not apply it. Applied, then
+   `npm run db:secure` (RLS re-asserted on 36 tables, storage policies intact).
+3. **The index was not used, and could never have been.** `explain (analyze)`
+   showed a sort, not the index. Cause: `.desc()` on a Drizzle *index* column
+   emits `DESC NULLS LAST`, while `orderBy(desc(...))` in a *query* emits a
+   bare `DESC`, which SQL defines as NULLS FIRST. Postgres matches an ordering
+   by null placement as well as direction, and does so literally — the column
+   is `not null`, so the two orderings cannot actually differ, and the planner
+   still refused the index. Migration `0018` rebuilds it as `(user_id,
+   occurred_at DESC)` and `.nullsFirst()` is now in the schema with a comment
+   saying why it is load-bearing. Measured on a 202k-row fixture, one account
+   holding 2,000 rows: **3.9-6.3 ms** discarding 5,135 rows, against **1.2 ms**
+   on the corrected index with no filter and no sort. At the production table's
+   current 244 rows the planner still — correctly — prefers a sort.
+4. **`readDashboardMetrics()` runs.** All six figures match an independent
+   cross-check exactly: `kyc_pending 5`, `deposits_pending 5 / 2,100 USDT`,
+   `withdrawals_pending 5 / 9,700 USDT`, `users_restricted 2`.
+5. **The two dead dashboard panels are provided.** The page now passes
+   `investments` and `securityEvents`; both tables hold rows (45 and 46).
+6. **`nextDisplayId` is verified against the generator, not the table.** The
+   test asserted the shape of *every* row in `users`, and 19 rows fail it — all
+   19 are integration-test fixtures (`money-test-…@example.invalid`,
+   `referral-test-…`, `deposit-conf-…`) that insert ids in their own shape.
+   None is a real registration. That is CLAUDE.md §16.7's rule exactly: assert
+   the property the test owns, not a fact about a table several other files
+   write to. The table test now asserts **uniqueness** (what the index owes);
+   the shape is asserted in `src/server/auth/member-id.test.ts`, which needs no
+   database and checks 2,000 draws for shape, distinctness, non-monotonicity
+   and digit spread.
+7. **The prune is correct but has nothing to do yet.** `pipeline_events` holds
+   30,684 rows and **none is older than 30 days** (oldest 2026-08-22). The
+   bounds are verified directly: ten full batches stop at 20,000 with
+   `more: true`; an empty first batch stops after one call. Growth is roughly
+   1,180 rows/day, so retention starts removing rows around 2026-09-21 and
+   should settle near 35k.
+8. **Measured.** See M1 for the list-screen numbers and "Scale ceiling" below
+   for the concurrency run.
+
+### Still unverified
+
+- **No browser verification.** The Chrome extension was not connected this
+  session, so nothing was checked visually, at 360 px, or for console errors.
+  The CRM screens were exercised over HTTP with a real operator session
+  instead — pagination, filters, search, sort and the two independent
+  referral tables all confirmed from the rendered HTML — but that is not the
+  same as looking at them. **Do this before shipping.**
+- **The user application's pages were not re-measured**, only audited. They
+  were already one-wave with `SectionBoundary` and `loading.tsx`, and were not
+  changed this session.
+- **19 orphaned test-fixture accounts** are sitting in `users` on the
+  development database. Harmless, and they are why a row-count assertion here
+  is always wrong; worth a cleanup script eventually.
 
 ---
 
-## Scale ceiling — the connection budget, worked through 2026-09-16
+## Scale ceiling — the connection budget, measured 2026-09-17
 
 The question "what happens at 1k / 2k / 5k / 10k users" has an answer, and it
 is not about users at all.
@@ -531,9 +667,51 @@ order of cost:
    have been doing, and which raises the ceiling proportionally rather than
    removing it.
 
-**Unverified:** none of the above was re-measured this session — the machine
-had no network access to the database. The arithmetic is from the configured
-constants and the documented Supavisor limit, both of which are in the code.
+**Measured 2026-09-17, against a production build with a real operator
+session, on one local instance (`DATABASE_POOL_MAX` 5):**
+
+| Concurrent requests | Wall | Slowest request | Failures |
+|---|---|---|---|
+| 1 (cold) | 2.32 s | 2.30 s | 0 |
+| 6 | 2.93 s | 2.89 s | 0 |
+| 12 | 3.56 s | 3.51 s | 0 |
+
+Two things worth keeping from that run. **Nothing failed** — not one
+`EMAXCONNSESSION`, and this was with the full integration suite hammering the
+same project from another process, so the real budget was tighter than five.
+Requests **queue**; they do not error. And latency degrades roughly linearly
+with concurrency rather than falling off a cliff, which is what a pool that is
+saturated but not exhausted looks like.
+
+**The ceiling was then hit accidentally, which is the most convincing evidence
+in this file.** Running the integration suite while a production build was also
+serving requests — two processes, up to five connections each, against a
+project budget of fifteen already carrying the test run's own scripts — the
+suite **stopped making progress entirely**: five lines of TAP output in about
+fifteen minutes, no error, no timeout. Killing the web server unblocked it
+within seconds.
+
+It got worse on the way out. Killing the blocked test run did **not** return
+its connections promptly — `npm run db:check` then failed outright with
+`Failed query: select version()`, and the project stayed unreachable for
+minutes while Supavisor waited out the abandoned session-mode clients. Session
+mode reserves a backend for the life of a client connection, so a process that
+dies without closing cleanly holds its share until `max_lifetime` (30 min) or
+the pooler reclaims it. **A crash loop on this deployment is therefore
+self-amplifying**: each restart claims fresh connections while the previous
+instance's are still held.
+
+That is exactly the failure mode §16.1a describes and it is worth recognising
+by sight: at the ceiling this deployment does not raise `EMAXCONNSESSION`
+first, it **stalls**. A refused connection is retried with backoff (H-series
+work, 2026-09-15), so the visible symptom of exhaustion is a process that looks
+hung rather than one that fails. Two local processes were enough. Three Vercel
+instances would be too.
+
+What this does **not** test is the multi-instance case, which is the one that
+actually produces `EMAXCONNSESSION` — that needs several Vercel instances, not
+several requests to one local server. The table above still stands as
+arithmetic; the row it verifies is the first one.
 
 ---
 
@@ -590,21 +768,30 @@ two measured performance regressions on the deposit path (H7, H8).
 landed on 2026-09-14 — see the end of this file.)*
 
 *(H9, M12 and M10 landed 2026-09-16, along with most of M1 and the queue half
-of M2.)*
+of M2. M1 was finished on 2026-09-17, and the whole 2026-09-16 pass was
+verified against a live database that day — including migration `0017`, which
+had never been applied and whose index never matched its query. See
+"Verified 2026-09-17".)*
 
-0. **Verify the 2026-09-16 pass against a live database** — see "Unverified"
-   below. Nothing in it is measured yet.
+0. **Look at the CRM screens in a browser**, at 360 px and at desk width. The
+   2026-09-17 pagination work was verified over HTTP with a real operator
+   session but never rendered on screen: no Chrome extension was connected.
+   This is the cheapest item here and the only one gating a change that has
+   already shipped to `Main`.
 1. **H4 + the cron-count problem** (a daily scan is a customer-visible defect on
-   mainnet, and there are now **four** scheduled jobs against a plan that caps
-   both the count and the frequency — the deployment is already committed to
-   Pro or to an external scheduler, and that should be a stated decision rather
-   than an accident)
+   mainnet, and there are **four** scheduled jobs — one at `*/15` — against a
+   Hobby plan that caps both the count and the frequency at far less. The
+   deployment is therefore already committed to Pro or to an external
+   scheduler, and that should be a stated decision rather than an accident)
 2. **Monitoring + backups** (the smallest work with the largest downside if skipped)
 3. **H10** (rate limiting — the three candidate designs are assessed above)
 4. **H1** (wrong-asset visibility)
-5. **M1's remaining half** — server-side pagination for the seven CRM list
-   screens, when any of those tables passes roughly 5k rows
-6. **C3** (payout rail — the largest piece, and it depends on all of the above)
+5. **C3** (payout rail — the largest piece, and it depends on all of the above)
+
+Deferred, with triggers rather than dates: `pg_trgm` indexes for CRM search
+(~50k rows), pagination for `/admin/audit-logs` and `/admin/system-logs` (both
+capped rather than paged today), and a cleanup script for orphaned integration
+-test accounts.
 
 Two product decisions are open and neither blocks code: the initial tier rates,
 and what `payoutDelayDays` is measured from. Both are at the end of this file.

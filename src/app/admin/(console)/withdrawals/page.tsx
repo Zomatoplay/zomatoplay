@@ -1,25 +1,55 @@
-import { WithdrawalsView } from "@/components/admin/money/withdrawals-view";
-import { AdminDataProvider } from "@/lib/admin-store";
+import { Suspense } from "react";
+
+import { AdminHeader } from "@/components/admin/layout/admin-header";
+import { AdminPage } from "@/components/admin/layout/admin-shell";
+import { AdminListSkeleton } from "@/components/admin/shared/admin-skeleton";
+import { PermissionGate } from "@/components/admin/shared/permission-gate";
+import { WithdrawalsBrowser } from "@/components/admin/money/withdrawals-view";
+import { ADMIN_LIST_SPECS } from "@/constants/admin";
 import {
-  getAdminWithdrawals,
-} from "@/server/services/admin.service";
+  parseAdminListQuery,
+  type RawSearchParams,
+} from "@/lib/admin-list-query";
+import { getAdminWithdrawalsPage } from "@/server/services/admin.service";
 
 export const metadata = { title: "Withdrawals" };
 
-/**
- * The payout queue.
- *
- * Read here rather than in the layout: a page segment re-renders on a client
- * navigation and on `router.refresh()`, so this is what keeps the screen in
- * step with the database. It also means this route pays for its own queries and
- * nobody else's.
- */
-export default async function Page() {
-  const withdrawals = await getAdminWithdrawals();
+/** The payout queue. One page of requests, plus the queue-wide figures. */
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<RawSearchParams>;
+}) {
+  const query = parseAdminListQuery(
+    await searchParams,
+    ADMIN_LIST_SPECS.withdrawals,
+  );
 
   return (
-    <AdminDataProvider data={{ withdrawals }}>
-      <WithdrawalsView />
-    </AdminDataProvider>
+    <>
+      <AdminHeader
+        title="Withdrawals"
+        description="Review, approve and settle INR payout requests."
+      />
+      <AdminPage>
+        <PermissionGate permission="withdrawals">
+          <Suspense
+            key={`${query.page}|${query.search}|${query.status}|${query.sort}`}
+            fallback={<AdminListSkeleton label="Loading withdrawals" />}
+          >
+            <WithdrawalsList query={query} />
+          </Suspense>
+        </PermissionGate>
+      </AdminPage>
+    </>
   );
+}
+
+async function WithdrawalsList({
+  query,
+}: {
+  query: ReturnType<typeof parseAdminListQuery>;
+}) {
+  const page = await getAdminWithdrawalsPage(query);
+  return <WithdrawalsBrowser page={page} query={query} />;
 }

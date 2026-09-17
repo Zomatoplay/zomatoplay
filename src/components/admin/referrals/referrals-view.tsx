@@ -1,11 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { Gift, Users } from "lucide-react";
 
-import { AdminHeader } from "@/components/admin/layout/admin-header";
-import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
+import { AdminSection } from "@/components/admin/layout/admin-shell";
 import { AdminStatusBadge } from "@/components/admin/shared/admin-status-badge";
 import {
   AdminStatCard,
@@ -19,19 +18,19 @@ import {
   type DataTableColumn,
 } from "@/components/admin/shared/data-table";
 import { DetailCard } from "@/components/admin/shared/detail-list";
+import type { FilterOption } from "@/components/admin/shared/filter-bar";
 import {
-  FilterBar,
-  FilterChips,
-  SearchField,
-  type FilterOption,
-} from "@/components/admin/shared/filter-bar";
+  AdminListBody,
+  AdminListControls,
+  AdminListPager,
+  useAdminListNavigation,
+} from "@/components/admin/shared/admin-list-controls";
 import { ConfirmActionDialog } from "@/components/admin/shared/confirm-action-dialog";
-import { PermissionGate } from "@/components/admin/shared/permission-gate";
 import { useAdminAction } from "@/components/admin/shared/use-admin-action";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ADMIN_PAGE_SIZE } from "@/constants/admin";
+import { ADMIN_LIST_SPECS } from "@/constants/admin";
 import { vipLevels } from "@/data/referrals";
 import { Button } from "@/components/ui/button";
 import { releaseCommissionAction } from "@/app/admin/actions";
@@ -40,9 +39,11 @@ import { useAdminStore, useAdminSession } from "@/lib/admin-store";
 import { formatUsdt } from "@/lib/currency";
 import type {
   AdminCommissionEntry,
+  AdminListPage,
+  AdminListQuery,
   AdminReferralAccount,
+  AdminReferralsSummary,
 } from "@/types/admin";
-import type { VipLevelId } from "@/types";
 import { formatDate } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import { formatBusinessDateTime } from "@/lib/business-time";
@@ -56,26 +57,54 @@ import { formatBusinessDateTime } from "@/lib/business-time";
  * applications by changing one file.
  */
 
-type VipFilter = "all" | VipLevelId;
+const ACCOUNT_SPEC = ADMIN_LIST_SPECS.referralAccounts;
+const COMMISSION_SPEC = ADMIN_LIST_SPECS.commissions;
 
-export function ReferralsView() {
-  return (
-    <>
-      <AdminHeader
-        title="Referrals"
-        description="Referral accounts, VIP standing and the commission ledger."
-      />
-      <AdminPage>
-        <PermissionGate permission="referrals">
-          <ReferralsBrowser />
-        </PermissionGate>
-      </AdminPage>
-    </>
-  );
-}
+/**
+ * The two tables on this screen page independently.
+ *
+ * Every other list screen owns its URL outright. This one has an account
+ * table and a commission ledger side by side, so each owns a prefix — `a` and
+ * `c` — and the query builder passes the sibling's parameters through
+ * untouched. Without that, paging the ledger would reset the accounts table
+ * behind the other tab.
+ */
+const ACCOUNT_PREFIX = "a";
+const COMMISSION_PREFIX = "c";
 
-function ReferralsBrowser() {
-  const { settings, referralAccounts, commissionLedger } = useAdminStore();
+const ACCOUNT_SORTS: FilterOption<string>[] = [
+  { value: "earnings", label: "Most commission" },
+  { value: "referrals", label: "Most active referrals" },
+  { value: "recent", label: "Newest" },
+];
+
+const COMMISSION_STATUS_LABELS: Record<string, string> = {
+  all: "All",
+  pending: "Pending",
+  credited: "Credited",
+  reversed: "Reversed",
+};
+
+const COMMISSION_SORTS: FilterOption<string>[] = [
+  { value: "recent", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "amount", label: "Largest amount" },
+];
+
+export function ReferralsBrowser({
+  accounts,
+  commissions,
+  accountQuery,
+  commissionQuery,
+  summary,
+}: {
+  accounts: AdminListPage<AdminReferralAccount>;
+  commissions: AdminListPage<AdminCommissionEntry>;
+  accountQuery: AdminListQuery;
+  commissionQuery: AdminListQuery;
+  summary: AdminReferralsSummary;
+}) {
+  const { settings } = useAdminStore();
   const session = useAdminSession();
   const { run, pending } = useAdminAction();
   /*
@@ -87,58 +116,42 @@ function ReferralsBrowser() {
    */
   const [releasing, setReleasing] = useState<AdminCommissionEntry | null>(null);
   const mayRelease = canManage(session, "referrals");
-  const [query, setQuery] = useState("");
-  const [vip, setVip] = useState<VipFilter>("all");
 
-  const vipOptions: FilterOption<VipFilter>[] = useMemo(
-    () => [
-      { value: "all", label: "All", count: referralAccounts.length },
-      ...vipLevels.map((level) => ({
-        value: level.id as VipFilter,
-        label: level.name,
-        count: referralAccounts.filter(
-          (account) => account.vipLevel === level.id,
-        ).length,
-      })),
-    ],
-    [referralAccounts],
+  const accountNav = useAdminListNavigation(
+    accountQuery,
+    ACCOUNT_SPEC,
+    ACCOUNT_PREFIX,
+  );
+  const commissionNav = useAdminListNavigation(
+    commissionQuery,
+    COMMISSION_SPEC,
+    COMMISSION_PREFIX,
   );
 
-  const filteredAccounts = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return referralAccounts
-      .filter((account) => {
-        if (vip !== "all" && account.vipLevel !== vip) return false;
-        if (!needle) return true;
-        return [account.userName, account.userDisplayId, account.referralCode]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle);
-      })
-      .sort((a, b) => b.teamVolumeUsdt - a.teamVolumeUsdt);
-  }, [referralAccounts, query, vip]);
+  const referralAccounts = accounts.result.rows;
+  const commissionLedger = commissions.result.rows;
 
-  const filteredCommissions = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return commissionLedger;
-    return commissionLedger.filter((entry) =>
-      [entry.id, entry.beneficiaryName, entry.sourceUserName, entry.sourcePlanName]
-        .join(" ")
-        .toLowerCase()
-        .includes(needle),
-    );
-  }, [commissionLedger, query]);
+  const vipOptions: FilterOption<string>[] = [
+    { value: "all", label: "All", count: accounts.statusCounts.all ?? 0 },
+    ...vipLevels.map((level) => ({
+      value: level.id,
+      label: level.name,
+      count: accounts.statusCounts[level.id] ?? 0,
+    })),
+  ];
 
-  const totalCommission = commissionLedger
-    .filter((entry) => entry.status === "credited")
-    .reduce((sum, entry) => sum + entry.amountUsdt, 0);
-  const pendingCommission = commissionLedger
-    .filter((entry) => entry.status === "pending")
-    .reduce((sum, entry) => sum + entry.amountUsdt, 0);
-  const totalTeamVolume = referralAccounts.reduce(
-    (sum, account) => sum + account.teamVolumeUsdt,
-    0,
-  );
+  const commissionStatusOptions: FilterOption<string>[] =
+    COMMISSION_SPEC.statuses.map((value) => ({
+      value,
+      label: COMMISSION_STATUS_LABELS[value] ?? value,
+      count: commissions.statusCounts[value] ?? 0,
+    }));
+
+  // Platform-wide, from SQL — reducing the ten rows on screen would be a
+  // different number, not a smaller one.
+  const totalCommission = summary.creditedCommissionUsdt;
+  const pendingCommission = summary.pendingCommissionUsdt;
+  const totalTeamVolume = summary.totalTeamVolumeUsdt;
 
   const accountColumns: DataTableColumn<AdminReferralAccount>[] = [
     {
@@ -413,15 +426,6 @@ function ReferralsBrowser() {
         </ul>
       </DetailCard>
 
-      <FilterBar>
-        <SearchField
-          value={query}
-          onChange={setQuery}
-          label="Search referrals"
-          placeholder="Referrer name, member ID, referral code or commission entry"
-        />
-      </FilterBar>
-
       <Tabs defaultValue="accounts">
         <TabsList>
           <TabsTrigger value="accounts">Referral accounts</TabsTrigger>
@@ -429,122 +433,140 @@ function ReferralsBrowser() {
         </TabsList>
 
         <TabsContent value="accounts" className="space-y-4">
-          <FilterChips
-            options={vipOptions}
-            value={vip}
-            onChange={setVip}
-            label="Filter by VIP level"
+          <AdminListControls
+            nav={accountNav}
+            query={accountQuery}
+            spec={ACCOUNT_SPEC}
+            searchLabel="Search referral accounts"
+            searchPlaceholder="Referrer name, member ID or referral code"
+            statusOptions={vipOptions}
+            sortOptions={ACCOUNT_SORTS}
+            statusLabel="Filter by VIP level"
           />
-          <DataTable
-            rows={filteredAccounts}
-            columns={accountColumns}
-            getRowKey={(account) => account.userId}
-            caption="Referral accounts ranked by team volume"
-            pageSize={ADMIN_PAGE_SIZE}
-            resetKey={`${query}|${vip}`}
-            empty={
-              <EmptyState
-                icon={Users}
-                title="No matching referral accounts"
-                description="No referrer matches the current search and filters."
-              />
-            }
-            renderCard={(account) => (
-              <DataCard>
-                <div className="flex items-start justify-between gap-3">
-                  <Link
-                    href={`/admin/users/${account.userId}`}
-                    className="min-w-0"
-                  >
-                    <p className="truncate text-sm font-medium text-brand">
-                      {account.userName}
-                    </p>
-                    <p className="tabular truncate text-xs text-muted-foreground">
-                      {account.referralCode}
-                    </p>
-                  </Link>
-                  <Badge variant="brand">
-                    {vipLevels.find((level) => level.id === account.vipLevel)
-                      ?.name ?? account.vipLevel}
-                  </Badge>
-                </div>
-                <DataCardRow label="Referrals">
-                  <span className="tabular">
-                    {account.directReferrals} tier 1 ·{" "}
-                    {account.indirectReferrals} tier 2
-                  </span>
-                </DataCardRow>
-                <DataCardRow label="Team volume">
-                  <span className="tabular">
-                    {formatUsdt(account.teamVolumeUsdt)}
-                  </span>
-                </DataCardRow>
-                <DataCardRow label="Commission">
-                  <span className="tabular text-positive">
-                    {formatUsdt(account.commissionEarnedUsdt)}
-                  </span>
-                </DataCardRow>
-              </DataCard>
-            )}
-          />
+          <AdminListBody nav={accountNav}>
+            <DataTable
+              rows={referralAccounts}
+              columns={accountColumns}
+              getRowKey={(account) => account.userId}
+              caption="Referral accounts ranked by commission earned"
+              empty={
+                <EmptyState
+                  icon={Users}
+                  title="No matching referral accounts"
+                  description="No referrer matches the current search and filters."
+                />
+              }
+              renderCard={(account) => (
+                <DataCard>
+                  <div className="flex items-start justify-between gap-3">
+                    <Link
+                      href={`/admin/users/${account.userId}`}
+                      className="min-w-0"
+                    >
+                      <p className="truncate text-sm font-medium text-brand">
+                        {account.userName}
+                      </p>
+                      <p className="tabular truncate text-xs text-muted-foreground">
+                        {account.referralCode}
+                      </p>
+                    </Link>
+                    <Badge variant="brand">
+                      {vipLevels.find((level) => level.id === account.vipLevel)
+                        ?.name ?? account.vipLevel}
+                    </Badge>
+                  </div>
+                  <DataCardRow label="Referrals">
+                    <span className="tabular">
+                      {account.directReferrals} tier 1 ·{" "}
+                      {account.indirectReferrals} tier 2
+                    </span>
+                  </DataCardRow>
+                  <DataCardRow label="Team volume">
+                    <span className="tabular">
+                      {formatUsdt(account.teamVolumeUsdt)}
+                    </span>
+                  </DataCardRow>
+                  <DataCardRow label="Commission">
+                    <span className="tabular text-positive">
+                      {formatUsdt(account.commissionEarnedUsdt)}
+                    </span>
+                  </DataCardRow>
+                </DataCard>
+              )}
+            />
+          </AdminListBody>
+
+          <AdminListPager nav={accountNav} result={accounts.result} label="accounts" />
         </TabsContent>
 
-        <TabsContent value="commissions">
-          <DataTable
-            rows={filteredCommissions}
-            columns={commissionColumns}
-            getRowKey={(entry) => entry.id}
-            caption="Commission ledger entries"
-            pageSize={ADMIN_PAGE_SIZE}
-            resetKey={query}
-            empty={
-              <EmptyState
-                icon={Gift}
-                title="No matching commission entries"
-                description="No ledger entry matches this search."
-              />
-            }
-            renderCard={(entry) => (
-              <DataCard>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="tabular text-sm font-medium">{entry.id}</p>
-                    <p className="tabular text-xs text-muted-foreground">
-                      {formatDate(entry.createdAt)}
-                    </p>
-                  </div>
-                  <AdminStatusBadge kind="commission" status={entry.status} />
-                </div>
-                <DataCardRow label="Paid to">
-                  <Link
-                    href={`/admin/users/${entry.beneficiaryUserId}`}
-                    className="text-brand"
-                  >
-                    {entry.beneficiaryName}
-                  </Link>
-                </DataCardRow>
-                <DataCardRow label="Generated by">
-                  {entry.sourceUserName} · Tier {entry.tier}
-                </DataCardRow>
-                <DataCardRow label="Amount">
-                  <span className="tabular text-positive">
-                    {formatUsdt(entry.amountUsdt)}
-                  </span>
-                </DataCardRow>
-                {entry.status === "pending" ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    block
-                    disabled={!mayRelease || pending}
-                    onClick={() => setReleasing(entry)}
-                  >
-                    Release commission
-                  </Button>
-                ) : null}
-              </DataCard>
-            )}
+        <TabsContent value="commissions" className="space-y-4">
+          <AdminListControls
+            nav={commissionNav}
+            query={commissionQuery}
+            spec={COMMISSION_SPEC}
+            searchLabel="Search commission entries"
+            searchPlaceholder="Beneficiary name, member ID or referral code"
+            statusOptions={commissionStatusOptions}
+            sortOptions={COMMISSION_SORTS}
+            statusLabel="Filter by commission status"
           />
+          <AdminListBody nav={commissionNav}>
+            <DataTable
+              rows={commissionLedger}
+              columns={commissionColumns}
+              getRowKey={(entry) => entry.id}
+              caption="Commission ledger entries"
+              empty={
+                <EmptyState
+                  icon={Gift}
+                  title="No matching commission entries"
+                  description="No ledger entry matches this search."
+                />
+              }
+              renderCard={(entry) => (
+                <DataCard>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="tabular text-sm font-medium">{entry.id}</p>
+                      <p className="tabular text-xs text-muted-foreground">
+                        {formatDate(entry.createdAt)}
+                      </p>
+                    </div>
+                    <AdminStatusBadge kind="commission" status={entry.status} />
+                  </div>
+                  <DataCardRow label="Paid to">
+                    <Link
+                      href={`/admin/users/${entry.beneficiaryUserId}`}
+                      className="text-brand"
+                    >
+                      {entry.beneficiaryName}
+                    </Link>
+                  </DataCardRow>
+                  <DataCardRow label="Generated by">
+                    {entry.sourceUserName} · Tier {entry.tier}
+                  </DataCardRow>
+                  <DataCardRow label="Amount">
+                    <span className="tabular text-positive">
+                      {formatUsdt(entry.amountUsdt)}
+                    </span>
+                  </DataCardRow>
+                  {entry.status === "pending" ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      block
+                      disabled={!mayRelease || pending}
+                      onClick={() => setReleasing(entry)}
+                    >
+                      Release commission
+                    </Button>
+                  ) : null}
+                </DataCard>
+              )}
+            />
+          </AdminListBody>
+
+          <AdminListPager nav={commissionNav} result={commissions.result} label="entries" />
         </TabsContent>
       </Tabs>
 

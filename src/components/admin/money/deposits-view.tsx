@@ -1,13 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, ExternalLink, UserPlus, Wallet, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
-import { AdminHeader } from "@/components/admin/layout/admin-header";
-import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
+import { AdminSection } from "@/components/admin/layout/admin-shell";
 import { AdminStatusBadge } from "@/components/admin/shared/admin-status-badge";
 import {
   AdminStatCard,
@@ -22,18 +21,18 @@ import {
   type DataTableColumn,
 } from "@/components/admin/shared/data-table";
 import { MonoValue } from "@/components/admin/shared/detail-list";
+import type { FilterOption } from "@/components/admin/shared/filter-bar";
 import {
-  FilterBar,
-  FilterChips,
-  SearchField,
-  type FilterOption,
-} from "@/components/admin/shared/filter-bar";
-import { PermissionGate } from "@/components/admin/shared/permission-gate";
+  AdminListBody,
+  AdminListControls,
+  AdminListPager,
+  useAdminListNavigation,
+} from "@/components/admin/shared/admin-list-controls";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PrototypeNote } from "@/components/shared/notices";
 import { Button } from "@/components/ui/button";
 import { DepositAssignmentDialog } from "@/components/admin/money/deposit-assignment-dialog";
-import { ADMIN_PAGE_SIZE } from "@/constants/admin";
+import { ADMIN_LIST_SPECS } from "@/constants/admin";
 import { NETWORK_LABELS, transactionUrl } from "@/lib/tron-explorer";
 import {
   assignDepositAction,
@@ -45,7 +44,12 @@ import { depositNetworkLabels } from "@/data/admin/deposits";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
 import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
-import type { AdminDeposit, AdminDepositStatus } from "@/types/admin";
+import type {
+  AdminDeposit,
+  AdminDepositsSummary,
+  AdminListPage,
+  AdminListQuery,
+} from "@/types/admin";
 import { formatDateTime, truncateMiddle } from "@/utils/format";
 
 /**
@@ -57,84 +61,63 @@ import { formatDateTime, truncateMiddle } from "@/utils/format";
  * status transitions later.
  */
 
-type StatusFilter = "all" | AdminDepositStatus;
+const SPEC = ADMIN_LIST_SPECS.deposits;
 
-export function DepositsView() {
-  return (
-    <>
-      <AdminHeader
-        title="Deposits"
-        description="Incoming USDT transfers and their confirmation state."
-      />
-      <AdminPage>
-        <PermissionGate permission="deposits">
-          <DepositsBrowser />
-        </PermissionGate>
-      </AdminPage>
-    </>
-  );
-}
+const STATUS_LABELS: Record<string, string> = {
+  all: "All",
+  pending: "Pending",
+  detected: "Detected",
+  confirming: "Confirming",
+  confirmed: "Confirmed",
+  credited: "Credited",
+  failed: "Failed",
+  ignored: "Ignored",
+};
 
-function DepositsBrowser() {
+const SORT_OPTIONS: FilterOption<string>[] = [
+  { value: "recent", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "amount", label: "Largest amount" },
+];
+
+export function DepositsBrowser({
+  page,
+  query,
+}: {
+  page: AdminListPage<AdminDeposit> & { summary: AdminDepositsSummary };
+  query: AdminListQuery;
+}) {
   const store = useAdminStore();
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("all");
   const [crediting, setCrediting] = useState<string | null>(null);
   const [failing, setFailing] = useState<string | null>(null);
   const [assigning, setAssigning] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const router = useRouter();
+  const nav = useAdminListNavigation(query, SPEC);
 
   // An affordance. The boundary is `requirePermission("deposits")` inside each
   // action, on the server.
   const allowed = canManage(store.session, "deposits");
-  const deposits = store.deposits;
 
-  const options: FilterOption<StatusFilter>[] = useMemo(() => {
-    const count = (value: AdminDepositStatus) =>
-      deposits.filter((deposit) => deposit.status === value).length;
-    return [
-      { value: "all", label: "All", count: deposits.length },
-      { value: "pending", label: "Pending", count: count("pending") },
-      { value: "detected", label: "Detected", count: count("detected") },
-      { value: "confirming", label: "Confirming", count: count("confirming") },
-      { value: "confirmed", label: "Confirmed", count: count("confirmed") },
-      { value: "credited", label: "Credited", count: count("credited") },
-      { value: "failed", label: "Failed", count: count("failed") },
-    ];
-  }, [deposits]);
+  const { result, statusCounts, summary } = page;
+  const deposits = result.rows;
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return deposits
-      .filter((deposit) => {
-        if (status !== "all" && deposit.status !== status) return false;
-        if (!needle) return true;
-        return [
-          deposit.id,
-          deposit.userName,
-          deposit.userDisplayId,
-          deposit.txHash,
-          deposit.walletAddress,
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle);
-      })
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [deposits, query, status]);
+  const options: FilterOption<string>[] = SPEC.statuses.map((value) => ({
+    value,
+    label: STATUS_LABELS[value] ?? value,
+    count: statusCounts[value] ?? 0,
+  }));
 
-  const totalCredited = deposits
-    .filter((deposit) => deposit.status === "credited")
-    .reduce((sum, deposit) => sum + deposit.amountUsdt, 0);
-  const inFlight = deposits.filter(
-    (deposit) =>
-      deposit.status !== "credited" && deposit.status !== "failed",
-  );
-  const inFlightValue = inFlight.reduce(
-    (sum, deposit) => sum + deposit.amountUsdt,
-    0,
-  );
+  /*
+   * The three figures above the table describe the whole ledger, not this
+   * page — which is what they always described, back when the browser held
+   * every deposit and reduced over it. They are SQL aggregates now; computing
+   * them from `deposits` here would silently reduce them to "of the ten rows
+   * on screen".
+   */
+  const totalCredited = summary.creditedUsdt;
+  const inFlightCount = summary.inFlightCount;
+  const inFlightValue = summary.inFlightUsdt;
 
   const creditTarget = deposits.find((deposit) => deposit.id === crediting);
   const failTarget = deposits.find((deposit) => deposit.id === failing);
@@ -417,106 +400,103 @@ function TxLink({ deposit }: { deposit: AdminDeposit }) {
         />
         <AdminStatCard
           label="In flight"
-          value={inFlight.length}
+          value={inFlightCount}
           hint={`${formatUsdt(inFlightValue, { withSymbol: false })} USDT not yet credited`}
-          tone={inFlight.length > 0 ? "warning" : "default"}
+          tone={inFlightCount > 0 ? "warning" : "default"}
         />
         <AdminStatCard
           label="Failed"
-          value={deposits.filter((deposit) => deposit.status === "failed").length}
+          value={statusCounts.failed ?? 0}
           hint="Transfers that never arrived"
           tone="negative"
         />
       </AdminStatGrid>
 
-      <FilterBar>
-        <SearchField
-          value={query}
-          onChange={setQuery}
-          label="Search deposits"
-          placeholder="Deposit ID, user, transaction hash or wallet address"
+      <AdminListControls
+        nav={nav}
+        query={query}
+        spec={SPEC}
+        searchLabel="Search deposits"
+        searchPlaceholder="Deposit ID, user, transaction hash or wallet address"
+        statusOptions={options}
+        sortOptions={SORT_OPTIONS}
+        statusLabel="Filter by deposit status"
+      />
+
+      <AdminListBody nav={nav}>
+        <DataTable
+          rows={deposits}
+          columns={columns}
+          getRowKey={(deposit) => deposit.id}
+          caption="Incoming USDT deposits with network, confirmations and status"
+          empty={
+            <EmptyState
+              icon={Wallet}
+              title="No matching deposits"
+              description="No deposit matches the current search and filters."
+            />
+          }
+          renderCard={(deposit) => (
+            <DataCard>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="tabular text-sm font-medium">{deposit.id}</p>
+                  <Link
+                    href={`/admin/users/${deposit.userId}`}
+                    className="truncate text-xs text-brand"
+                  >
+                    {deposit.userName}
+                  </Link>
+                </div>
+                <AdminStatusBadge kind="deposit" status={deposit.status} />
+              </div>
+              <DataCardRow label="Amount">
+                <span className="tabular block">
+                  {formatUsdt(deposit.amountUsdt)}
+                </span>
+                <span className="tabular block text-xs font-normal text-muted-foreground">
+                  {formatUsdtAsInr(deposit.amountUsdt)}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Network">
+                {depositNetworkLabels[deposit.network]}
+              </DataCardRow>
+              <DataCardRow label="Confirmations">
+                <span className="tabular">
+                  {deposit.confirmations.current} / {deposit.confirmations.required}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Transaction">
+                <MonoValue>{truncateMiddle(deposit.txHash, 10, 6)}</MonoValue>
+              </DataCardRow>
+              {canCredit(deposit) ? (
+                <div className="flex gap-2">
+                  <Button
+                    variant="brand"
+                    size="sm"
+                    className="flex-1"
+                    disabled={!allowed}
+                    onClick={() => setCrediting(deposit.id)}
+                  >
+                    Credit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    disabled={!allowed}
+                    onClick={() => setFailing(deposit.id)}
+                  >
+                    Mark failed
+                  </Button>
+                </div>
+              ) : null}
+            </DataCard>
+          )}
         />
-      </FilterBar>
+      </AdminListBody>
 
-      <FilterChips
-        options={options}
-        value={status}
-        onChange={setStatus}
-        label="Filter by deposit status"
-      />
-
-      <DataTable
-        rows={filtered}
-        columns={columns}
-        getRowKey={(deposit) => deposit.id}
-        caption="Incoming USDT deposits with network, confirmations and status"
-        pageSize={ADMIN_PAGE_SIZE}
-        resetKey={`${query}|${status}`}
-        empty={
-          <EmptyState
-            icon={Wallet}
-            title="No matching deposits"
-            description="No deposit matches the current search and filters."
-          />
-        }
-        renderCard={(deposit) => (
-          <DataCard>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="tabular text-sm font-medium">{deposit.id}</p>
-                <Link
-                  href={`/admin/users/${deposit.userId}`}
-                  className="truncate text-xs text-brand"
-                >
-                  {deposit.userName}
-                </Link>
-              </div>
-              <AdminStatusBadge kind="deposit" status={deposit.status} />
-            </div>
-            <DataCardRow label="Amount">
-              <span className="tabular block">
-                {formatUsdt(deposit.amountUsdt)}
-              </span>
-              <span className="tabular block text-xs font-normal text-muted-foreground">
-                {formatUsdtAsInr(deposit.amountUsdt)}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Network">
-              {depositNetworkLabels[deposit.network]}
-            </DataCardRow>
-            <DataCardRow label="Confirmations">
-              <span className="tabular">
-                {deposit.confirmations.current} / {deposit.confirmations.required}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Transaction">
-              <MonoValue>{truncateMiddle(deposit.txHash, 10, 6)}</MonoValue>
-            </DataCardRow>
-            {canCredit(deposit) ? (
-              <div className="flex gap-2">
-                <Button
-                  variant="brand"
-                  size="sm"
-                  className="flex-1"
-                  disabled={!allowed}
-                  onClick={() => setCrediting(deposit.id)}
-                >
-                  Credit
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1"
-                  disabled={!allowed}
-                  onClick={() => setFailing(deposit.id)}
-                >
-                  Mark failed
-                </Button>
-              </div>
-            ) : null}
-          </DataCard>
-        )}
-      />
+      <AdminListPager nav={nav} result={result} label="deposits" />
 
       <ConfirmActionDialog
         open={crediting !== null}
@@ -599,7 +579,6 @@ function TxLink({ deposit }: { deposit: AdminDeposit }) {
 
       <DepositAssignmentDialog
         deposit={assignTarget}
-        users={store.users}
         open={assigning !== null}
         onOpenChange={(open) => !open && setAssigning(null)}
         onConfirm={(userId, note) => {

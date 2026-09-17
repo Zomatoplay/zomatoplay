@@ -2,7 +2,8 @@ import { cache } from "react";
 import { notFound } from "next/navigation";
 
 import { UserDetailView } from "@/components/admin/users/user-detail-view";
-import { getAdminUsers } from "@/server/services/admin.service";
+import { AdminDataProvider } from "@/lib/admin-store";
+import { getAdminUser } from "@/server/services/admin.service";
 
 /**
  * A single user's profile.
@@ -27,20 +28,29 @@ import { getAdminUsers } from "@/server/services/admin.service";
  * (`force-dynamic`) already required of every other screen. Authorization is
  * unchanged: the operator session is resolved and checked in that layout before
  * this renders.
+ *
+ * THE SLICE HAS TO BE PROVIDED, AND IT WAS NOT
+ * --------------------------------------------
+ * `UserDetailView` reads the account out of the admin store and this page
+ * rendered it bare, so `users` was the empty default and every profile showed
+ * *"This user is no longer available."* — all ten tabs of it. The title was
+ * right, because `generateMetadata` did its own read, which is what made the
+ * page look like it worked. A page owns its own slice (§4.2); this one was
+ * missing its `AdminDataProvider`.
+ *
+ * It is also a single-row read now. Finding one account by scanning the whole
+ * directory got slower with every registration, for a screen that needs
+ * exactly one row.
  */
 
 /**
  * Memoised per request.
  *
  * `generateMetadata` and the page body both need the record, and without this
- * each one issues its own full directory scan — the same query that was timing
- * out. `cache()` is request-scoped, so two calls in one render share a result
- * and a later request still reads fresh.
+ * each one issues its own query. `cache()` is request-scoped, so two calls in
+ * one render share a result and a later request still reads fresh.
  */
-const findUser = cache(async (id: string) => {
-  const users = await getAdminUsers();
-  return users.find((user) => user.id === id);
-});
+const findUser = cache(async (id: string) => getAdminUser(id));
 
 export async function generateMetadata({
   params,
@@ -58,7 +68,12 @@ export default async function AdminUserDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  if (!(await findUser(id))) notFound();
+  const user = await findUser(id);
+  if (!user) notFound();
 
-  return <UserDetailView userId={id} />;
+  return (
+    <AdminDataProvider data={{ users: [user] }}>
+      <UserDetailView userId={id} />
+    </AdminDataProvider>
+  );
 }

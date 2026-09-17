@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Search } from "lucide-react";
 
 import { ConfirmActionDialog } from "@/components/admin/shared/confirm-action-dialog";
@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input";
 import { formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import { truncateMiddle } from "@/utils/format";
-import type { AdminDeposit, AdminUser } from "@/types/admin";
+import { searchUsersAction } from "@/app/admin/actions";
+import type { AdminDeposit, AdminUserOption } from "@/types/admin";
 
 /**
  * Attributing an incoming transfer to an account.
@@ -23,42 +24,73 @@ import type { AdminDeposit, AdminUser } from "@/types/admin";
  * There is no "best match" suggestion on purpose. A plausible-looking
  * suggestion is the thing most likely to be accepted without checking, and
  * crediting the wrong account is not a display bug.
+ *
+ * THE DIRECTORY IS NOT IN THE BROWSER
+ * ----------------------------------
+ * This used to take the whole `users` array as a prop and filter it here, so
+ * the deposit screen fetched every account on the platform in order to render
+ * a dropdown that shows eight. It now asks the server, which answers with at
+ * most eight narrow rows. The search starts at two characters — a one-letter
+ * type-ahead is a request for the directory by another name.
  */
 export function DepositAssignmentDialog({
   deposit,
-  users,
   open,
   onOpenChange,
   onConfirm,
 }: {
   deposit: AdminDeposit | null;
-  users: AdminUser[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: (userId: string, note: string) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<AdminUserOption | null>(null);
+  const [matches, setMatches] = useState<AdminUserOption[]>([]);
+  const [searching, setSearching] = useState(false);
 
-  const matches = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return users.slice(0, 8);
-    return users
-      .filter((user) =>
-        [user.fullName, user.email, user.displayId, user.walletAddress]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle),
-      )
-      .slice(0, 8);
-  }, [users, query]);
+  /*
+   * Debounced, and every in-flight answer is checked against the query that is
+   * current when it lands — two keystrokes in flight can return out of order,
+   * and showing the older list is how a picker offers an account the operator
+   * has already typed past.
+   */
+  useEffect(() => {
+    const needle = query.trim();
+    if (needle.length < 2) {
+      setMatches([]);
+      setSearching(false);
+      return;
+    }
 
-  const chosen = users.find((user) => user.id === selected) ?? null;
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      searchUsersAction(needle)
+        .then((rows) => {
+          if (!cancelled) setMatches(rows);
+        })
+        .catch(() => {
+          if (!cancelled) setMatches([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
+
+  const chosen = selected;
 
   function reset(next: boolean) {
     if (!next) {
       setQuery("");
       setSelected(null);
+      setMatches([]);
     }
     onOpenChange(next);
   }
@@ -87,7 +119,7 @@ export function DepositAssignmentDialog({
       }}
       onConfirm={(note) => {
         if (!selected) return;
-        onConfirm(selected, note);
+        onConfirm(selected.id, note);
         reset(false);
       }}
     >
@@ -126,22 +158,26 @@ export function DepositAssignmentDialog({
               />
             </div>
 
-            <ul className="max-h-56 space-y-1 overflow-y-auto">
+            <ul className="max-h-56 space-y-1 overflow-y-auto" aria-busy={searching}>
               {matches.length === 0 ? (
                 <li className="px-3 py-4 text-center text-xs text-muted-foreground">
-                  No accounts match that search.
+                  {query.trim().length < 2
+                    ? "Type at least two characters to search."
+                    : searching
+                      ? "Searching…"
+                      : "No accounts match that search."}
                 </li>
               ) : (
                 matches.map((user) => (
                   <li key={user.id}>
                     <button
                       type="button"
-                      onClick={() => setSelected(user.id)}
-                      aria-pressed={selected === user.id}
+                      onClick={() => setSelected(user)}
+                      aria-pressed={selected?.id === user.id}
                       className={cn(
                         "flex min-h-11 w-full items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition-colors",
                         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-                        selected === user.id
+                        selected?.id === user.id
                           ? "border-brand bg-brand-soft"
                           : "border-border hover:bg-secondary",
                       )}
@@ -153,9 +189,6 @@ export function DepositAssignmentDialog({
                         <span className="block truncate text-xs text-muted-foreground">
                           {user.displayId} · {user.email}
                         </span>
-                      </span>
-                      <span className="tabular shrink-0 text-xs text-muted-foreground">
-                        {formatUsdt(user.totals.availableUsdt, { withSymbol: false })}
                       </span>
                     </button>
                   </li>

@@ -1,11 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { Banknote } from "lucide-react";
 
-import { AdminHeader } from "@/components/admin/layout/admin-header";
-import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
+import { AdminSection } from "@/components/admin/layout/admin-shell";
 import { AdminStatusBadge } from "@/components/admin/shared/admin-status-badge";
 import {
   AdminStatCard,
@@ -20,17 +19,17 @@ import {
   type DataTableColumn,
 } from "@/components/admin/shared/data-table";
 import { DetailList, DetailRow } from "@/components/admin/shared/detail-list";
+import type { FilterOption } from "@/components/admin/shared/filter-bar";
 import {
-  FilterBar,
-  FilterChips,
-  SearchField,
-  type FilterOption,
-} from "@/components/admin/shared/filter-bar";
-import { PermissionGate } from "@/components/admin/shared/permission-gate";
+  AdminListBody,
+  AdminListControls,
+  AdminListPager,
+  useAdminListNavigation,
+} from "@/components/admin/shared/admin-list-controls";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PrototypeNote } from "@/components/shared/notices";
 import { Button } from "@/components/ui/button";
-import { ADMIN_PAGE_SIZE } from "@/constants/admin";
+import { ADMIN_LIST_SPECS } from "@/constants/admin";
 import { withdrawalRejectionReasons } from "@/data/admin/withdrawals";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
@@ -41,7 +40,12 @@ import {
   rejectWithdrawalAction,
 } from "@/app/admin/actions";
 import { formatInr, formatUsdt } from "@/lib/currency";
-import type { AdminWithdrawal, AdminWithdrawalStatus } from "@/types/admin";
+import type {
+  AdminListPage,
+  AdminListQuery,
+  AdminWithdrawal,
+  AdminWithdrawalsSummary,
+} from "@/types/admin";
 import { formatDateTime } from "@/utils/format";
 
 /**
@@ -54,84 +58,59 @@ import { formatDateTime } from "@/utils/format";
  * display rate used elsewhere.
  */
 
-type StatusFilter = "all" | AdminWithdrawalStatus;
+const SPEC = ADMIN_LIST_SPECS.withdrawals;
 
-export function WithdrawalsView() {
-  return (
-    <>
-      <AdminHeader
-        title="Withdrawals"
-        description="Review, approve and settle INR payout requests."
-      />
-      <AdminPage>
-        <PermissionGate permission="withdrawals">
-          <WithdrawalsBrowser />
-        </PermissionGate>
-      </AdminPage>
-    </>
-  );
-}
+const STATUS_LABELS: Record<string, string> = {
+  all: "All",
+  pending: "Pending",
+  under_review: "Under review",
+  approved: "Approved",
+  processing: "Processing",
+  paid: "Paid",
+  rejected: "Rejected",
+  failed: "Failed",
+};
 
-function WithdrawalsBrowser() {
+const SORT_OPTIONS: FilterOption<string>[] = [
+  { value: "recent", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "amount", label: "Largest amount" },
+];
+
+export function WithdrawalsBrowser({
+  page,
+  query,
+}: {
+  page: AdminListPage<AdminWithdrawal> & { summary: AdminWithdrawalsSummary };
+  query: AdminListQuery;
+}) {
   const store = useAdminStore();
   const { run } = useAdminAction();
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("all");
   const [approving, setApproving] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [paying, setPaying] = useState<string | null>(null);
+  const nav = useAdminListNavigation(query, SPEC);
 
   const allowed = canManage(store.session, "withdrawals");
-  const withdrawals = store.withdrawals;
   const threshold = store.settings.withdrawals.manualReviewThresholdUsdt;
 
-  const options: FilterOption<StatusFilter>[] = useMemo(() => {
-    const count = (value: AdminWithdrawalStatus) =>
-      withdrawals.filter((withdrawal) => withdrawal.status === value).length;
-    return [
-      { value: "all", label: "All", count: withdrawals.length },
-      { value: "pending", label: "Pending", count: count("pending") },
-      { value: "under_review", label: "Under review", count: count("under_review") },
-      { value: "approved", label: "Approved", count: count("approved") },
-      { value: "processing", label: "Processing", count: count("processing") },
-      { value: "paid", label: "Paid", count: count("paid") },
-      { value: "rejected", label: "Rejected", count: count("rejected") },
-      { value: "failed", label: "Failed", count: count("failed") },
-    ];
-  }, [withdrawals]);
+  const { result, statusCounts, summary } = page;
+  const withdrawals = result.rows;
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return withdrawals
-      .filter((withdrawal) => {
-        if (status !== "all" && withdrawal.status !== status) return false;
-        if (!needle) return true;
-        return [
-          withdrawal.id,
-          withdrawal.userName,
-          withdrawal.userDisplayId,
-          withdrawal.destination.bankName,
-          withdrawal.destination.accountNumberMasked,
-          withdrawal.payoutReference ?? "",
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle);
-      })
-      .sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
-  }, [withdrawals, query, status]);
+  const options: FilterOption<string>[] = SPEC.statuses.map((value) => ({
+    value,
+    label: STATUS_LABELS[value] ?? value,
+    count: statusCounts[value] ?? 0,
+  }));
 
-  const open = withdrawals.filter(
-    (withdrawal) =>
-      withdrawal.status === "pending" ||
-      withdrawal.status === "under_review" ||
-      withdrawal.status === "approved" ||
-      withdrawal.status === "processing",
-  );
-  const openValue = open.reduce((sum, w) => sum + w.amountUsdt, 0);
-  const paidValue = withdrawals
-    .filter((withdrawal) => withdrawal.status === "paid")
-    .reduce((sum, w) => sum + w.netInr, 0);
+  /*
+   * Queue-wide figures, from SQL. Reducing over `withdrawals` here would count
+   * only the ten rows on screen — and "Open requests 4" computed over a page
+   * is not a smaller number than the truth, it is a different one.
+   */
+  const openCount = summary.openCount;
+  const openValue = summary.openUsdt;
+  const paidValue = summary.paidNetInr;
 
   const approveTarget = withdrawals.find((w) => w.id === approving);
   const rejectTarget = withdrawals.find((w) => w.id === rejecting);
@@ -289,9 +268,9 @@ function WithdrawalsBrowser() {
       <AdminStatGrid className="md:grid-cols-3 xl:grid-cols-3">
         <AdminStatCard
           label="Open requests"
-          value={open.length}
+          value={openCount}
           icon={Banknote}
-          tone={open.length > 0 ? "warning" : "default"}
+          tone={openCount > 0 ? "warning" : "default"}
           hint={`${formatUsdt(openValue, { withSymbol: false })} USDT awaiting payout`}
         />
         <AdminStatCard
@@ -307,105 +286,102 @@ function WithdrawalsBrowser() {
         />
       </AdminStatGrid>
 
-      <FilterBar>
-        <SearchField
-          value={query}
-          onChange={setQuery}
-          label="Search withdrawals"
-          placeholder="Withdrawal ID, user, bank, account number or payout reference"
-        />
-      </FilterBar>
-
-      <FilterChips
-        options={options}
-        value={status}
-        onChange={setStatus}
-        label="Filter by withdrawal status"
+      <AdminListControls
+        nav={nav}
+        query={query}
+        spec={SPEC}
+        searchLabel="Search withdrawals"
+        searchPlaceholder="Withdrawal ID, user name, email or member ID"
+        statusOptions={options}
+        sortOptions={SORT_OPTIONS}
+        statusLabel="Filter by withdrawal status"
       />
 
-      <DataTable
-        rows={filtered}
-        columns={columns}
-        getRowKey={(withdrawal) => withdrawal.id}
-        caption="INR payout requests with rate, fees, net amount and status"
-        pageSize={ADMIN_PAGE_SIZE}
-        resetKey={`${query}|${status}`}
-        empty={
-          <EmptyState
-            icon={Banknote}
-            title="No matching withdrawals"
-            description="No payout request matches the current search and filters."
-          />
-        }
-        renderCard={(withdrawal) => (
-          <DataCard>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="tabular text-sm font-medium">{withdrawal.id}</p>
-                <Link
-                  href={`/admin/users/${withdrawal.userId}`}
-                  className="truncate text-xs text-brand"
-                >
-                  {withdrawal.userName}
-                </Link>
+      <AdminListBody nav={nav}>
+        <DataTable
+          rows={withdrawals}
+          columns={columns}
+          getRowKey={(withdrawal) => withdrawal.id}
+          caption="INR payout requests with rate, fees, net amount and status"
+          empty={
+            <EmptyState
+              icon={Banknote}
+              title="No matching withdrawals"
+              description="No payout request matches the current search and filters."
+            />
+          }
+          renderCard={(withdrawal) => (
+            <DataCard>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="tabular text-sm font-medium">{withdrawal.id}</p>
+                  <Link
+                    href={`/admin/users/${withdrawal.userId}`}
+                    className="truncate text-xs text-brand"
+                  >
+                    {withdrawal.userName}
+                  </Link>
+                </div>
+                <AdminStatusBadge kind="withdrawal" status={withdrawal.status} />
               </div>
-              <AdminStatusBadge kind="withdrawal" status={withdrawal.status} />
-            </div>
-            <DataCardRow label="Amount">
-              <span className="tabular">{formatUsdt(withdrawal.amountUsdt)}</span>
-            </DataCardRow>
-            <DataCardRow label="Rate">
-              <span className="tabular">₹{withdrawal.payoutRate.toFixed(2)}</span>
-            </DataCardRow>
-            <DataCardRow label="Fees">
-              <span className="tabular">
-                {formatUsdt(withdrawal.totalFeeUsdt)}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Net payout">
-              <span className="tabular">
-                {formatInr(withdrawal.netInr, { approximate: false })}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Destination">
-              {withdrawal.destination.bankName}{" "}
-              {withdrawal.destination.accountNumberMasked}
-            </DataCardRow>
-            {isOpen(withdrawal) ? (
-              <div className="flex gap-2">
-                <Button
-                  variant="brand"
-                  size="sm"
-                  className="flex-1"
-                  disabled={!allowed}
-                  onClick={() => setApproving(withdrawal.id)}
-                >
-                  Approve
-                </Button>
+              <DataCardRow label="Amount">
+                <span className="tabular">{formatUsdt(withdrawal.amountUsdt)}</span>
+              </DataCardRow>
+              <DataCardRow label="Rate">
+                <span className="tabular">₹{withdrawal.payoutRate.toFixed(2)}</span>
+              </DataCardRow>
+              <DataCardRow label="Fees">
+                <span className="tabular">
+                  {formatUsdt(withdrawal.totalFeeUsdt)}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Net payout">
+                <span className="tabular">
+                  {formatInr(withdrawal.netInr, { approximate: false })}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Destination">
+                {withdrawal.destination.bankName}{" "}
+                {withdrawal.destination.accountNumberMasked}
+              </DataCardRow>
+              {isOpen(withdrawal) ? (
+                <div className="flex gap-2">
+                  <Button
+                    variant="brand"
+                    size="sm"
+                    className="flex-1"
+                    disabled={!allowed}
+                    onClick={() => setApproving(withdrawal.id)}
+                  >
+                    Approve
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    disabled={!allowed}
+                    onClick={() => setRejecting(withdrawal.id)}
+                  >
+                    Reject
+                  </Button>
+                </div>
+              ) : isPayable(withdrawal) ? (
                 <Button
                   variant="outline"
                   size="sm"
-                  className="flex-1"
+                  block
                   disabled={!allowed}
-                  onClick={() => setRejecting(withdrawal.id)}
+                  onClick={() => setPaying(withdrawal.id)}
                 >
-                  Reject
+                  Mark paid
                 </Button>
-              </div>
-            ) : isPayable(withdrawal) ? (
-              <Button
-                variant="outline"
-                size="sm"
-                block
-                disabled={!allowed}
-                onClick={() => setPaying(withdrawal.id)}
-              >
-                Mark paid
-              </Button>
-            ) : null}
-          </DataCard>
-        )}
-      />
+              ) : null}
+            </DataCard>
+          )}
+        />
+      </AdminListBody>
+
+      <AdminListPager nav={nav} result={result} label="withdrawals" />
 
       <ConfirmActionDialog
         open={approving !== null}

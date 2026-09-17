@@ -198,3 +198,89 @@ export const ADMIN_PAGE_SIZE = 10;
 
 /** Fixed "now" for the prototype, so relative labels never drift per render. */
 export const ADMIN_NOW = "2026-08-09T09:00:00.000Z";
+
+/* -------------------------------------------------------------------------- */
+/* List screen specs — what each CRM list accepts from its URL                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One spec per paginated list screen.
+ *
+ * These are the allowlists `parseAdminListQuery` validates against, and the
+ * vocabularies the filter controls render from — deliberately the same object,
+ * so a token an operator can click is by construction one the query accepts.
+ *
+ * `statuses` mirrors the screen's own enum plus `"all"`. They are written out
+ * rather than derived from `@/db/schema/enums` on purpose: this file is
+ * imported by client components, and the schema is not something the browser
+ * bundle should carry.
+ */
+export const ADMIN_LIST_SPECS = {
+  users: {
+    statuses: ["all", "active", "inactive", "blocked", "suspended", "deactivated"],
+    sorts: ["recent", "oldest", "name", "balance", "active"],
+    defaultStatus: "all",
+    defaultSort: "recent",
+  },
+  kyc: {
+    statuses: [
+      "all",
+      "pending",
+      "under_review",
+      "approved",
+      "rejected",
+      "resubmission_requested",
+    ],
+    sorts: ["recent", "oldest"],
+    defaultStatus: "all",
+    defaultSort: "recent",
+  },
+  deposits: {
+    statuses: [
+      "all",
+      "pending",
+      "detected",
+      "confirming",
+      "confirmed",
+      "credited",
+      "failed",
+      "ignored",
+    ],
+    sorts: ["recent", "oldest", "amount"],
+    defaultStatus: "all",
+    defaultSort: "recent",
+  },
+  withdrawals: {
+    statuses: [
+      "all",
+      "pending",
+      "under_review",
+      "approved",
+      "processing",
+      "paid",
+      "rejected",
+      "failed",
+    ],
+    sorts: ["recent", "oldest", "amount"],
+    defaultStatus: "all",
+    defaultSort: "recent",
+  },
+  investments: {
+    statuses: ["all", "active", "matured", "cancelled"],
+    sorts: ["recent", "oldest", "amount"],
+    defaultStatus: "all",
+    defaultSort: "recent",
+  },
+  commissions: {
+    statuses: ["all", "pending", "credited", "reversed"],
+    sorts: ["recent", "oldest", "amount"],
+    defaultStatus: "all",
+    defaultSort: "recent",
+  },
+  referralAccounts: {
+    statuses: ["all", "vip1", "vip2", "vip3"],
+    sorts: ["earnings", "referrals", "recent"],
+    defaultStatus: "all",
+    defaultSort: "earnings",
+  },
+} as const;

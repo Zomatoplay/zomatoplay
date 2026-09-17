@@ -72,10 +72,23 @@ export const transactions = pgTable(
      * backwards from the newest entry and stops at the limit. Added with the
      * limits, not before them: the limit is what turns this from "avoid a
      * sort" into "read N rows and stop".
+     *
+     * `.nullsFirst()` IS LOAD-BEARING, and leaving it off silently disables
+     * this index. Drizzle's `.desc()` on an index column emits
+     * `DESC NULLS LAST`, but `orderBy(desc(...))` in a query emits a bare
+     * `DESC` — and SQL's default for `DESC` is NULLS **FIRST**. Postgres
+     * matches an ordering by its null placement as well as its direction, and
+     * it does that literally: the column is `not null`, so the two orderings
+     * cannot actually differ, and the planner still refuses the index. Built
+     * `DESC NULLS LAST` (migration 0017) the planner ignored it entirely and
+     * kept sorting; measured on 202k rows, an account holding 2,000 of them:
+     * 3.9-6.3ms discarding 5,135 rows, against 2.6ms scanning this index with
+     * no filter once the two agree. If you ever change the `orderBy` here,
+     * change this to match it.
      */
     index("transactions_user_recent_idx").on(
       table.userId,
-      table.occurredAt.desc(),
+      table.occurredAt.desc().nullsFirst(),
     ),
     index("transactions_type_idx").on(table.type),
     index("transactions_status_idx").on(table.status),

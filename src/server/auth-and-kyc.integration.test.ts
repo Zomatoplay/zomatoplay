@@ -97,15 +97,23 @@ describe("development dataset", { skip }, () => {
     assert.ok(n <= SEED_USER_COUNT + 20, `unexpectedly many users: ${n}`);
   });
 
-  test("member ids are unique and none was generated from the clock", async () => {
+  test("member ids are unique", async () => {
     /*
      * `display_id` carries a unique index and used to be the last seven digits
-     * of `Date.now()` — a value that repeats every 2 h 46 m, so two signups
-     * that interval apart (or in the same millisecond) collided and the unique
-     * violation failed the whole registration.
+     * of `Date.now()` in base 36 — a value that repeats every 2 h 46 m, so two
+     * signups that interval apart (or in the same millisecond) collided and
+     * the unique violation failed the whole registration.
      *
-     * Two properties, checked against the live table rather than the
-     * generator, because the index is what actually has to hold.
+     * Uniqueness is the property the *table* owes, and it is checked here
+     * against the live rows because the index is what actually has to hold.
+     * The id's **shape** is deliberately not asserted here: the integration
+     * suites share one database and several of them insert accounts directly
+     * with ids of their own (`NT-M…` from money-lifecycle, `NT-R…` from
+     * referrals, `NT-D…` from deposit-address), so every row in this table is
+     * emphatically not something `nextDisplayId` produced. Asserting the shape
+     * here fails on another file's fixtures, which is §16.7's rule exactly.
+     * The shape is asserted against the generator instead — see
+     * `auth/member-id.test.ts`, which needs no database.
      */
     const rows = await db
       .select({ displayId: t.users.displayId })
@@ -115,11 +123,6 @@ describe("development dataset", { skip }, () => {
     for (const { displayId } of rows) {
       assert.ok(!seen.has(displayId), `duplicate member id: ${displayId}`);
       seen.add(displayId);
-      assert.match(
-        displayId,
-        /^NT-\d{7,10}$/,
-        `member id is not in the documented shape: ${displayId}`,
-      );
     }
     assert.ok(rows.length > 0);
   });

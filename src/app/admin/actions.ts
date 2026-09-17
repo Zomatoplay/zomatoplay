@@ -15,8 +15,10 @@ import {
   trackPipeline,
 } from "@/server/observability";
 import { toSafeFailure } from "@/server/errors";
+import type { AdminUserOption } from "@/types/admin";
 import { traceAction } from "@/server/trace-action";
 import { requirePermission } from "@/server/admin/session";
+import { findUsersForPicker } from "@/server/services/admin.service";
 import { revalidate, revalidateCatalogue } from "@/server/revalidate";
 import {
   revokeDeviceSessions,
@@ -312,6 +314,32 @@ export async function addKycNoteAction(input: {
 /* -------------------------------------------------------------------------- */
 /* Deposits                                                                    */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Accounts matching an operator's type-ahead, for the pickers that need one —
+ * the deposit attribution dialog and the notification composer's single-user
+ * audience. Both used to receive the **entire** user directory as a prop and
+ * search it in the browser.
+ *
+ * Gated on `users`, not on the calling screen's own permission, because what
+ * this reads *is* the user directory — an operator who may not browse accounts
+ * should not be able to enumerate them eight at a time through a side door.
+ * The consequential half of each flow keeps its own gate:
+ * `assignDepositAction` still requires `deposits: manage` and
+ * `sendNotificationAction` still requires `notifications: manage`.
+ *
+ * `view` rather than `manage`: it reads, it changes nothing. It is still
+ * bounded — at most eight narrow rows (no balance, no KYC state), and nothing
+ * at all under two characters — so it is a search rather than an export.
+ */
+export async function searchUsersAction(
+  search: string,
+): Promise<AdminUserOption[]> {
+  await requirePermission("users", "view");
+  const needle = search.trim().slice(0, 100);
+  if (needle.length < 2) return [];
+  return findUsersForPicker(needle);
+}
 
 export async function assignDepositAction(input: {
   depositId: string;

@@ -1,11 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+
 import Link from "next/link";
 import { Coins, TrendingUp } from "lucide-react";
 
-import { AdminHeader } from "@/components/admin/layout/admin-header";
-import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
+import { AdminSection } from "@/components/admin/layout/admin-shell";
 import { AdminStatusBadge } from "@/components/admin/shared/admin-status-badge";
 import {
   AdminStatCard,
@@ -18,21 +17,25 @@ import {
   PrimaryCell,
   type DataTableColumn,
 } from "@/components/admin/shared/data-table";
+import type { FilterOption } from "@/components/admin/shared/filter-bar";
 import {
-  FilterBar,
-  FilterChips,
-  FilterSelect,
-  SearchField,
-  type FilterOption,
-} from "@/components/admin/shared/filter-bar";
-import { PermissionGate } from "@/components/admin/shared/permission-gate";
+  AdminListBody,
+  AdminListControls,
+  AdminListPager,
+  useAdminListNavigation,
+} from "@/components/admin/shared/admin-list-controls";
 import { EmptyState } from "@/components/shared/empty-state";
 import { RiskNote } from "@/components/shared/notices";
 import { Progress } from "@/components/ui/progress";
-import { ADMIN_PAGE_SIZE } from "@/constants/admin";
-import { useAdminStore } from "@/lib/admin-store";
+import { ADMIN_LIST_SPECS } from "@/constants/admin";
 import { formatUsdt } from "@/lib/currency";
-import type { AdminInvestment, AdminInvestmentStatus } from "@/types/admin";
+import type {
+  AdminInvestment,
+  AdminInvestmentsSummary,
+  AdminListPage,
+  AdminListQuery,
+  AdminPlan,
+} from "@/types/admin";
 import { formatDate, progressPercent } from "@/utils/format";
 
 /**
@@ -44,71 +47,56 @@ import { formatDate, progressPercent } from "@/utils/format";
  * quote back to a user.
  */
 
-type StatusFilter = "all" | AdminInvestmentStatus;
+const SPEC = ADMIN_LIST_SPECS.investments;
 
-export function InvestmentsView() {
-  return (
-    <>
-      <AdminHeader
-        title="Investments"
-        description="Every allocation across all plans and users."
-      />
-      <AdminPage>
-        <PermissionGate permission="investments">
-          <InvestmentsBrowser />
-        </PermissionGate>
-      </AdminPage>
-    </>
-  );
-}
+const STATUS_LABELS: Record<string, string> = {
+  all: "All",
+  active: "Active",
+  matured: "Matured",
+  cancelled: "Cancelled",
+};
 
-function InvestmentsBrowser() {
-  const { investments, plans } = useAdminStore();
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("all");
-  const [plan, setPlan] = useState<string>("all");
+const SORT_OPTIONS: FilterOption<string>[] = [
+  { value: "recent", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "amount", label: "Largest amount" },
+];
 
-  const statusOptions: FilterOption<StatusFilter>[] = useMemo(() => {
-    const count = (value: AdminInvestmentStatus) =>
-      investments.filter((row) => row.status === value).length;
-    return [
-      { value: "all", label: "All", count: investments.length },
-      { value: "active", label: "Active", count: count("active") },
-      { value: "matured", label: "Matured", count: count("matured") },
-      { value: "cancelled", label: "Cancelled", count: count("cancelled") },
-    ];
-  }, [investments]);
+export function InvestmentsBrowser({
+  page,
+  query,
+  plans,
+}: {
+  page: AdminListPage<AdminInvestment> & { summary: AdminInvestmentsSummary };
+  query: AdminListQuery;
+  plans: AdminPlan[];
+}) {
+  const nav = useAdminListNavigation(query, SPEC);
+  const { result, statusCounts, summary } = page;
+  const investments = result.rows;
 
-  const planOptions: FilterOption<string>[] = useMemo(
-    () => [
-      { value: "all", label: "All plans" },
-      ...plans.map((entry) => ({
-        value: entry.id,
-        label: entry.name,
-        count: investments.filter((row) => row.planId === entry.id).length,
-      })),
-    ],
-    [investments, plans],
-  );
+  const statusOptions: FilterOption<string>[] = SPEC.statuses.map((value) => ({
+    value,
+    label: STATUS_LABELS[value] ?? value,
+    count: statusCounts[value] ?? 0,
+  }));
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return investments
-      .filter((row) => {
-        if (status !== "all" && row.status !== status) return false;
-        if (plan !== "all" && row.planId !== plan) return false;
-        if (!needle) return true;
-        return [row.id, row.userName, row.userDisplayId, row.planName]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle);
-      })
-      .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-  }, [investments, query, status, plan]);
+  /*
+   * The plan filter is the screen's second dimension, and its options come
+   * from the plan catalogue rather than from the rows — a plan with no
+   * allocations must still be selectable, or an operator cannot confirm that
+   * it has none. The per-plan counts are gone with the client-side array;
+   * counting them would be a `GROUP BY plan_id` per render for a number
+   * nobody triages by.
+   */
+  const planOptions: FilterOption<string>[] = [
+    { value: "all", label: "All plans" },
+    ...plans.map((entry) => ({ value: entry.id, label: entry.name })),
+  ];
 
-  const active = investments.filter((row) => row.status === "active");
-  const allocated = active.reduce((sum, row) => sum + row.amountUsdt, 0);
-  const accrued = investments.reduce((sum, row) => sum + row.profitUsdt, 0);
+  const active = summary.activeCount;
+  const allocated = summary.allocatedUsdt;
+  const accrued = summary.accruedProfitUsdt;
 
   const columns: DataTableColumn<AdminInvestment>[] = [
     {
@@ -224,9 +212,9 @@ function InvestmentsBrowser() {
       <AdminStatGrid className="md:grid-cols-3 xl:grid-cols-3">
         <AdminStatCard
           label="Active allocations"
-          value={active.length}
+          value={active}
           icon={TrendingUp}
-          hint={`${investments.length} in total, all time`}
+          hint={`${summary.totalCount} in total, all time`}
         />
         <AdminStatCard
           label="Capital allocated"
@@ -244,81 +232,74 @@ function InvestmentsBrowser() {
         />
       </AdminStatGrid>
 
-      <FilterBar>
-        <SearchField
-          value={query}
-          onChange={setQuery}
-          label="Search investments"
-          placeholder="Investment ID, user or plan name"
-        />
-        <FilterSelect
-          options={planOptions}
-          value={plan}
-          onChange={setPlan}
-          label="Plan"
-        />
-      </FilterBar>
-
-      <FilterChips
-        options={statusOptions}
-        value={status}
-        onChange={setStatus}
-        label="Filter by allocation status"
+      <AdminListControls
+        nav={nav}
+        query={query}
+        spec={SPEC}
+        searchLabel="Search investments"
+        searchPlaceholder="Investment ID, user or plan name"
+        statusOptions={statusOptions}
+        filterOptions={planOptions}
+        filterLabel="Plan"
+        sortOptions={SORT_OPTIONS}
+        statusLabel="Filter by allocation status"
       />
 
-      <DataTable
-        rows={filtered}
-        columns={columns}
-        getRowKey={(row) => row.id}
-        caption="Platform allocations with amount, accrued profit, term and status"
-        pageSize={ADMIN_PAGE_SIZE}
-        resetKey={`${query}|${status}|${plan}`}
-        empty={
-          <EmptyState
-            icon={TrendingUp}
-            title="No matching investments"
-            description="No allocation matches the current search and filters."
-          />
-        }
-        renderCard={(row) => (
-          <DataCard>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="tabular text-sm font-medium">{row.id}</p>
-                <p className="truncate text-xs text-muted-foreground">
-                  {row.planName}
-                </p>
+      <AdminListBody nav={nav}>
+        <DataTable
+          rows={investments}
+          columns={columns}
+          getRowKey={(row) => row.id}
+          caption="Platform allocations with amount, accrued profit, term and status"
+          empty={
+            <EmptyState
+              icon={TrendingUp}
+              title="No matching investments"
+              description="No allocation matches the current search and filters."
+            />
+          }
+          renderCard={(row) => (
+            <DataCard>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="tabular text-sm font-medium">{row.id}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {row.planName}
+                  </p>
+                </div>
+                <AdminStatusBadge kind="investment" status={row.status} />
               </div>
-              <AdminStatusBadge kind="investment" status={row.status} />
-            </div>
-            <DataCardRow label="User">
-              <Link href={`/admin/users/${row.userId}`} className="text-brand">
-                {row.userName}
-              </Link>
-            </DataCardRow>
-            <DataCardRow label="Amount">
-              <span className="tabular">{formatUsdt(row.amountUsdt)}</span>
-            </DataCardRow>
-            <DataCardRow label="Profit accrued">
-              <span className="tabular text-positive">
-                {formatUsdt(row.profitUsdt)}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Term">
-              <span className="tabular font-normal text-muted-foreground">
-                {row.durationDays === 0
-                  ? "No lock-in"
-                  : `${row.elapsedDays} / ${row.durationDays} days`}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Next reward">
-              <span className="tabular font-normal text-muted-foreground">
-                {row.nextRewardAt ? formatDate(row.nextRewardAt) : "—"}
-              </span>
-            </DataCardRow>
-          </DataCard>
-        )}
-      />
+              <DataCardRow label="User">
+                <Link href={`/admin/users/${row.userId}`} className="text-brand">
+                  {row.userName}
+                </Link>
+              </DataCardRow>
+              <DataCardRow label="Amount">
+                <span className="tabular">{formatUsdt(row.amountUsdt)}</span>
+              </DataCardRow>
+              <DataCardRow label="Profit accrued">
+                <span className="tabular text-positive">
+                  {formatUsdt(row.profitUsdt)}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Term">
+                <span className="tabular font-normal text-muted-foreground">
+                  {row.durationDays === 0
+                    ? "No lock-in"
+                    : `${row.elapsedDays} / ${row.durationDays} days`}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Next reward">
+                <span className="tabular font-normal text-muted-foreground">
+                  {row.nextRewardAt ? formatDate(row.nextRewardAt) : "—"}
+                </span>
+              </DataCardRow>
+            </DataCard>
+          )}
+        />
+      </AdminListBody>
+
+      <AdminListPager nav={nav} result={result} label="allocations" />
 
       <RiskNote>
         Projected profit figures are estimates from the prototype investment

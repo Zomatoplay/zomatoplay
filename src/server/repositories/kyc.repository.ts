@@ -1,10 +1,15 @@
 import "server-only";
 
-import { asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
-import type { KycSubmission } from "@/types/admin";
+import type {
+  AdminListQuery,
+  KycSubmission,
+  PagedResult,
+} from "@/types/admin";
 
+import { likePattern, pageTotal, readPage } from "./paginate";
 import { toKycSubmission } from "./mappers";
 
 /**
@@ -25,57 +30,10 @@ export async function listKycSubmissions(
     .orderBy(desc(schema.kycSubmissions.submittedAt));
   const submissions = options.limit ? await base.limit(options.limit) : await base;
 
-  if (submissions.length === 0) return [];
-
-  /*
-   * Scoped to the submissions actually returned.
-   *
-   * These two reads had no `WHERE` at all: fetching a page of cases also
-   * fetched **every KYC document and every note on the platform**, then threw
-   * away everything that did not belong to a returned case. Harmless while the
-   * caller always wanted every case; wrong the moment one wants five, which is
-   * what the dashboard panel asks for.
-   *
-   * Filtering by the returned ids also means the review queue stops paying for
-   * notes on closed cases it is not showing.
-   */
-  const submissionIds = submissions.map(({ submission }) => submission.id);
-
-  const [documents, notes] = await Promise.all([
-    db
-      .select()
-      .from(schema.kycDocuments)
-      .where(inArray(schema.kycDocuments.submissionId, submissionIds))
-      .orderBy(asc(schema.kycDocuments.uploadedAt)),
-    db
-      .select()
-      .from(schema.kycNotes)
-      .where(inArray(schema.kycNotes.submissionId, submissionIds))
-      .orderBy(asc(schema.kycNotes.createdAt)),
-  ]);
-
-  const documentsBySubmission = new Map<string, typeof documents>();
-  for (const document of documents) {
-    const bucket = documentsBySubmission.get(document.submissionId) ?? [];
-    bucket.push(document);
-    documentsBySubmission.set(document.submissionId, bucket);
-  }
-
-  const notesBySubmission = new Map<string, typeof notes>();
-  for (const note of notes) {
-    const bucket = notesBySubmission.get(note.submissionId) ?? [];
-    bucket.push(note);
-    notesBySubmission.set(note.submissionId, bucket);
-  }
-
-  return submissions.map(({ submission, user }) =>
-    toKycSubmission(
-      submission,
-      { userName: user.fullName, userDisplayId: user.displayId },
-      documentsBySubmission.get(submission.id) ?? [],
-      notesBySubmission.get(submission.id) ?? [],
-    ),
-  );
+  // Documents and notes are attached by the shared helper below, scoped to the
+  // ids actually returned — these two reads once had no `WHERE` at all and
+  // fetched every KYC document and note on the platform to serve one page.
+  return attachKycDetail(db, submissions);
 }
 
 /**
@@ -126,4 +84,136 @@ export interface OwnKycCase {
   rejectionReason: string | null;
   submittedAt: string;
   reviewedAt: string | null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* The paginated review queue                                                  */
+/* -------------------------------------------------------------------------- */
+
+function kycSearchCondition(search: string) {
+  if (!search) return undefined;
+  const pattern = likePattern(search);
+  return or(
+    ilike(schema.kycSubmissions.id, pattern),
+    ilike(schema.kycSubmissions.legalName, pattern),
+    ilike(schema.users.fullName, pattern),
+    ilike(schema.users.email, pattern),
+    ilike(schema.users.displayId, pattern),
+  );
+}
+
+/**
+ * One page of the verification queue.
+ *
+ * The documents and notes are attached by `attachKycDetail`, the same helper
+ * `listKycSubmissions` uses — and it is scoped to the ids actually returned,
+ * so a ten-row page reads ten cases' documents rather than the platform's.
+ */
+export async function pageKycSubmissions(
+  db: Database,
+  query: AdminListQuery,
+): Promise<PagedResult<KycSubmission>> {
+  const where = and(
+    query.status === "all"
+      ? undefined
+      : eq(
+          schema.kycSubmissions.status,
+          query.status as (typeof schema.kycSubmissions.status.enumValues)[number],
+        ),
+    kycSearchCondition(query.search),
+  );
+
+  return readPage(query, async (page) => {
+    const rows = await db
+      .select({
+        submission: schema.kycSubmissions,
+        user: schema.users,
+        total: pageTotal,
+      })
+      .from(schema.kycSubmissions)
+      .innerJoin(schema.users, eq(schema.users.id, schema.kycSubmissions.userId))
+      .where(where)
+      .orderBy(
+        query.sort === "oldest"
+          ? asc(schema.kycSubmissions.submittedAt)
+          : desc(schema.kycSubmissions.submittedAt),
+      )
+      .limit(query.pageSize)
+      .offset((page - 1) * query.pageSize);
+
+    return {
+      rows: await attachKycDetail(db, rows),
+      total: Number(rows[0]?.total ?? 0),
+    };
+  });
+}
+
+export async function countKycSubmissionsByStatus(
+  db: Database,
+  query: AdminListQuery,
+): Promise<Record<string, number>> {
+  const rows = await db
+    .select({
+      status: schema.kycSubmissions.status,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(schema.kycSubmissions)
+    .innerJoin(schema.users, eq(schema.users.id, schema.kycSubmissions.userId))
+    .where(kycSearchCondition(query.search))
+    .groupBy(schema.kycSubmissions.status);
+
+  const counts: Record<string, number> = { all: 0 };
+  for (const row of rows) {
+    counts[row.status] = Number(row.count);
+    counts.all += Number(row.count);
+  }
+  return counts;
+}
+
+/** Attaches each case's documents and notes, scoped to the ids given. */
+async function attachKycDetail(
+  db: Database,
+  submissions: {
+    submission: typeof schema.kycSubmissions.$inferSelect;
+    user: typeof schema.users.$inferSelect;
+  }[],
+): Promise<KycSubmission[]> {
+  if (submissions.length === 0) return [];
+  const submissionIds = submissions.map(({ submission }) => submission.id);
+
+  const [documents, notes] = await Promise.all([
+    db
+      .select()
+      .from(schema.kycDocuments)
+      .where(inArray(schema.kycDocuments.submissionId, submissionIds))
+      .orderBy(asc(schema.kycDocuments.uploadedAt)),
+    db
+      .select()
+      .from(schema.kycNotes)
+      .where(inArray(schema.kycNotes.submissionId, submissionIds))
+      .orderBy(asc(schema.kycNotes.createdAt)),
+  ]);
+
+  const documentsBySubmission = new Map<string, typeof documents>();
+  for (const document of documents) {
+    const bucket = documentsBySubmission.get(document.submissionId) ?? [];
+    bucket.push(document);
+    documentsBySubmission.set(document.submissionId, bucket);
+  }
+
+  const notesBySubmission = new Map<string, typeof notes>();
+  for (const note of notes) {
+    const bucket = notesBySubmission.get(note.submissionId) ?? [];
+    bucket.push(note);
+    notesBySubmission.set(note.submissionId, bucket);
+  }
+
+  return submissions.map(({ submission, user }) =>
+    toKycSubmission(
+      submission,
+      { userName: user.fullName, userDisplayId: user.displayId },
+      documentsBySubmission.get(submission.id) ?? [],
+      notesBySubmission.get(submission.id) ?? [],
+    ),
+  );
 }

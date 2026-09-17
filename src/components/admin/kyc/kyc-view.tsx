@@ -1,11 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { BadgeCheck, ChevronLeft } from "lucide-react";
 
 import { KycCasePanel } from "@/components/admin/kyc/kyc-case-panel";
-import { AdminHeader } from "@/components/admin/layout/admin-header";
-import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
+import { AdminSection } from "@/components/admin/layout/admin-shell";
 import { AdminStatusBadge } from "@/components/admin/shared/admin-status-badge";
 import {
   DataCard,
@@ -14,19 +13,22 @@ import {
   PrimaryCell,
   type DataTableColumn,
 } from "@/components/admin/shared/data-table";
+import type { FilterOption } from "@/components/admin/shared/filter-bar";
 import {
-  FilterBar,
-  FilterChips,
-  SearchField,
-  type FilterOption,
-} from "@/components/admin/shared/filter-bar";
-import { PermissionGate } from "@/components/admin/shared/permission-gate";
+  AdminListBody,
+  AdminListControls,
+  AdminListPager,
+  useAdminListNavigation,
+} from "@/components/admin/shared/admin-list-controls";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ADMIN_PAGE_SIZE } from "@/constants/admin";
-import { useAdminStore } from "@/lib/admin-store";
-import type { KycReviewStatus, KycSubmission } from "@/types/admin";
+import { ADMIN_LIST_SPECS } from "@/constants/admin";
+import type {
+  AdminListPage,
+  AdminListQuery,
+  KycSubmission,
+} from "@/types/admin";
 import { formatDate } from "@/utils/format";
 
 /**
@@ -36,69 +38,39 @@ import { formatDate } from "@/utils/format";
  * working through the queue keeps their filters and position.
  */
 
-type StatusFilter = "all" | KycReviewStatus;
+const SPEC = ADMIN_LIST_SPECS.kyc;
 
-export function KycView() {
-  return (
-    <>
-      <AdminHeader
-        title="KYC"
-        description="Review identity verification submissions and record decisions."
-      />
-      <AdminPage>
-        <PermissionGate permission="kyc">
-          <KycQueue />
-        </PermissionGate>
-      </AdminPage>
-    </>
-  );
-}
+const STATUS_LABELS: Record<string, string> = {
+  all: "All",
+  pending: "Pending",
+  under_review: "Under review",
+  resubmission_requested: "Resubmission",
+  approved: "Approved",
+  rejected: "Rejected",
+};
 
-function KycQueue() {
-  const { kyc } = useAdminStore();
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("all");
+const SORT_OPTIONS: FilterOption<string>[] = [
+  { value: "recent", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+];
+
+export function KycQueue({
+  page,
+  query,
+}: {
+  page: AdminListPage<KycSubmission>;
+  query: AdminListQuery;
+}) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const nav = useAdminListNavigation(query, SPEC);
+  const { result, statusCounts } = page;
+  const kyc = result.rows;
 
-  const options: FilterOption<StatusFilter>[] = useMemo(() => {
-    const count = (value: KycReviewStatus) =>
-      kyc.filter((submission) => submission.status === value).length;
-    return [
-      { value: "all", label: "All", count: kyc.length },
-      { value: "pending", label: "Pending", count: count("pending") },
-      {
-        value: "under_review",
-        label: "Under review",
-        count: count("under_review"),
-      },
-      {
-        value: "resubmission_requested",
-        label: "Resubmission",
-        count: count("resubmission_requested"),
-      },
-      { value: "approved", label: "Approved", count: count("approved") },
-      { value: "rejected", label: "Rejected", count: count("rejected") },
-    ];
-  }, [kyc]);
-
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return kyc
-      .filter((submission) => {
-        if (status !== "all" && submission.status !== status) return false;
-        if (!needle) return true;
-        return [
-          submission.userName,
-          submission.userDisplayId,
-          submission.id,
-          submission.details.legalName,
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle);
-      })
-      .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
-  }, [kyc, query, status]);
+  const options: FilterOption<string>[] = SPEC.statuses.map((value) => ({
+    value,
+    label: STATUS_LABELS[value] ?? value,
+    count: statusCounts[value] ?? 0,
+  }));
 
   const selected = selectedId
     ? kyc.find((submission) => submission.id === selectedId)
@@ -210,79 +182,76 @@ function KycQueue() {
 
   return (
     <AdminSection className="space-y-4">
-      <FilterBar>
-        <SearchField
-          value={query}
-          onChange={setQuery}
-          label="Search KYC submissions"
-          placeholder="User name, member ID, case ID or legal name"
+      <AdminListControls
+        nav={nav}
+        query={query}
+        spec={SPEC}
+        searchLabel="Search KYC submissions"
+        searchPlaceholder="User name, member ID, case ID or legal name"
+        statusOptions={options}
+        sortOptions={SORT_OPTIONS}
+        statusLabel="Filter by review status"
+      />
+
+      <AdminListBody nav={nav}>
+        <DataTable
+          rows={kyc}
+          columns={columns}
+          getRowKey={(submission) => submission.id}
+          caption="Identity verification submissions awaiting or holding a decision"
+          empty={
+            <EmptyState
+              icon={BadgeCheck}
+              title="Nothing in this queue"
+              description="No verification submission matches the current filters."
+            />
+          }
+          renderCard={(submission) => (
+            <DataCard>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">
+                    {submission.userName}
+                  </p>
+                  <p className="tabular truncate text-xs text-muted-foreground">
+                    {submission.userDisplayId} · {submission.id}
+                  </p>
+                </div>
+                <AdminStatusBadge kind="kyc" status={submission.status} />
+              </div>
+              <DataCardRow label="Submitted">
+                <span className="tabular font-normal text-muted-foreground">
+                  {formatDate(submission.submittedAt)}
+                </span>
+              </DataCardRow>
+              <DataCardRow label="Document">
+                <span className="capitalize">
+                  {submission.details.documentType.replace(/_/g, " ")}
+                </span>
+              </DataCardRow>
+              {submission.riskFlags.length > 0 ? (
+                <div className="flex flex-wrap gap-1">
+                  {submission.riskFlags.map((flag) => (
+                    <Badge key={flag} variant="warning">
+                      {flag}
+                    </Badge>
+                  ))}
+                </div>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                block
+                onClick={() => setSelectedId(submission.id)}
+              >
+                Review case
+              </Button>
+            </DataCard>
+          )}
         />
-      </FilterBar>
+      </AdminListBody>
 
-      <FilterChips
-        options={options}
-        value={status}
-        onChange={setStatus}
-        label="Filter by review status"
-      />
-
-      <DataTable
-        rows={filtered}
-        columns={columns}
-        getRowKey={(submission) => submission.id}
-        caption="Identity verification submissions awaiting or holding a decision"
-        pageSize={ADMIN_PAGE_SIZE}
-        resetKey={`${query}|${status}`}
-        empty={
-          <EmptyState
-            icon={BadgeCheck}
-            title="Nothing in this queue"
-            description="No verification submission matches the current filters."
-          />
-        }
-        renderCard={(submission) => (
-          <DataCard>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">
-                  {submission.userName}
-                </p>
-                <p className="tabular truncate text-xs text-muted-foreground">
-                  {submission.userDisplayId} · {submission.id}
-                </p>
-              </div>
-              <AdminStatusBadge kind="kyc" status={submission.status} />
-            </div>
-            <DataCardRow label="Submitted">
-              <span className="tabular font-normal text-muted-foreground">
-                {formatDate(submission.submittedAt)}
-              </span>
-            </DataCardRow>
-            <DataCardRow label="Document">
-              <span className="capitalize">
-                {submission.details.documentType.replace(/_/g, " ")}
-              </span>
-            </DataCardRow>
-            {submission.riskFlags.length > 0 ? (
-              <div className="flex flex-wrap gap-1">
-                {submission.riskFlags.map((flag) => (
-                  <Badge key={flag} variant="warning">
-                    {flag}
-                  </Badge>
-                ))}
-              </div>
-            ) : null}
-            <Button
-              variant="outline"
-              size="sm"
-              block
-              onClick={() => setSelectedId(submission.id)}
-            >
-              Review case
-            </Button>
-          </DataCard>
-        )}
-      />
+      <AdminListPager nav={nav} result={result} label="cases" />
     </AdminSection>
   );
 }

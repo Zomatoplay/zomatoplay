@@ -404,7 +404,7 @@ const DISPLAY_ID_CANDIDATES = 5;
 
 async function nextDisplayId(tx: Parameters<Parameters<typeof mutate>[1]>[0]["tx"]) {
   const candidates = Array.from({ length: DISPLAY_ID_CANDIDATES }, () =>
-    displayIdFrom(randomDigits(7)),
+    generateMemberId(),
   );
 
   const taken = await tx
@@ -423,6 +423,22 @@ async function nextDisplayId(tx: Parameters<Parameters<typeof mutate>[1]>[0]["tx
    * worst possible trade.
    */
   return displayIdFrom(randomDigits(10));
+}
+
+/**
+ * One candidate member id: `NT-` and seven random digits.
+ *
+ * Exported so the shape can be asserted against the generator rather than
+ * against the `users` table. The table is not a safe place to assert it: the
+ * integration suites share one live database and several of them insert
+ * accounts directly with ids of their own shape (`NT-M…`, `NT-R…`, `NT-D…`),
+ * so a test reading every row is reading other files' scratch data. That is
+ * the same hazard CLAUDE.md §16.7 describes — assert the property the test
+ * owns, never a fact about the physical table. The invariant the table *does*
+ * owe is uniqueness, and the unique index is what enforces it.
+ */
+export function generateMemberId(): string {
+  return displayIdFrom(randomDigits(7));
 }
 
 function displayIdFrom(digits: string): string {

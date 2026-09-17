@@ -92,11 +92,23 @@ describe("repositories", { skip }, () => {
     // against this database — moves both upward. An exact assertion here
     // would make the engine actually working look like a regression, the same
     // trap the seeded-user-count assertion elsewhere in this file already
-    // avoids. `lockedInInvestments` is untouched by settlement (only
-    // `matureInvestment` moves it, and none of the demo account's allocations
-    // are due yet), so it stays an exact check.
+    // avoids.
+    //
+    // `lockedInInvestments` used to be asserted exactly, at 3,900, on the
+    // reasoning that only `matureInvestment` moves it and none of the demo
+    // account's allocations were due. That premise had an expiry date, and it
+    // passed on 2026-09-16: the seeded `inv_1041` (2,500 USDT over 90 days)
+    // reached `matures_at` and the settler correctly returned its principal,
+    // leaving exactly 1,400. The engine working looked like a regression —
+    // the very trap the paragraph above describes. What this account actually
+    // owes is that the locked figure equals the sum of its *active*
+    // allocations, and the next test asserts precisely that; only a bound
+    // belongs here.
     assert.ok(wallet.available >= 1250, `expected at least the seeded 1250, got ${wallet.available}`);
-    assert.equal(wallet.lockedInInvestments, 3900);
+    assert.ok(
+      wallet.lockedInInvestments >= 0,
+      `locked must never go negative, got ${wallet.lockedInInvestments}`,
+    );
     assert.ok(
       wallet.totalProfit >= 842.35,
       `expected at least the seeded 842.35, got ${wallet.totalProfit}`,

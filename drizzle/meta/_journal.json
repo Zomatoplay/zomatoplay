@@ -127,6 +127,13 @@
       "when": 1789499988620,
       "tag": "0017_stale_ozymandias",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789616790660,
+      "tag": "0018_flimsy_calypso",
+      "breakpoints": true
     }
   ]
 }

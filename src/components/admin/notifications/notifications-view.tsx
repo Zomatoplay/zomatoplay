@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BellRing, Send, Users } from "lucide-react";
 
 import { AdminHeader } from "@/components/admin/layout/admin-header";
@@ -33,9 +33,13 @@ import {
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
 import { useAdminAction } from "@/components/admin/shared/use-admin-action";
-import { sendNotificationAction } from "@/app/admin/actions";
+import {
+  searchUsersAction,
+  sendNotificationAction,
+} from "@/app/admin/actions";
 import { cn } from "@/lib/utils";
 import type {
+  AdminUserOption,
   AdminNotificationAudience,
   AdminNotificationCampaign,
   AdminNotificationChannel,
@@ -99,18 +103,44 @@ function NotificationsWorkspace() {
   const reach =
     audience === "single_user" ? 1 : audienceReach(audience);
 
-  const matchedUser = useMemo(() => {
-    const needle = targetUser.trim().toLowerCase();
-    if (!needle) return null;
-    return (
-      store.users.find((user) =>
-        [user.fullName, user.email, user.displayId, user.id]
-          .join(" ")
-          .toLowerCase()
-          .includes(needle),
-      ) ?? null
-    );
-  }, [store.users, targetUser]);
+  /*
+   * The single-user audience resolves against the server, not against a copy
+   * of the directory.
+   *
+   * This screen used to be handed every account on the platform purely so this
+   * one `find()` could run in the browser. It now asks `searchUsersAction`,
+   * which is gated on `users: view` and returns at most eight narrow rows, and
+   * takes the first match — the same "first thing that matches what you typed"
+   * rule as before. Debounced, and a response that arrives after the query has
+   * moved on is discarded: two keystrokes in flight can land out of order, and
+   * showing the older answer is how a picker names an account the operator has
+   * already typed past.
+   */
+  const [matchedUser, setMatchedUser] = useState<AdminUserOption | null>(null);
+
+  useEffect(() => {
+    const needle = targetUser.trim();
+    if (needle.length < 2) {
+      setMatchedUser(null);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      searchUsersAction(needle)
+        .then((rows) => {
+          if (!cancelled) setMatchedUser(rows[0] ?? null);
+        })
+        .catch(() => {
+          if (!cancelled) setMatchedUser(null);
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [targetUser]);
 
   const valid =
     title.trim() !== "" &&

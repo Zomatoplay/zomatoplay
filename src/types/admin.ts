@@ -831,3 +831,126 @@ export interface AdminFlowPoint {
   inbound: number;
   outbound: number;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Server-side list pagination                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One page of a CRM list, plus what the pager needs to describe it.
+ *
+ * `total` is the size of the **filtered** set, not the table — it is what
+ * "page 3 of 47" and a disabled *Next* are computed from, so it has to be
+ * counted under the same predicates that selected the rows.
+ *
+ * Lives here rather than beside the query because the pager and every list
+ * view are client components: a type imported from a `server-only` module
+ * fails the build, which is how `AdminDashboardMetrics` ended up here too.
+ */
+export interface PagedResult<T> {
+  rows: T[];
+  /** Rows matching the filters, across every page. */
+  total: number;
+  /** 1-based, clamped to `pageCount`. */
+  page: number;
+  pageSize: number;
+  /** At least 1, so an empty result still reads as "page 1 of 1". */
+  pageCount: number;
+}
+
+/**
+ * The query behind a CRM list screen, parsed from the URL.
+ *
+ * Every field is derived from untrusted input, so each is validated where it
+ * is parsed (`@/server/services/admin-list-query`) rather than where it is
+ * used: `page` is clamped positive, `pageSize` is **not** client-settable at
+ * all — a caller-chosen page size is an unbounded read wearing a parameter —
+ * and `status`/`sort` are matched against a per-screen allowlist so neither
+ * can reach SQL as text.
+ */
+export interface AdminListQuery {
+  page: number;
+  pageSize: number;
+  /** Free text, trimmed; empty means "no search". */
+  search: string;
+  /** A screen-specific token from that screen's allowlist. */
+  status: string;
+  /**
+   * The screen's second filter dimension, where it has one — the directory's
+   * KYC state, the allocation list's plan, the referral list's VIP level.
+   *
+   * Unlike `status` and `sort` this is **not** allowlisted, because some
+   * screens filter on an id that only the database knows (a plan's). It is
+   * length-bounded and always reaches SQL as a bound parameter, so the worst
+   * an unknown value can do is match no rows.
+   */
+  filter: string;
+  /** A screen-specific token from that screen's allowlist. */
+  sort: string;
+}
+
+/**
+ * A list screen's whole payload: one page of rows, plus how many rows each
+ * status chip would show under the screen's other filters.
+ *
+ * The counts are part of the screen rather than a detail of the pager because
+ * they are what an operator triages by — a queue chip reading "3" is the
+ * reason to open it.
+ */
+export interface AdminListPage<T> {
+  result: PagedResult<T>;
+  statusCounts: Record<string, number>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* List screen summaries                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The stat cards above a paginated list.
+ *
+ * These describe the **whole table**, not the page and not the filtered set —
+ * which is what they always described, when the browser held every row and
+ * reduced over it. Server-side paging means the rows are no longer there to
+ * reduce, so each figure is now a SQL aggregate. Getting this wrong would be
+ * worse than slow: "Open requests 4" computed over a ten-row page is not a
+ * smaller number, it is a false one.
+ */
+export interface AdminDepositsSummary {
+  creditedUsdt: number;
+  inFlightCount: number;
+  inFlightUsdt: number;
+}
+
+export interface AdminWithdrawalsSummary {
+  openCount: number;
+  openUsdt: number;
+  paidNetInr: number;
+}
+
+export interface AdminInvestmentsSummary {
+  activeCount: number;
+  totalCount: number;
+  allocatedUsdt: number;
+  accruedProfitUsdt: number;
+}
+
+/**
+ * The minimum an operator needs to pick an account out of a list.
+ *
+ * Deliberately not `AdminUser`: a picker shows a name and a member id, and
+ * sending a balance, a KYC state and a wallet address per candidate is how the
+ * attribution dialog ended up costing the whole directory.
+ */
+export interface AdminUserOption {
+  id: string;
+  fullName: string;
+  email: string;
+  displayId: string;
+}
+
+export interface AdminReferralsSummary {
+  creditedCommissionUsdt: number;
+  pendingCommissionUsdt: number;
+  totalTeamVolumeUsdt: number;
+}

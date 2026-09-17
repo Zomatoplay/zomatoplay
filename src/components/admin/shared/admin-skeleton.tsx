@@ -102,3 +102,47 @@ export function AdminDashboardSkeleton() {
     </AdminPage>
   );
 }
+
+/**
+ * The filter row and table body alone, with no page title.
+ *
+ * The Suspense fallback for a list screen that has already rendered its own
+ * header. `AdminTableSkeleton` above is the *route* fallback (`loading.tsx`),
+ * where nothing at all is on screen yet and the title is part of what is
+ * missing; here the header, the sidebar and the page chrome are already
+ * painted and only the data region is in flight. Replacing a title that is
+ * already correct with a grey bar would be a step backwards.
+ */
+export function AdminListSkeleton({
+  rows = 10,
+  label = "Loading",
+}: {
+  rows?: number;
+  label?: string;
+}) {
+  return (
+    <div className="space-y-4">
+      <div aria-busy="true" aria-live="polite">
+        <span className="sr-only">{label}…</span>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <Skeleton className="h-11 w-full max-w-xs rounded-xl" />
+        <Skeleton className="h-11 w-32 rounded-xl" />
+        <Skeleton className="h-11 w-32 rounded-xl" />
+      </div>
+
+      <div className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="flex items-center gap-4 p-4">
+            <Skeleton className="size-8 shrink-0 rounded-full" />
+            <Skeleton className="h-4 w-40 rounded-md" />
+            <Skeleton className="hidden h-4 w-28 rounded-md sm:block" />
+            <Skeleton className="hidden h-4 w-24 rounded-md md:block" />
+            <Skeleton className="ml-auto h-4 w-20 shrink-0 rounded-md" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

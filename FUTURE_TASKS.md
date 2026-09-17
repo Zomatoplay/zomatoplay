@@ -608,6 +608,15 @@ Every item the previous pass left open was run against the live database.
 
 ### Still unverified
 
+- **The full integration suite was not re-run after the last few changes.** The
+  run that covers most of this work is 314 tests / 313 passing, with the single
+  failure being the member-id test described above (fixed, and that file
+  re-run clean at 26/26). Changes made after that run — the notifications
+  composer, the user-detail page, the page clamp, deleting `getAdminUsers()`
+  and aligning the fixture pager — are covered by typecheck, lint, build, 24
+  new database-free tests and live HTTP checks, but **not** by an integration
+  run. The machine lost network access before one could finish. **Re-run
+  `npm test` with a database before trusting this.**
 - **No browser verification.** The Chrome extension was not connected this
   session, so nothing was checked visually, at 360 px, or for console errors.
   The CRM screens were exercised over HTTP with a real operator session
@@ -683,30 +692,28 @@ Requests **queue**; they do not error. And latency degrades roughly linearly
 with concurrency rather than falling off a cliff, which is what a pool that is
 saturated but not exhausted looks like.
 
-**The ceiling was then hit accidentally, which is the most convincing evidence
-in this file.** Running the integration suite while a production build was also
-serving requests — two processes, up to five connections each, against a
-project budget of fifteen already carrying the test run's own scripts — the
-suite **stopped making progress entirely**: five lines of TAP output in about
-fifteen minutes, no error, no timeout. Killing the web server unblocked it
-within seconds.
+**A stall was observed, and its cause is NOT established.** Running the
+integration suite while a production build was also serving requests, the suite
+stopped making progress — its first query, `select 1`, failed after 133 seconds,
+and about fifteen minutes produced five lines of TAP output. Killing the web
+server appeared to unblock it.
 
-It got worse on the way out. Killing the blocked test run did **not** return
-its connections promptly — `npm run db:check` then failed outright with
-`Failed query: select version()`, and the project stayed unreachable for
-minutes while Supavisor waited out the abandoned session-mode clients. Session
-mode reserves a backend for the life of a client connection, so a process that
-dies without closing cleanly holds its share until `max_lifetime` (30 min) or
-the pooler reclaims it. **A crash loop on this deployment is therefore
-self-amplifying**: each restart claims fresh connections while the previous
-instance's are still held.
+That was written up here as the connection ceiling being reached, and **that
+claim has been withdrawn.** Shortly afterwards the machine lost network access
+altogether — the pooler *and* GitHub both stopped answering at TCP connect, and
+a single-connection probe failed with `CONNECT_TIMEOUT` rather than with
+Supavisor's `EMAXCONNSESSION`. A general network fault explains the stall at
+least as well as pool exhaustion does, and the apparent recovery after killing
+the server is a correlation of one. The environment has now dropped its network
+twice across two sessions.
 
-That is exactly the failure mode §16.1a describes and it is worth recognising
-by sight: at the ceiling this deployment does not raise `EMAXCONNSESSION`
-first, it **stalls**. A refused connection is retried with backoff (H-series
-work, 2026-09-15), so the visible symptom of exhaustion is a process that looks
-hung rather than one that fails. Two local processes were enough. Three Vercel
-instances would be too.
+What can honestly be said: **at the ceiling this deployment is expected to
+stall rather than fail fast**, because a refused connection is retried with
+backoff (2026-09-15), so exhaustion should present as a slow request and
+eventually as a hung process. That is reasoning from the code, not an
+observation. Distinguishing the two in future needs the error code: pool
+exhaustion is `XX000` with `EMAXCONNSESSION` in the message, a network fault is
+`CONNECT_TIMEOUT`. Check which one before concluding anything.
 
 What this does **not** test is the multi-instance case, which is the one that
 actually produces `EMAXCONNSESSION` — that needs several Vercel instances, not

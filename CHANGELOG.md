@@ -179,21 +179,24 @@ roughly linearly — a saturated pool, not an exhausted one. This does not
 exercise the multi-instance case, which is the one that actually produces the
 error.
 
-**The ceiling was then reached by accident, and the symptom is worth knowing.**
-Running the integration suite while a production build was also serving
-requests, the suite stopped making progress: five lines of TAP output in about
-fifteen minutes, no error and no timeout. Its very first query — `select 1` —
-had failed after 133 seconds. Killing the web server unblocked it within
-seconds. At the budget's edge this deployment **stalls** rather than failing:
-connection refusals are retried with backoff, so exhaustion presents as a hung
-process. Two local processes were enough to do it.
+**A stall was observed and its cause is not established.** Running the
+integration suite while a production build was also serving requests, the suite
+stopped making progress: its first query — `select 1` — failed after 133
+seconds, and fifteen minutes produced five lines of TAP output. Killing the web
+server appeared to unblock it, and this was initially written up as the
+connection ceiling being reached.
 
-Recovery is not immediate either. Killing the blocked run left its session-mode
-clients held — `npm run db:check` failed outright afterwards and the project
-stayed unreachable for minutes, because session mode reserves a backend for the
-life of a connection and an abandoned one is only reclaimed at `max_lifetime`.
-A crash loop here is self-amplifying: each restart claims fresh connections
-while the dead instance still holds its share.
+**That reading has been withdrawn.** The machine then lost network access
+altogether — the pooler and GitHub both failing at TCP connect — and a
+single-connection probe returned `CONNECT_TIMEOUT`, not Supavisor's
+`EMAXCONNSESSION`. A network fault explains the stall as well as pool
+exhaustion does, and "it recovered when I killed the server" is a correlation
+of one. The distinguishing evidence is the error code, and next time it should
+be read before drawing the conclusion: `XX000` + `EMAXCONNSESSION` is the pool;
+`CONNECT_TIMEOUT` is the network.
+
+The 1/6/12-concurrent numbers above stand — they were taken while the network
+was healthy and every request returned 200.
 
 ### Verification
 

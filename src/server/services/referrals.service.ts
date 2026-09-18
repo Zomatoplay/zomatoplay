@@ -5,7 +5,7 @@ import { unstable_noStore as noStore } from "next/cache";
 import { getDb, isDatabaseConfigured, type Database } from "@/db";
 import type { CommissionEntry, Referral, ReferralSummary } from "@/types";
 
-import { resolveUserId } from "../current-user";
+import { resolveUserId, resolveUserIdForPage } from "../current-user";
 import {
   findReferralSummary,
   findReferrerByCode,
@@ -39,7 +39,7 @@ async function read<T>(query: (db: Database) => Promise<T>): Promise<T> {
 export async function getReferralSummary(
   userId?: string,
 ): Promise<ReferralSummary> {
-  const id = await resolveUserId(userId);
+  const id = await resolveUserIdForPage(userId);
   const vipLevels = await getVipLevels();
 
   return read(async (db) => {
@@ -60,6 +60,17 @@ export async function getReferralSummary(
   });
 }
 
+/**
+ * These two keep the throwing resolver deliberately.
+ *
+ * `/referral` starts both through `deferred()` and awaits them inside a
+ * `SectionBoundary`, whose error boundary catches whatever the read throws and
+ * renders a section notice — and it does not re-throw Next's redirect signal.
+ * Resolving the identity by redirecting here would therefore be *swallowed*
+ * rather than honoured. The page's critical path reads `getReferralSummary`,
+ * which does redirect, so an unauthenticated visitor still leaves for sign-in;
+ * these panels simply fail inside their own boundary on the way out.
+ */
 export async function getReferrals(userId?: string): Promise<Referral[]> {
   const id = await resolveUserId(userId);
   return read((db) => listReferralsForUser(db, id));

@@ -1356,11 +1356,35 @@ trips. Everything below follows from that.
    three of four served and one `EMAXCONNSESSION`; the same shape with a
    non-zero timeout → four of four.
 
-   Thirty seconds is longer than a click-to-click interval, so ordinary
-   navigation still finds a warm connection, and short enough that an abandoned
-   instance is not holding a third of the budget a minute later.
-   `DATABASE_IDLE_TIMEOUT=0` restores the old behaviour and is only correct for
-   a deployment that really is one long-running server with the pool to itself.
+   **It was then 30, and 30 was too short — measured 2026-09-18.** The reason
+   given for 30 was that it is "longer than a click-to-click interval", and
+   that was never tested: the measurement behind it used a 25s pause against
+   the *20s* timeout it replaced, so nothing priced a pause landing just past
+   the window. Production build, real session, 35s pause, then one navigation:
+
+   | page | `idle_timeout` 30 | `idle_timeout` 120 | warm |
+   |---|---|---|---|
+   | `/settings` | 8.35s | 0.84s | 1.14s |
+   | `/wallet` | 7.57s | 1.42s | 1.82s |
+   | `/plans` | 4.54s | 0.94s | 0.76s |
+   | `/referral` | 4.81s | 2.11s | 1.46s |
+
+   A 4-7x penalty on the most ordinary thing a person does: read a screen, then
+   tap. The interval that governs is not click-to-click, it is **reading** —
+   somebody looking at their balance or comparing two plans is past 30s before
+   they touch anything.
+
+   **The default is now 120.** That is not a return to `0`: `0` held a
+   process's share of the fifteen until it died, 120 hands them back two
+   minutes after its last query, so the budget is still shared over time. The
+   cost is that an idle instance holds its slots for two minutes rather than
+   thirty seconds, which matters as instances multiply — **lower it toward 30
+   if the deployment routinely runs three or more concurrent instances**, and
+   read FUTURE_TASKS' "Scale ceiling" first, because past that point the
+   timeout is not what is wrong. `DATABASE_IDLE_TIMEOUT` overrides it without a
+   deploy; `0` restores the behaviour that caused `EMAXCONNSESSION` and is only
+   correct for a deployment that really is one long-running server with the
+   pool to itself.
 
 2. **A round trip is the unit of cost, not a query.** Two sequential queries
    cost ~400 ms whatever they select. Narrowing columns saves almost nothing;
@@ -1724,10 +1748,21 @@ Rules, all load-bearing:
   `database.connectRetry` row at all.
 
   It gets a **different backoff** — 700ms, 1.4s, 2.8s, four extra attempts —
-  because a full pooler frees up on `idle_timeout` (30s), not on landing a
-  different A record. Two attempts 200ms apart are effectively one attempt. The
-  12s wall-clock budget still bounds it, so a caller never waits longer than it
-  was promised.
+  because a full pooler frees up when somebody *else* releases a connection,
+  not by landing a different A record. Two attempts 200ms apart are effectively
+  one attempt. The 12s wall-clock budget still bounds it, so a caller never
+  waits longer than it was promised.
+
+  **Raising `idle_timeout` to 120 narrowed what this retry can rescue, and
+  that is a deliberate trade.** Within one instance a connection returns to the
+  pool the moment its query finishes, so local contention still clears in
+  milliseconds and the retry works exactly as before. What it can no longer
+  outwait is another *instance* sitting idle: that now holds its sockets for
+  two minutes rather than thirty seconds, and the retry budget is twelve. It
+  could not outwait thirty either — 12s < 30s — so this narrows an escape
+  hatch that was already mostly closed rather than removing a working one. The
+  real remedy for a project-wide shortage is in FUTURE_TASKS' "Scale ceiling",
+  and it is not a backoff curve.
 - **Reads only. Never `mutate()`.** A write that failed after its statements
   reached the server may have committed; replaying it would double it. Nothing
   in `@/server/write` goes through `resilientRead`, and nothing should.
@@ -2435,6 +2470,25 @@ fixed demo account, which meant every visitor saw one person's wallet.
   renders the shell with a recoverable notice. It used to return null for both,
   which signed valid users out during a blip and produced the reported
   `NotAuthenticatedError`. Do not collapse those two cases back together.
+- **A page-render read redirects; a server action throws. Never mix them in one
+  `Promise.all`.** `resolveUserIdForPage()` / `requireCurrentUserIdForPage()`
+  end an absent session as `redirect("/login")`; `resolveUserId()` /
+  `requireCurrentUserId()` throw `NotAuthenticatedError`. A layout's gate does
+  **not** stop the page beneath it — Next renders the two in parallel — so a
+  page's reads run for an unauthenticated visitor anyway, and `Promise.all`
+  rejects with whichever settles first. When `getUserSlices` was moved onto the
+  redirecting resolver its siblings were left behind, and every primary screen
+  then raced a clean redirect against a bare `NotAuthenticatedError`: measured
+  2026-09-18, **8 of 8** unauthenticated requests logged the error from
+  `.next/server/app/(app)/page.js`, the exact reported stack, while still
+  answering 307. A screen with no `getUserSlices` call at all —
+  `/settings/support`, `/settings/wallet` — had no race to lose.
+  The rule is about the **call site, not the service**: reached only from a
+  server component, use the redirecting resolver. An action must keep the
+  throwing one, or it returns a redirect its caller cannot show a message for.
+  The exception is a read awaited inside a `SectionBoundary`, whose error
+  boundary does not re-throw `NEXT_REDIRECT` and would swallow it — those keep
+  the throwing resolver deliberately, and say so in place.
 - Server actions take no `userId`. The account comes from the session, so there
   is no parameter to tamper with.
 - The middleware refreshes the session cookie and **decides nothing**. The gate
@@ -2634,6 +2688,20 @@ So:
 - Every write is wrapped in try/catch and swallowed. A logging failure must
   never fail a KYC submission, a deposit, a withdrawal, an investment, a login
   or a navigation.
+
+**`pipeline_events` cannot record a failure to *acquire a connection*, and must
+not be trusted to.** Every row in it is written by `writeRows()` →
+`getDb().insert(...)`, over the runtime pool. When the pool is what failed, that
+insert fails for the same reason and is swallowed by rule 2 — so the incident
+erases its own evidence. Verified: after a real `(EMAXCONNSESSION) max clients
+reached in session mode` on this project, the table held **zero**
+`database.connectRetry` rows for the surrounding week, although `resilientRead`
+classifies, retries and records that error correctly. It had to be diagnosed
+from a terminal scrollback. `reportInfrastructureFault()` is the answer — one
+structured, redacted, rate-limited JSON line on **stderr**, the only channel
+that survives an unreachable database and one Vercel keeps in Runtime Logs. It
+is wired to pool exhaustion only, and extending it to anything that recovers on
+its own would be the noisy logging this codebase deliberately does not have.
 
 **`AsyncLocalStorage` does not cross from a layout into the page beneath it**,
 which is the trap here and cost five to eight extra round trips per page view

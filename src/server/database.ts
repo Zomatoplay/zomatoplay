@@ -11,6 +11,7 @@ import {
   describeError,
   errorDiagnostics,
   recordPipelineEvent,
+  reportInfrastructureFault,
 } from "@/server/observability";
 
 /**
@@ -110,6 +111,32 @@ export function resilientRead<T>(query: () => Promise<T>): Promise<T> {
           });
         } catch {
           // Instrumentation is never allowed to fail the read it describes.
+        }
+
+        /*
+         * The same fact, on stderr, for the one case the row above cannot
+         * survive.
+         *
+         * `recordPipelineEvent` buffers and the buffer is flushed with
+         * `getDb().insert(...)` — over the pool that just refused a
+         * connection. When the reason is `pool_exhausted` that insert fails
+         * for the identical reason and is swallowed, so the row never exists:
+         * measured on this project as zero `database.connectRetry` rows across
+         * a week containing a real `EMAXCONNSESSION` incident.
+         *
+         * Restricted to pool exhaustion on purpose. A `connect_failure` is the
+         * single unhealthy pooler endpoint described in `@/db/resilience`; it
+         * recovers on the next attempt, it is already recorded, and putting it
+         * on stderr would be the noisy production logging this codebase does
+         * not have.
+         */
+        if (reason === "pool_exhausted") {
+          reportInfrastructureFault({
+            kind: "pool_exhausted",
+            operation: "database.read",
+            error,
+            detail: { attempt, delayMs },
+          });
         }
       },
     }),

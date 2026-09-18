@@ -18,7 +18,11 @@ import type {
   WalletBalance,
 } from "@/types";
 
-import { requireCurrentUserIdForPage, resolveUserId } from "../current-user";
+import {
+  requireCurrentUserIdForPage,
+  resolveUserId,
+  resolveUserIdForPage,
+} from "../current-user";
 import {
   countUnreadNotifications,
   listNotificationPreferences,
@@ -169,26 +173,26 @@ export async function getWalletBalance(userId?: string): Promise<WalletBalance> 
 }
 
 export async function getBankAccounts(userId?: string): Promise<BankAccount[]> {
-  const id = await resolveUserId(userId);
+  const id = await resolveUserIdForPage(userId);
   return cachedBankAccounts(id);
 }
 
 export async function getSavedWalletAddresses(
   userId?: string,
 ): Promise<SavedWalletAddress[]> {
-  const id = await resolveUserId(userId);
+  const id = await resolveUserIdForPage(userId);
   return cachedWalletAddresses(id);
 }
 
 export async function getSecurityActivity(
   userId?: string,
 ): Promise<SecurityActivity[]> {
-  const id = await resolveUserId(userId);
+  const id = await resolveUserIdForPage(userId);
   return cachedSecurityActivity(id);
 }
 
 export async function getSupportTickets(userId?: string): Promise<SupportTicket[]> {
-  const id = await resolveUserId(userId);
+  const id = await resolveUserIdForPage(userId);
   return cachedSupportTickets(id);
 }
 
@@ -244,7 +248,7 @@ export async function getTransactions(
  * indexed count that replaced the full read.
  */
 export async function getUnreadNotificationCount(userId?: string): Promise<number> {
-  const id = await resolveUserId(userId);
+  const id = await resolveUserIdForPage(userId);
   return cachedUnreadNotificationCount(id);
 }
 
@@ -386,6 +390,6 @@ export async function getUserSlices<K extends keyof UserSliceData>(
  * else's case.
  */
 export async function getOwnKycCase(userId?: string): Promise<OwnKycCase | null> {
-  const id = await resolveUserId(userId);
+  const id = await resolveUserIdForPage(userId);
   return cachedOwnKycCase(id);
 }

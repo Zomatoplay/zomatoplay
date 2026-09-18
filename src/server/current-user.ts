@@ -96,3 +96,32 @@ export async function requireCurrentUserIdForPage(): Promise<string> {
 export async function resolveUserId(userId?: string): Promise<string> {
   return userId ?? requireCurrentUserId();
 }
+
+/**
+ * The same, for reads that only ever run during a **page render**.
+ *
+ * WHY BOTH EXIST, AND WHY PICKING THE WRONG ONE IS A VISIBLE FAULT
+ * ----------------------------------------------------------------
+ * `requireCurrentUserIdForPage` above explains that the layout's gate does not
+ * stop the page beneath it: Next renders the two in parallel, so an
+ * unauthenticated request executes both, and whichever settles first decides
+ * what the visitor gets. `getUserSlices` was moved onto the redirecting
+ * resolver for exactly that reason — but its *siblings* in the same
+ * `Promise.all` were left on `resolveUserId`, which throws.
+ *
+ * `Promise.all` rejects with whichever promise rejects first, so on every
+ * primary screen the clean redirect and a bare `NotAuthenticatedError` were
+ * racing, and the error won often enough to be reported from
+ * `.next/server/app/(app)/page.js`. On `/settings/support` and
+ * `/settings/wallet`, which read nothing through `getUserSlices` at all, there
+ * was no race to lose: the throw was the only outcome.
+ *
+ * So the rule is about the *call site*, not the service: a read reached only
+ * from a server component uses this one and an absent session ends as a
+ * redirect. **A server action must keep `resolveUserId`** — an action that
+ * redirects gives its caller no way to show a message, and a `fetch`-invoked
+ * action would follow the redirect and read as success.
+ */
+export async function resolveUserIdForPage(userId?: string): Promise<string> {
+  return userId ?? requireCurrentUserIdForPage();
+}

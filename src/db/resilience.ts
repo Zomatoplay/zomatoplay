@@ -47,6 +47,25 @@ const TRANSIENT_CODES = new Set([
   "EPIPE",
   "ETIMEDOUT",
   "ECONNREFUSED",
+  /*
+   * No route to the host or the network, which is what a transiently
+   * unroutable endpoint produces rather than a refused or timed-out one.
+   *
+   * Added after an `ENETUNREACH 13.124.111.232:5432` was observed against one
+   * of the pooler's three A records during this project's own measurement
+   * session. It is the same class as `ECONNREFUSED` and `ETIMEDOUT` directly
+   * above — the connection was never established, so nothing reached the
+   * server and a replay cannot double anything — and it is worth retrying for
+   * the same reason `./client` documents: postgres.js re-resolves per attempt,
+   * so the next one is very likely a *different* endpoint.
+   *
+   * When the fault is the local machine rather than one endpoint (no default
+   * route at all), every attempt fails and the caller sees the error after the
+   * retry budget instead of immediately. That is a bounded delay inside a
+   * deadline the caller already agreed to, not a lost error.
+   */
+  "ENETUNREACH",
+  "EHOSTUNREACH",
   "CONNECTION_CLOSED",
   "CONNECTION_ENDED",
   "CONNECTION_DESTROYED",

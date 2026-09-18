@@ -632,6 +632,362 @@ Every item the previous pass left open was run against the live database.
 
 ---
 
+## Connection idle timeout — measured 2026-09-18, and it was wrong
+
+`idle_timeout` was 30s on the reasoning that 30s is "longer than a person's
+click-to-click interval". Untested, and false for the interval that actually
+governs, which is how long somebody spends **reading** a screen. A 35s pause
+then one navigation cost 4.5-8.3s against 0.8-2.1s with the timeout at 120 —
+a 4-7x penalty on read-then-tap. Default is now 120; full numbers in
+CHANGELOG 2026-09-17 §5d and in `db/client.ts` beside the setting.
+
+**This is the single largest user-visible latency change in either pass**, and
+it is a configuration value rather than a query optimisation, which is worth
+noticing: the pagination work below changed what the CRM *scales* to, and this
+changed what the user application *feels* like.
+
+**Revisit it at three or more concurrent instances.** An idle instance now
+holds its slots for two minutes rather than thirty seconds. That is the cost,
+and it lands on exactly the scenario the section below is about.
+
+## Incident investigation — 2026-09-18
+
+Four faults were reported together and are **four separate things**. Keeping
+them apart is most of the value here, because three of them look like each
+other from a browser.
+
+### 1. `EMAXCONNSESSION` — a shared budget, not a leak *(cause identified)*
+
+The pool is **not** implemented incorrectly. Verified by exhaustive grep: there
+is exactly one runtime `postgres()` call site (`db/client.ts`), it is cached on
+`globalThis`, and nothing constructs a pool per request. The scripts make their
+own with `max: 1`.
+
+What is actually happening is the arithmetic in "Scale ceiling" below, reached
+**on a developer machine rather than by traffic**. The fifteen session-mode
+slots belong to the *project*, and a laptop routinely runs more consumers than
+a deployment does: `next dev`, a `next start` left up to measure against,
+`npm test`, `npm run db:*` and `npm run tron:scan` are five separate Node
+processes, and each claims up to `DATABASE_POOL_MAX` (5).
+
+Measured during this session: starting one `npm test` run took the project from
+**1 to 6** held Supavisor session backends — five for its pool — while an
+unrelated `next start` held its own. Three such processes reach fifteen and the
+fourth consumer is refused. That is why the error appeared at zero traffic and
+why restarting "fixed" it: restarting released one process's five.
+
+`DIRECT_DATABASE_URL` is set to the **same** session-pooler endpoint as
+`DATABASE_URL` on this project, so `npm run db:*` draws from the same fifteen
+rather than from a separate budget. Worth knowing before concluding that only
+the app is consuming them.
+
+**Action taken:** none in code — the code is right. `.env.example` now says to
+set `DATABASE_IDLE_TIMEOUT=30` on a development machine, because the 120
+default (correct for production, see the section above) keeps each of those
+five processes holding its share for two minutes after its last query, which is
+what turns "three processes" into "at the ceiling".
+
+**Still recommended:** raise the project's pool size in the Supabase dashboard,
+or make the driver migration. Both are already argued below; nothing found in
+this pass changes that ordering.
+
+### 2. The incident erased its own evidence *(fixed)*
+
+`pipeline_events` held **zero** `database.connectRetry` rows for the whole week
+containing a real `EMAXCONNSESSION` — although `resilientRead` classifies that
+error correctly, retries it, and calls `recordPipelineEvent` on every retry.
+
+The reason is structural: `recordPipelineEvent` buffers, and the buffer is
+flushed by `writeRows()` → `getDb().insert(...)`, **over the pool that could
+not give out a connection**. The insert fails for the identical reason and is
+swallowed by design. So the one failure mode that most needs a record is the
+one the table cannot hold, and it had to be diagnosed from a terminal
+scrollback instead.
+
+`reportInfrastructureFault()` (`server/observability.ts`) now writes one
+structured, redacted JSON line to **stderr** when a read retries on pool
+exhaustion — the only channel that survives an unreachable database, and one
+Vercel captures in Runtime Logs. Rate-limited to one line per kind per 30s with
+the suppressed count carried forward, because exhaustion arrives in bursts.
+
+Deliberately **not** extended to ordinary connect failures: those recover on
+the next attempt, are already recorded, and would be the noisy production
+logging this codebase does not have.
+
+### 3. `NotAuthenticatedError` — a race between two identity resolvers *(fixed)*
+
+Not caused by the database, and not a weakness in the auth check. A database
+fault propagates as the driver error and `(app)/layout.tsx` catches it via
+`isInfrastructureFailure`; `getAuthenticatedAccount` never turns a database
+error into "signed out".
+
+The cause was that page-render reads were split across two resolvers.
+`getUserSlices` uses `requireCurrentUserIdForPage` and redirects cleanly — but
+its **siblings in the same `Promise.all`** were left on `resolveUserId`, which
+throws. `Promise.all` rejects with whichever rejects first, so every primary
+screen was racing a clean redirect against a bare `NotAuthenticatedError`. On
+`/settings/support` and `/settings/wallet`, which read nothing through
+`getUserSlices` at all, there was no race to lose.
+
+Reproduced and fixed under A/B, production build, same eight unauthenticated
+routes:
+
+| | `NotAuthenticatedError` logged |
+|---|---|
+| before | **8 of 8 requests** — stack `.next/server/app/(app)/page.js`, the exact one reported |
+| after | **0 of 8** |
+
+The HTTP status was 307 in both cases: the redirect won the *response* every
+time in a quiet single-request test, which is why this presented as log noise
+rather than a broken page, and why it would present as a broken page under
+load. `resolveUserIdForPage()` now backs the seven reads that only ever run
+during a page render. **Server actions deliberately keep `resolveUserId`** — an
+action that redirects gives its caller no way to show a message.
+
+### 4. "localhost refused to connect" — the server was not running *(not an app fault)*
+
+`ERR_CONNECTION_REFUSED` has no HTTP status, so it is not a 4xx, a 5xx, an RSC
+error or a database error: nothing answered the socket. Ruled out as an
+address-family problem by measurement — `next start` binds dual-stack (`*:3000`)
+and `127.0.0.1`, `[::1]` and `localhost` all return 200.
+
+The reported waterfall is consistent with that and with nothing else: the RSC
+requests for `/plans`, `/wallet`, `/settings` and `/transactions` *succeeded*
+with ordinary timings, then the `/referral` document and its RSC request failed
+with no response, and other documents were cancelled. A server-side application
+error would have produced a 500 with a body. The canceled requests are a
+consequence of the navigation being abandoned, not separate faults.
+
+### 5. The link nobody had made: this machine loses IPv4 *(local, and it explains a lot)*
+
+Observed directly, mid-session, and it stopped all database work for the rest
+of it:
+
+```
+ip -4 route            -> empty (no IPv4 route at all)
+ip -4 -br addr         -> only 127.0.0.1/8 on lo
+ip route get 8.8.8.8   -> Network is unreachable
+db probe               -> ENETUNREACH 13.124.111.232:5432
+```
+
+The link was **IPv6-only with no NAT64** (`getent ahostsv6` returns
+`::ffff:15.165.245.138`, an IPv4-mapped address, not a `64:ff9b::` prefix).
+Supabase's pooler publishes **only A records**. So during these periods the
+database is unreachable no matter what the application does, and
+`DATABASE_FORCE_IPV4` cannot help — there is no IPv4 to force it onto.
+
+This is worth stating plainly because it produces symptoms that read exactly
+like application faults: `CONNECT_TIMEOUT` storms, multi-second connections,
+and reads that fail and then work again minutes later "after a restart". Before
+concluding anything about the pooler or the pool, run those four commands.
+
+**It does not apply to Vercel**, which has IPv4 egress. It is also a candidate
+explanation for part of the long-standing "one of the three A records accepts
+TCP and never completes the handshake" note in `db/resilience.ts` — CLAT
+translation flakiness would look endpoint-specific from here. Not proven;
+recorded so it is checked next time rather than assumed.
+
+**Change made:** `ENETUNREACH` and `EHOSTUNREACH` are now in `TRANSIENT_CODES`
+(`db/resilience.ts`, with a test). They are the same class as `ECONNREFUSED`
+and `ETIMEDOUT`, which were already retried — the connection never reached the
+server, so nothing can be doubled by a replay, and postgres.js re-resolves per
+attempt so a retry lands on a different endpoint.
+
+### 6. Admin pages read the database for callers the gate is rejecting *(documented, NOT fixed)*
+
+**Evidence**, measured during the outage above, so the cost was visible:
+
+| | status | time to first byte | connection held |
+|---|---|---|---|
+| every `(app)` route | 307 | ~50ms | ~58ms |
+| `/admin`, `/admin/users` | 307 | ~45ms | **15.0s** |
+
+The redirect itself is fast. The fifteen seconds is the request being held
+*after* the response by a read that runs to `DATABASE_QUERY_TIMEOUT_MS`.
+
+It is the same parallel layout/page render as item 3: `(console)/layout.tsx`
+redirects an anonymous caller, but `/admin/page.tsx` still executes
+`getAdminDashboard()` and `/admin/users/page.tsx` still executes
+`getAdminUsersPage()`. **Neither service function performs any operator or
+permission check** — they rely entirely on the layout gate.
+
+**No data is exposed.** The response is a 307 with no body and Next discards
+the page output. This is a resource and robustness problem, and it is the same
+gap §15.8 item 2 has always listed: *server-side authorization on every admin
+read*, not only on mutations.
+
+**Partially addressed:** `(console)/layout.tsx` now resolves
+`getAuthPrincipal()` first — free, local, request-memoised — and redirects
+before starting `getAdminShell()`. That comment previously *claimed* an
+anonymous caller reached neither read; it was false and is now true. Measured
+honestly, it produced **no latency change** (both before and after hold the
+connection 15.3s and log one deadline error, because `shellPromise.catch()`
+swallows the shell read's rejection). It is one fewer connection acquisition
+per anonymous admin request, which is worth having while the budget is fifteen,
+and it is not a speed fix.
+
+**Why the rest was not done in this pass:** the remaining fix is an
+`adminRead()` seam in `admin.service.ts` that asserts an operator and the area
+permission before delegating to `fromDatabase()`, applied to every admin read
+entry point — roughly twenty call sites that change the failure mode of every
+admin screen. The database was unreachable for the remainder of the session
+(item 5), so it could not have been verified. **An authorization change must
+not ship unverified.**
+
+**Recommended next action, in order:** build `adminRead()`; convert the reads;
+run the integration suite with a database; then re-measure `/admin` cold.
+
+### Verified once IPv4 returned — 2026-09-18
+
+The network came back late in the same pass, so the five items previously
+listed here as unverified were measured rather than left open. What follows is
+what the measurements actually say.
+
+7. **`EMAXCONNSESSION` reproduced verbatim, and it is a *process* count, not a
+   request count.** Against a production build with a real session, a bounded
+   ladder on `/wallet/transactions` — 1, 5, 10, 15, 20 concurrent authenticated
+   requests — produced **zero** errors and zero non-200s:
+
+   | concurrency | wall | p50 | max |
+   |---|---|---|---|
+   | 1 | 768ms | 749ms | 749ms |
+   | 5 | 1,208ms | 871ms | 1,178ms |
+   | 10 | 2,261ms | 1,627ms | 2,212ms |
+   | 15 | 3,053ms | 2,298ms | 2,980ms |
+   | 20 | 4,212ms | 2,843ms | 4,118ms |
+
+   One instance cannot reach the ceiling at any concurrency, because it never
+   holds more than `DATABASE_POOL_MAX`. Four Node processes each claiming five
+   reproduced it immediately and exactly:
+   `PostgresError: (EMAXCONNSESSION) max clients reached in session mode -
+   max clients are limited to pool_size: 15` — first process 5 of 5, second
+   3 of 5, third 2 of 5. **This is the whole root cause**: the budget is
+   project-wide and is spent by process count.
+
+8. **Exhaustion degrades this application; it does not fail it — and that is
+   why it is hard to see.** With all fifteen slots held elsewhere, a restarted
+   instance still answered `/` **200** (TTFB 4.10s against a normal 0.39s), and
+   ten concurrent `/wallet` requests all returned **200**, serialised from
+   1.79s to 6.40s. postgres.js keeps whatever connections it managed to open
+   and queues on them, so the symptom is a slow site, not an error page.
+
+9. **The pool warm-up swallows an `EMAXCONNSESSION` refusal silently, and
+   nothing else records it.** `warmConnectionPool` catches everything on the
+   stated grounds that "whatever is actually wrong will be reported properly by
+   the first real query — with its deadline, its retry and its error category."
+   **That is now measured as false for pool exhaustion.** Across the
+   reproduction above, `pipeline_events` gained **zero** `database.connectRetry`
+   rows and stderr carried **zero** `infrastructure.fault` lines, because the
+   first real query did not fail — it merely took ten times as long. So an
+   instance that comes up crippled reports nothing at all, anywhere.
+
+   `reportInfrastructureFault()` does not cover this: it is wired to
+   `resilientRead`'s retry, which never ran.
+
+   **Not fixed here, deliberately.** `src/db/warmup.ts` may not import
+   `src/server/observability.ts` — nothing under `src/db/` imports `server-only`
+   or Next (CLAUDE.md §16.2), and that rule is what lets the migration and seed
+   scripts run these modules as plain Node. Reporting from there needs a seam —
+   most plausibly an optional fault-reporter callback passed into
+   `createDatabase`/`warmConnectionPool` by whichever caller has one — and that
+   is a module-boundary decision worth making deliberately rather than at the
+   end of an incident pass. **Recommended next action:** add that callback,
+   classify with the existing `isPoolExhaustionError` from `@/db/resilience`,
+   and emit through `reportInfrastructureFault` from the `src/server` side.
+
+10. **The database-dependent tests ran: 338 tests, 336 pass, 1 fail, 1
+    cancelled, 32 suites** (~37 minutes). The known-red `money-lifecycle`
+    fixture bug (CLAUDE.md §16.7) did **not** fire this run, which is expected —
+    it depends on physical row order — and is not evidence that it is fixed.
+
+    The one real failure is `src/server/database.test.ts:71`, "an unresponsive
+    database fails on a deadline rather than hanging", `took 15014ms` against an
+    `elapsed < 15_000` assertion; test 50 is then cancelled by the pending
+    promise it leaves behind. Two causes, both pre-existing:
+
+    - **The test's own determinism mechanism does not work.** It sets
+      `DATABASE_QUERY_TIMEOUT_MS = "2000"` inside the test body, but
+      `QUERY_TIMEOUT_MS` in `src/server/database.ts` is a **module-scope
+      `const`**, read once at import. The deadline stays 15s, so the assertion
+      is left with 3s of headroom over the 12s retry budget instead of the 13s
+      the author intended.
+    - **That headroom is lost under the full parallel suite.** The file passes
+      **5/5 in isolation** and fails only inside the 37-minute run. It also
+      needs a working IPv4 default route for `10.255.255.1` to blackhole rather
+      than fail fast, which is why it passed during the outage.
+
+    Presetting the variable in the environment does not rescue it either: the
+    deadline then fires at 2s and the test is cancelled by the connection
+    attempt that outlives it — which is the known structural fact that
+    `withTimeout`'s `Promise.race` **does not cancel the underlying query**.
+    Fixing this properly means reading the deadline per call *and* giving the
+    test a way to wait out the abandoned socket; it is a test-harness change,
+    not a production one, and it is not attempted here.
+
+11. **Authenticated production latency — measured, and healthy.** Production
+    build, real session, `npm run start`, idle server. TTFB is when the shell
+    can paint; total is the complete streamed document.
+
+    | user route | TTFB cold / warm | total cold / warm |
+    |---|---|---|
+    | `/` | 1,386 / 389ms | 4,014 / 1,209ms |
+    | `/plans` | 403 / 693ms | 792 / 1,077ms |
+    | `/wallet` | 406 / 381ms | 1,380 / 1,590ms |
+    | `/wallet/deposit` | 429 / 388ms | **5,484 / 5,259ms** |
+    | `/wallet/withdraw` | 414 / 387ms | 763 / 780ms |
+    | `/wallet/transactions` | 395 / 375ms | 772 / 717ms |
+    | `/referral` | 398 / 400ms | 1,134 / 1,101ms |
+    | `/settings` | 424 / 400ms | 795 / 786ms |
+    | the seven `/settings/*` pages | 377–426 / 378–492ms | 726–913 / 724–887ms |
+
+    Every admin route answered **200 in 410–1,271ms** (`/admin` 1,271ms,
+    `/admin/users` 546ms, `/admin/system-logs` 932ms, the rest 410–930ms).
+
+    Two things worth keeping: **TTFB is ~400ms almost everywhere**, which is the
+    two-round-trip floor §16.1a predicts and means the shell and skeleton are
+    never the thing a person waits for; and the 15s hold recorded in item 3
+    above is an **unauthenticated**-path artefact — with a real operator session
+    `/admin` is 1.3s.
+
+12. **`/wallet/deposit` is the one genuine outlier, and it is a configuration
+    problem rather than a code one.** 5.2–5.5s in both cold and warm passes,
+    with a 388ms TTFB — so the shell and the "USDT (TRC-20) only" warning paint
+    immediately and only the address panel suspends, exactly as that page's
+    comment claims. `pipeline_events` names the cost precisely:
+
+    | operation | p50 | max |
+    |---|---|---|
+    | `deposit.address.get.complete` | 4,880ms | 5,068ms |
+    | `deposit.address.sweep` | 1,659ms | 5,533ms |
+
+    This is §18.8's designed behaviour — `getOrCreateDepositAddress` sweeps **on
+    pool exhaustion** — firing on every open, because the address pool holds
+    exactly one address (§23) and another account already holds it. **The fix is
+    to add addresses to `TRON_DEPOSIT_POOL_ADDRESSES`**, which is configuration
+    the operator generates with their own tooling. Do not "optimise" the sweep
+    away; it is what makes a one-address pool usable at all.
+
+13. **Instrumentation confirms the auth design.** Over the whole measured
+    window: `auth.resolvePrincipal` **p50 11ms** (max 941ms, the first call
+    fetching the JWKS) — the local ES256 verification of §19.4 behaving as
+    documented; `auth.resolveAccount` p50 340ms, one round trip;
+    `render.complete` p50 366ms. **Zero failed `pipeline_events` rows** across
+    the entire session, including the exhaustion reproduction.
+
+### Still not verified
+
+- **`adminRead()`** — item 6 above. Designed, not built.
+- **Doc drift:** CLAUDE.md §15.2 describes `/admin/users/[id]` as SSG, "one
+  page per seed user". `npm run build` now reports it as `ƒ (Dynamic)`. One of
+  the two is wrong; which was not investigated.
+- **A census caveat worth not repeating.** `application_name = 'Supavisor'` in
+  `pg_stat_activity` counts Supavisor's own server-side pool to Postgres, which
+  persists after every client has disconnected — it read 15 immediately after
+  the reproduction was torn down and the application was healthy again. It is
+  **not** a count of session-mode client slots, and the earlier "1 → 6 for one
+  `npm test`" reading should be understood that way. The authoritative signal
+  for the ceiling is the refusal itself.
+
 ## Scale ceiling — the connection budget, measured 2026-09-17
 
 The question "what happens at 1k / 2k / 5k / 10k users" has an answer, and it

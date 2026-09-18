@@ -8,6 +8,7 @@ import {
   toSessionView,
   AdminAuthorizationError,
 } from "@/server/admin/session";
+import { getAuthPrincipal } from "@/server/auth/session";
 import { getAdminShell } from "@/server/services/admin.service";
 import { isInfrastructureFailure } from "@/server/errors";
 import {
@@ -89,12 +90,49 @@ async function renderConsoleLayout(children: React.ReactNode) {
    *
    * The exposure that creates is bounded and small, and worth stating exactly:
    * a caller who already holds a **verified Supabase JWT** but is not an
-   * operator can now cause one extra `platform_settings` read whose result is
-   * never sent to them. `getAuthPrincipal()` is resolved first and costs no
-   * round trip — it verifies the token's signature locally — so an anonymous or
-   * forged-token caller reaches neither read. Nothing here returns data before
-   * `operator` has been checked.
+   * operator can cause one extra `platform_settings` read whose result is never
+   * sent to them. Nothing here returns data before `operator` has been checked.
+   *
+   * THE PRINCIPAL IS RESOLVED FIRST, AND IT HAS TO BE
+   * -------------------------------------------------
+   * That property was *claimed* here before it was true. The shell read was
+   * started at the top of this function, before anything had looked at the
+   * request at all, so an anonymous caller — no cookie, no token — did reach
+   * it. Measured during a real outage on 2026-09-18, with the pooler
+   * unreachable: `GET /admin` with no session took **15.2 seconds** to answer
+   * and then redirected, because the discarded `platform_settings` read sat on
+   * the full `DATABASE_QUERY_TIMEOUT_MS` deadline. Every `(app)` route answered
+   * the same request in ~200ms, because none of them reads anything before the
+   * gate.
+   *
+   * `getAuthPrincipal()` costs no round trip — it verifies the token's
+   * signature in-process — and it is request-memoised, so `getCurrentOperator()`
+   * below reuses this exact call rather than repeating it. Gating on it
+   * therefore keeps the concurrency win for a real operator and takes the
+   * unauthenticated request off the database entirely.
    */
+  let principal;
+  try {
+    principal = await getAuthPrincipal();
+  } catch (error) {
+    // Same reasoning as the operator gate below: "we could not check" is not a
+    // verdict, so the console is refused rather than the credential blamed.
+    if (isInfrastructureFailure(error)) {
+      recordPipelineEvent({
+        pipeline: "admin",
+        operation: "admin.gate.degraded",
+        status: "failed",
+        message: "The operator gate could not verify the session; console refused",
+        errorMessage: describeError(error),
+        metadata: errorDiagnostics(error),
+      });
+      return <ConsoleUnavailable />;
+    }
+    throw error;
+  }
+
+  if (!principal) redirect("/admin/login");
+
   const shellPromise = getAdminShell();
   // Claimed immediately: if the operator check redirects, nothing awaits this
   // promise, and an unhandled rejection would take the process down.

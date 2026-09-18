@@ -139,14 +139,47 @@ function createDatabase({ url, max }: ClientOptions) {
      * trade for a serverless deployment, where instances are idle far more
      * often than they are busy.
      *
-     * Thirty seconds: longer than a person's click-to-click interval, so
-     * ordinary navigation still finds a warm connection, and short enough that
-     * an abandoned instance is not holding a third of the project's budget a
-     * minute later. `DATABASE_IDLE_TIMEOUT` overrides it; `0` restores the old
-     * behaviour and should only be used on a deployment that really is one
-     * long-running server with the pool to itself.
+     * IT WAS 30, AND THE REASON GIVEN FOR 30 WAS WRONG
+     * ------------------------------------------------
+     * 30 was chosen as "longer than a person's click-to-click interval, so
+     * ordinary navigation still finds a warm connection". That was never
+     * tested: the measurement behind it was *wait 25s* against the **20s**
+     * timeout it was replacing, so nothing ever priced a pause that lands just
+     * past the window. Measured 2026-09-18, production build, real session,
+     * a 35s pause and then one navigation:
+     *
+     *   page        idle_timeout 30    idle_timeout 120
+     *   /settings   8.35s              0.84s
+     *   /wallet     7.57s              1.42s
+     *   /plans      4.54s              0.94s
+     *   /referral   4.81s              2.11s
+     *
+     * The same pages warm are 0.76-1.8s, so at 30 an ordinary read-then-tap
+     * was paying a 4-7x penalty. Thirty seconds is longer than a *click-to-
+     * click* interval and far shorter than a **reading** interval, which is
+     * the one that actually governs: somebody looking at their balance, or
+     * comparing two plans, is past it before they tap anything.
+     *
+     * 120 IS NOT A RETURN TO `0`, AND THE DIFFERENCE IS THE WHOLE POINT
+     * ----------------------------------------------------------------
+     * `0` meant a process held its share of the fifteen **until it died**.
+     * 120 means it hands them back two minutes after its last query. The
+     * budget is still shared over time; the window is simply wide enough to
+     * cover a human reading a screen. The cost is real and bounded: an idle
+     * instance now holds its connections for two minutes instead of thirty
+     * seconds, so a second instance starting during a lull waits longer for a
+     * slot.
+     *
+     * That trade is right for one or two instances and gets worse as they
+     * multiply — the same ceiling every other note here runs into. **Lower it
+     * toward 30 if the deployment routinely runs three or more concurrent
+     * instances**, and read FUTURE_TASKS' "Scale ceiling" first, because at
+     * that point the timeout is not the problem. `DATABASE_IDLE_TIMEOUT`
+     * overrides it without a deploy; `0` restores the behaviour that caused
+     * `EMAXCONNSESSION` and should only be used on a deployment that really is
+     * one long-running server with the pool to itself.
      */
-    idle_timeout: Number(process.env.DATABASE_IDLE_TIMEOUT ?? 30),
+    idle_timeout: Number(process.env.DATABASE_IDLE_TIMEOUT ?? 120),
     /**
      * How long a connection may live before it is replaced.
      *

@@ -25,6 +25,10 @@ test("classification", async (t) => {
     assert.equal(isTransientConnectionError(driverError("CONNECT_TIMEOUT")), true);
     assert.equal(isTransientConnectionError(driverError("ECONNRESET")), true);
     assert.equal(isTransientConnectionError(driverError("CONNECTION_CLOSED")), true);
+    // Observed against one of the pooler's three A records; the same class as
+    // ECONNREFUSED, and a retry re-resolves onto a different endpoint.
+    assert.equal(isTransientConnectionError(driverError("ENETUNREACH")), true);
+    assert.equal(isTransientConnectionError(driverError("EHOSTUNREACH")), true);
   });
 
   await t.test("treats every SQLSTATE class 08 as transient", () => {

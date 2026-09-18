@@ -512,6 +512,88 @@ function readCode(error: Error): string {
   return typeof code === "string" || typeof code === "number" ? String(code) : "";
 }
 
+/* -------------------------------------------------------------------------- */
+/* The one fault this table cannot record about itself                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A single structured stderr line for a failure to *acquire a connection*.
+ *
+ * WHY THIS EXISTS, AND WHY IT IS NOT AN EXCEPTION TO THE NO-LOGGING RULE
+ * ----------------------------------------------------------------------
+ * Every other signal in this file is written to `pipeline_events` — which is
+ * written over the runtime pool, by `writeRows()` → `getDb().insert(...)`.
+ * That is correct for everything the machinery does, and it is *structurally
+ * incapable* of recording the one failure where the pool itself is
+ * unavailable: the insert needs the connection that could not be got, fails
+ * for the same reason, and is swallowed by design (rule 2 at the top of this
+ * file).
+ *
+ * Verified, not assumed: after an `(EMAXCONNSESSION) max clients reached in
+ * session mode` incident on this project, `pipeline_events` held **zero**
+ * `database.connectRetry` rows and no matching text for the whole surrounding
+ * week, although `resilientRead` classifies and retries that error correctly
+ * and calls `recordPipelineEvent` on every retry. The incident erased its own
+ * evidence, which is why it had to be diagnosed from a terminal scrollback.
+ *
+ * stderr is the only channel that survives a database that cannot be reached.
+ * Vercel captures it in Runtime Logs; `next start` prints it.
+ *
+ * KEEPING IT QUIET
+ * ----------------
+ * Pool exhaustion arrives in bursts — every concurrent render fails at once —
+ * so an unthrottled line here would be noise at exactly the moment the logs
+ * need to be readable. One line per kind per `FAULT_LOG_WINDOW_MS`, with the
+ * suppressed count carried on the next one that gets through, so a burst reads
+ * as a burst rather than as a single event.
+ *
+ * It carries named scalars and a `redact()`ed message, the same rule §22.2
+ * applies to `metadata`. No cookie, token, key, connection string or bound
+ * parameter reaches it.
+ */
+const FAULT_LOG_WINDOW_MS = Number(
+  process.env.DATABASE_FAULT_LOG_WINDOW_MS ?? 30_000,
+);
+
+const faultLog = new Map<string, { at: number; suppressed: number }>();
+
+export function reportInfrastructureFault(fault: {
+  /** A stable, low-cardinality label, e.g. `pool_exhausted`. */
+  kind: string;
+  /** What was being attempted — an operation name, never a payload. */
+  operation: string;
+  error: unknown;
+  /** Named scalars only. */
+  detail?: Record<string, string | number | boolean | null | undefined>;
+}): void {
+  try {
+    const now = Date.now();
+    const seen = faultLog.get(fault.kind);
+    if (seen && now - seen.at < FAULT_LOG_WINDOW_MS) {
+      seen.suppressed += 1;
+      return;
+    }
+    faultLog.set(fault.kind, { at: now, suppressed: 0 });
+
+    const line = {
+      event: "infrastructure.fault",
+      kind: fault.kind,
+      operation: fault.operation,
+      correlationId: currentCorrelationId(),
+      ...(seen && seen.suppressed > 0
+        ? { suppressedSinceLastLine: seen.suppressed }
+        : {}),
+      ...fault.detail,
+      error: redact(describeError(fault.error)).slice(0, 500),
+    };
+    // Deliberately one line of JSON: greppable, parseable by a log drain, and
+    // impossible to interleave with another request's output.
+    console.error(JSON.stringify(line));
+  } catch {
+    // Diagnosing a fault must never become a second fault.
+  }
+}
+
 export function redact(message: string): string {
   return message
     .replace(/postgres(ql)?:\/\/[^\s"']+/gi, "postgres://[redacted]")

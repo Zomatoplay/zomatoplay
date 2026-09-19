@@ -128,18 +128,77 @@ service to it. Four tests pin the stop conditions without needing a database.
 
 ## H4 — Scheduled jobs run once a day
 
-`vercel.json` schedules `/api/cron/scan-deposits` at 03:00 and
-`/api/cron/settle-investments` at 04:00 — the Hobby-plan limit.
+**Updated 2026-09-19.** All **four** jobs are now once-daily, and that is a
+deliberate temporary state, not a drift.
 
-**Consequences, plainly:** a deposit that arrives while nobody has the deposit
-page open waits up to **24 hours** to be credited. An earning period that
-becomes due at 04:01 is credited ~24 hours late. Neither loses money — both
-engines are catch-up correct and idempotent — but both are visible to a
-customer as the platform being broken.
+| Job | Schedule (UTC) | IST | Daily OK? |
+|---|---|---|---|
+| `/api/cron/scan-deposits` | `0 3 * * *` | 08:30 | degraded — see below |
+| `/api/cron/settle-investments` | `0 4 * * *` | 09:30 | **yes, by design** |
+| `/api/cron/release-deposit-addresses` | `0 5 * * *` | 10:30 | degraded, mitigated |
+| `/api/cron/release-commissions` | `30 18 * * *` | **00:00** | **yes, by design** |
 
-**Fix:** a paid plan (`*/5 * * * *` for the scanner, hourly for settlement), or
-drive the same two URLs from any external scheduler. Nothing about either route
-is Vercel-specific; both are `CRON_SECRET`-authorised.
+**What changed and why.** The address release ran at `*/15 * * * *` and
+**Vercel rejected the deploy** — the symptom was a failed push, not a job that
+quietly stopped. Hobby caps every cron at **once per day** and rejects a finer
+expression at deploy time. It was lowered to `0 5 * * *`: after the scan, which
+is the ordering the route's own comment requires, since the scan is what turns
+a `confirming` deposit terminal and therefore releasable.
+
+**Two corrections to what this file and CLAUDE.md used to claim.** Verified
+against Vercel's current docs on 2026-09-19:
+
+- **Hobby allows 100 cron jobs per project — the same as Pro and Enterprise.**
+  The *number* of jobs was never the constraint, on any plan. Earlier notes
+  here and in CLAUDE.md §18.5 said otherwise, and the sweep-on-the-scan-route
+  and prune-rides-the-sweep decisions were both justified by it. Those
+  decisions are still right, for the better reason that a second trigger is
+  cheap insurance against a scheduler that is not running.
+- **Hobby honours a scheduled time only to within the hour.** `0 1 * * *` fires
+  anywhere in 01:00–01:59. Nothing here breaks on that — every job's
+  eligibility is `<= now` on a stored column — but it means the four must stay
+  **staggered rather than stacked**, or four concurrent 60-second functions
+  contend for a 5-connection pool against the project's 15-connection ceiling
+  (see "Scale ceiling").
+
+**Consequences, plainly, at a daily cadence:**
+
+- **Deposit scan — the customer-visible one.** A transfer arriving while nobody
+  has `/wallet/deposit` open waits up to ~24 hours to be credited. The
+  five-second `DepositWatcher` covers only the watched-page case. No money is
+  lost — recording is idempotent on `(chain, tx_hash)` and the cursor never
+  rewinds — but to a customer it reads as the platform being broken. **This is
+  the one job that genuinely needs a tighter schedule.**
+- **Settlement — no real consequence.** The finest earning period is `daily`,
+  so a daily pass is the correct cadence. An hourly schedule only narrows the
+  window between a period falling due and being credited.
+- **Address release — degraded, mitigated, not user-visible.** An address held
+  by somebody who never paid is returned within a day rather than fifteen
+  minutes. The mitigations are structural: `/api/cron/scan-deposits` sweeps at
+  the tail of its own pass, and `getOrCreateDepositAddress` sweeps **on pool
+  exhaustion** — at the moment capacity is needed, with no scheduler involved.
+  The real fix for pool pressure is more addresses in
+  `TRON_DEPOSIT_POOL_ADDRESSES`, not a tighter sweep.
+- **Commission release — none.** Once daily at business midnight *is* the
+  specification (CLAUDE.md §10d). The ±59 min precision makes it 00:00–00:59
+  IST, which `release_at <= now` absorbs.
+
+**One env change went with this.** `TRON_LOOKBACK_MS` defaults to exactly 24h,
+which equalled the new cadence — and for an address whose cursor has never seen
+a transfer, every pass falls back to that window. With ±59 min precision two
+passes can be nearly 26 hours apart, so one late or failed pass could put a
+transfer permanently out of reach. Set to **72h** (`259200000`) in
+`.env.example` and `.env.local`. **It must also be set in the Vercel project's
+environment variables** — that is not in the repository and nothing here can do
+it.
+
+**Fix, when moving off Hobby.** In priority order: the scanner to `*/5 * * * *`
+or `*/15 * * * *`, the address sweep back to `*/15 * * * *`, settlement to
+hourly if desired, the commission release left exactly where it is. Either a
+paid Vercel plan or any external scheduler (AWS EventBridge → the same URLs);
+all four routes are plain `CRON_SECRET`-authorised GETs with nothing
+Vercel-specific about them, and all four also accept POST so an operator can
+force a pass with curl. Restore `TRON_LOOKBACK_MS=86400000` at the same time.
 
 ## H10 — No rate limiting anywhere in the application
 
@@ -1141,11 +1200,13 @@ had never been applied and whose index never matched its query. See
    session but never rendered on screen: no Chrome extension was connected.
    This is the cheapest item here and the only one gating a change that has
    already shipped to `Main`.
-1. **H4 + the cron-count problem** (a daily scan is a customer-visible defect on
-   mainnet, and there are **four** scheduled jobs — one at `*/15` — against a
-   Hobby plan that caps both the count and the frequency at far less. The
-   deployment is therefore already committed to Pro or to an external
-   scheduler, and that should be a stated decision rather than an accident)
+1. **H4 — the deposit scan's cadence.** Partly addressed 2026-09-19: all four
+   jobs are now daily and the deploy is unblocked. What remains is the part
+   that was always the real problem — **a daily scan is a customer-visible
+   defect on mainnet**, and no amount of scheduling discipline fixes it within
+   Hobby's once-a-day cap. The deployment is therefore committed to Pro or to
+   an external scheduler; the daily schedule is an explicit holding position,
+   not a solution. The cron *count* was never a constraint — see H4.
 2. **Monitoring + backups** (the smallest work with the largest downside if skipped)
 3. **H10** (rate limiting — the three candidate designs are assessed above)
 4. **H1** (wrong-asset visibility)
@@ -1266,12 +1327,12 @@ payment date. An operator releases those by hand, and the CRM marks them
   not exist is a queryable `plan_tier_history` equivalent to
   `plan_rate_history`. Add one if tier changes become frequent enough to want
   a timeline rather than a log search.
-- **Three cron jobs now, on a plan that allows one a day.** `vercel.json`
-  schedules the deposit scan, settlement and the commission release. Hobby caps
-  the *number* of jobs as well as the frequency. If a deploy is rejected, move
-  them to an external scheduler — all three are plain `CRON_SECRET`-authorised
-  URLs — rather than dropping one. Same constraint as H4 above, and it should
-  be solved with it.
+- **Cron jobs, on a plan that allows one a day.** ~~Hobby caps the *number* of
+  jobs as well as the frequency.~~ **Corrected 2026-09-19: it does not.** Hobby
+  allows 100 cron jobs per project, the same as Pro; only frequency (once a
+  day) and precision (±59 min) are capped. `vercel.json` now schedules four,
+  all daily and staggered, after the address release was lowered from `*/15`.
+  See H4 above, which supersedes this note.
 - **`releaseDueCommissions()` is bounded to 500 entries a pass** and takes no
   global lock. Every payment is individually guarded, so overlapping passes are
   wasted work rather than double payment — the same shape as the note on

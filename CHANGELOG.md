@@ -4,6 +4,119 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-09-19 (Cron schedules made Vercel Hobby-compatible — temporary)
+
+A deploy was being **rejected at build time**, not failing at runtime:
+
+> Hobby accounts are limited to daily cron jobs. This cron expression would run
+> more than once per day.
+
+`/api/cron/release-deposit-addresses` was scheduled `*/15 * * * *` — 96
+invocations a day against a plan that allows one. The other three jobs were
+already daily and compliant.
+
+### What changed
+
+`vercel.json` — **one line.** `*/15 * * * *` → `0 5 * * *`. The other three
+schedules are untouched:
+
+| Job | Schedule (UTC) | IST |
+|---|---|---|
+| `/api/cron/scan-deposits` | `0 3 * * *` | 08:30 |
+| `/api/cron/settle-investments` | `0 4 * * *` | 09:30 |
+| **`/api/cron/release-deposit-addresses`** | **`0 5 * * *`** *(was `*/15 * * * *`)* | 10:30 |
+| `/api/cron/release-commissions` | `30 18 * * *` | 00:00 |
+
+`0 5` rather than the requested "near 00:00 IST" for two reasons. It must sit
+**after** the deposit scan — the scan is what turns a `confirming` deposit
+terminal and therefore releasable, so sweeping first would refuse addresses
+that pass had just freed. And Hobby honours a schedule only to within the hour,
+so four jobs stacked in one window would run concurrently: four 60-second
+functions against a 5-connection pool and the project's 15-connection ceiling.
+Staggered by an hour, they do not collide.
+
+`TRON_LOOKBACK_MS` — **set to `259200000` (72h)** in `.env.example` and
+`.env.local`. The code default is exactly 24h, which now equals the cron
+cadence. An address whose `chain_scan_state` cursor has never seen a transfer
+falls back to that window on every pass, and with ±59 min precision two passes
+can be nearly 26 hours apart — so one late or failed pass could put a real
+transfer permanently outside every subsequent window. Verified loaded:
+`getTronConfig()` reports `lookbackMs: 259200000 (72h)`, `network: mainnet`,
+`requireConfirmation: true`.
+
+> **Not done here, and it must be done:** the same variable has to be set in
+> the **Vercel project's environment variables**. `.env.local` is git-ignored
+> and never deploys, and `.env.example` is a template nothing reads at runtime.
+
+### Two comments corrected — no logic touched
+
+Both cron routes justified a design decision with a claim that is false.
+Verified against Vercel's docs on 2026-09-19: **Hobby allows 100 cron jobs per
+project, the same as Pro and Enterprise.** The number of jobs is not capped on
+any plan; only frequency (once a day) and precision (±59 min) are.
+
+- `scan-deposits/route.ts` — the tail sweep was justified by the job cap. It is
+  still correct, for the better reason that a second trigger is cheap insurance
+  against a scheduler that is not running.
+- `release-deposit-addresses/route.ts` — the `prunePipelineEvents()` piggyback
+  was justified the same way. Also still correct: a fifth cron would be allowed
+  and would buy nothing, because on a daily schedule it would run exactly as
+  often as this one does.
+
+The same route gained a `TEMPORARY SCHEDULE` block recording why it is daily,
+what degrades, and what to restore.
+
+### Why daily is safe for all four
+
+Every job's eligibility is a property of a **row**, not of the run — a pass
+that does not happen is *late*, not lossy, and the next one finds everything
+still outstanding. Commission release is `release_at <= now`; settlement walks
+every due period and every allocation past `matures_at`; the sweep asks how
+long an address has been idle. **Nothing was changed to make this true** — it
+is the design the three release/settle engines already had (CLAUDE.md §10a,
+§10d, §18.8).
+
+What degrades is latency, and it is not uniform:
+
+- **Settlement and commission release: no real consequence.** The finest
+  earning period is `daily`, and 00:00 IST once a day *is* the commission
+  specification.
+- **Address release: degraded, mitigated, not user-visible.** An address held
+  by somebody who never paid returns to the pool within a day rather than
+  fifteen minutes. Two unscheduled triggers absorb it — the scan's tail sweep,
+  and `getOrCreateDepositAddress` sweeping **on pool exhaustion**, which fires
+  at the moment capacity is actually needed with no scheduler involved.
+- **Deposit scan: genuinely degraded, and the reason this is temporary.** A
+  transfer arriving while nobody has `/wallet/deposit` open waits up to ~24
+  hours to be credited. No money is at risk — recording is idempotent on
+  `(chain, tx_hash)` and the cursor never rewinds — but it is visible to a
+  customer as the platform being broken.
+
+**This is a holding position for the Vercel Hobby plan, not a design.** On
+AWS/EventBridge or any external scheduler, restore: the scanner to `*/5` or
+`*/15`, the address sweep to `*/15`, `TRON_LOOKBACK_MS` to `86400000`; leave
+the commission release exactly where it is. All four routes are plain
+`CRON_SECRET`-authorised GETs with nothing Vercel-specific about them, and all
+four accept POST so an operator can force a pass with curl. Tracked as H4 in
+FUTURE_TASKS.
+
+### Not changed
+
+No deposit, investment, commission, address-allocation or financial logic. No
+migration, no schema change, no service or repository edit. `git diff --stat`
+over `src/` is two comment blocks in two route files.
+
+### Also on this date
+
+`CLAUDE.md` compacted 2,852 → 2,034 lines (−33% words) and §18.5's Vercel cron
+facts corrected to match the above. Rules, thresholds, prohibitions and all
+section numbers preserved; the cut was narrative repetition and superseded
+reasoning (notably the `max_pipeline` account of the transaction-pooler stall,
+which the 2026-09-02 re-test had already replaced with the simple-query-protocol
+finding).
+
+---
+
 ## 2026-09-18 (Incident investigation: connection budget, an authentication race, and a machine that loses IPv4)
 
 Four faults were reported together. They are four separate things, and three of

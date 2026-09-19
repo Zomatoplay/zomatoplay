@@ -34,6 +34,25 @@ import { prunePipelineEvents } from "@/server/services/diagnostics-retention.ser
  * nothing to give — so a deployment limited to one cron job a day still
  * recovers capacity at the moment it is needed.
  *
+ * TEMPORARY SCHEDULE: DAILY, NOT EVERY 15 MINUTES
+ * -----------------------------------------------
+ * `vercel.json` schedules this at `0 5 * * *`. It wants `*\/15 * * * *`, which
+ * is what it ran at until Vercel's Hobby plan rejected the deploy — Hobby caps
+ * every cron at **once per day** and honours the time only to within the hour.
+ *
+ * Nothing here is unsafe at a daily cadence, because eligibility is a property
+ * of the row rather than of the run: the idle and settled windows still mean
+ * ten minutes and an hour, and the next pass finds everything that became
+ * eligible since the last one. What degrades is only *how long capacity sits
+ * unavailable* — an address held by somebody who never paid is returned within
+ * a day instead of within fifteen minutes. The two unscheduled triggers above
+ * are what keep that from being user-visible, and the sweep on pool exhaustion
+ * is the one that matters: it fires at the moment an address is actually
+ * needed, with no scheduler involved at all.
+ *
+ * Restore `*\/15 * * * *` on Pro, or point an external scheduler at this URL.
+ * See FUTURE_TASKS "H4".
+ *
  * The response echoes the three windows it ran with, so a schedule that has
  * drifted from the policy it enforces is visible in the output rather than
  * only in an environment variable nobody re-reads.
@@ -56,11 +75,12 @@ async function runRelease(request: NextRequest) {
         /*
          * Diagnostics retention rides this job rather than a fifth cron.
          *
-         * Vercel's Hobby plan caps the *number* of cron jobs as well as their
-         * frequency, and this deployment already schedules four. This route is
-         * the one scheduled job that is pure housekeeping — it moves no money,
-         * touches no ledger and makes no chain call — so it is the right place
-         * for the other piece of housekeeping the platform needs.
+         * This route is the one scheduled job that is pure housekeeping — it
+         * moves no money, touches no ledger and makes no chain call — so it is
+         * the right place for the other piece of housekeeping the platform
+         * needs. A fifth cron would be allowed (Hobby permits 100 jobs per
+         * project, the same as Pro; only frequency is capped) but would buy
+         * nothing: on a daily schedule it would run exactly as often as this.
          *
          * After the sweep and never allowed to fail it: returning an address
          * to the pool is the job somebody is waiting on, and a log table that

@@ -92,9 +92,13 @@ async function runScan(request: NextRequest) {
      * that this very pass has just made releasable, and the capacity would sit
      * unavailable until tomorrow.
      *
-     * Here as well as on its own route because Vercel's Hobby plan caps the
-     * number of cron jobs as well as their frequency (§18.5). A deployment that
-     * can only schedule the deposit scan still gets its pool swept.
+     * Here as well as on its own route because a scheduler is not guaranteed
+     * to be running, and because on Vercel's Hobby plan every job is capped at
+     * once a day (§18.5) — so the dedicated sweep route runs daily too. A
+     * second trigger on this pass halves the worst-case wait for capacity, and
+     * a deployment that can only schedule the deposit scan still gets its pool
+     * swept. (The *number* of cron jobs is not a constraint: Hobby allows 100
+     * per project, the same as Pro. Only frequency and precision are capped.)
      *
      * Never allowed to fail the scan: detection is the more important half,
      * and an address that stays assigned for another cycle costs capacity

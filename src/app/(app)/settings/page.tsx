@@ -1,10 +1,8 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 
 import { UserDataProvider } from "@/lib/prototype-store";
-import {
-  getUnreadNotificationCount,
-  getUserSlices,
-} from "@/server/services/account.service";
+import { getUserSlices } from "@/server/services/account.service";
 import {
   Bell,
   BookOpen,
@@ -17,6 +15,7 @@ import {
   Network,
   ScrollText,
   ShieldAlert,
+  ShieldCheck,
   Smartphone,
   TrendingUp,
   Wallet,
@@ -35,34 +34,33 @@ export const metadata: Metadata = {
   description: "Profile, verification, security, notifications and support.",
 };
 
-export default async function SettingsPage() {
-  /*
-   * `profile` and the unread count are read here for `TopBar`, not for this
-   * page.
-   *
-   * `TopBar` is an async server component in the tree this page *returns*, so
-   * its own reads cannot begin until this function has already resolved — a
-   * whole extra round trip (~400ms) tacked onto the end of every one of the
-   * five primary sections. Naming the slices here puts them in the same wave as
-   * everything else; the reads are request-memoised, so `TopBar` awaiting them
-   * a moment later costs nothing.
-   */
-  const [slices] = await Promise.all([
-    getUserSlices(["profile"] as const),
-    // `TopBar`'s unread badge, in this page's wave rather than a later one.
-    getUnreadNotificationCount(),
-  ]);
-
+/**
+ * Settings renders its whole menu before any database read completes.
+ *
+ * Everything on this screen except the profile card and the verification
+ * badge is fixed: section titles, row labels, descriptions, icons and
+ * destinations. It used to await a profile and an unread count before
+ * emitting any of it, so the menu — which is what somebody opens Settings to
+ * tap — waited on two values it does not render. Measured before the change:
+ * the static "Identity verification" row reached the browser at ~910ms.
+ *
+ * The page is therefore synchronous. The two account-dependent pieces are
+ * suspended individually, and `TopBar` suspends its own controls.
+ */
+export default function SettingsPage() {
   return (
-    <UserDataProvider data={slices}>
-      <>
-        <TopBar eyebrow="Your account" title="Settings" showActions={false} />
+    <>
+      <TopBar eyebrow="Your account" title="Settings" showActions={false} />
 
-        <PageContainer className="space-y-5">
-          <ProfileHeader />
+      <PageContainer className="space-y-5">
+          <Suspense fallback={<ProfileHeaderPlaceholder />}>
+            <ProfileSection />
+          </Suspense>
 
           <ListGroup title="Verification">
-            <KycStatusRow />
+            <Suspense fallback={<KycStatusRowPlaceholder />}>
+              <KycStatusSection />
+            </Suspense>
           </ListGroup>
 
           <ListGroup title="Security">
@@ -177,8 +175,83 @@ export default async function SettingsPage() {
             <br />
             Sample data only. No real funds are held, invested or transferred.
           </p>
-        </PageContainer>
-      </>
-  </UserDataProvider>
+      </PageContainer>
+    </>
+  );
+}
+
+/**
+ * The profile card and the verification badge, which are the only two things
+ * here that belong to the account.
+ *
+ * One read serves both, and it is request-memoised, so the two boundaries
+ * below cost one round trip between them rather than two.
+ */
+async function ProfileSection() {
+  const slices = await getUserSlices(["profile"] as const);
+  return (
+    <UserDataProvider data={slices}>
+      <ProfileHeader />
+    </UserDataProvider>
+  );
+}
+
+async function KycStatusSection() {
+  const slices = await getUserSlices(["profile"] as const);
+  return (
+    <UserDataProvider data={slices}>
+      <KycStatusRow />
+    </UserDataProvider>
+  );
+}
+
+/**
+ * Holds the profile card's shape without inventing its contents.
+ *
+ * No name, no email, no user id and no verification badge — a placeholder
+ * identity is worse than an obviously-loading one, and a fabricated
+ * verification state is the exact class of thing this codebase refuses to
+ * render (CLAUDE.md §23).
+ */
+function ProfileHeaderPlaceholder() {
+  return (
+    <section
+      className="rounded-2xl border border-border bg-card p-5"
+      aria-busy="true"
+      aria-label="Loading your profile"
+    >
+      <div className="flex items-start gap-4">
+        <div className="size-14 shrink-0 animate-pulse rounded-full bg-secondary" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="h-5 w-40 animate-pulse rounded bg-secondary" />
+          <div className="h-4 w-52 animate-pulse rounded bg-secondary" />
+          <div className="h-5 w-24 animate-pulse rounded-full bg-secondary" />
+        </div>
+      </div>
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-border pt-4">
+        <div className="space-y-1.5">
+          <div className="h-3 w-14 animate-pulse rounded bg-secondary" />
+          <div className="h-4 w-28 animate-pulse rounded bg-secondary" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** The verification row, with its label but without claiming a status. */
+function KycStatusRowPlaceholder() {
+  return (
+    <ListRow
+      href="/settings/kyc"
+      icon={ShieldCheck}
+      title="Identity verification"
+      description="Required before investing or withdrawing"
+      meta={
+        <span
+          className="block h-5 w-16 animate-pulse rounded-full bg-secondary"
+          aria-label="Loading verification status"
+        />
+      }
+    />
   );
 }

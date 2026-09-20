@@ -1,0 +1,3043 @@
+
+> nanotron@0.1.0 test
+> tsx --conditions=react-server --test --test-concurrency=1 $(find src -name '*.test.ts')
+
+TAP version 13
+# Subtest: connection
+    # Subtest: the runtime pool answers
+    ok 1 - the runtime pool answers
+      ---
+      duration_ms: 2871.453068
+      type: 'test'
+      ...
+    # Subtest: the admin connection answers and is closable
+    ok 2 - the admin connection answers and is closable
+      ---
+      duration_ms: 2500.485161
+      type: 'test'
+      ...
+    # Subtest: prepared statements are off exactly when the pooler needs them off
+    ok 3 - prepared statements are off exactly when the pooler needs them off
+      ---
+      duration_ms: 0.904349
+      type: 'test'
+      ...
+    # Subtest: survives a page's worth of parallel queries
+    ok 4 - survives a page's worth of parallel queries
+      ---
+      duration_ms: 2208.070562
+      type: 'test'
+      ...
+    # Subtest: queues more work than the pool has connections
+    ok 5 - queues more work than the pool has connections
+      ---
+      duration_ms: 264.49003
+      type: 'test'
+      ...
+    # Subtest: the pool cannot exhaust the project's session-mode budget
+    ok 6 - the pool cannot exhaust the project's session-mode budget
+      ---
+      duration_ms: 1.10986
+      type: 'test'
+      ...
+    1..6
+ok 1 - connection
+  ---
+  duration_ms: 8207.55176
+  type: 'suite'
+  ...
+# Subtest: an unset or blank URL means no database
+ok 2 - an unset or blank URL means no database
+  ---
+  duration_ms: 14.22288
+  type: 'test'
+  ...
+# Subtest: a URL means a database
+ok 3 - a URL means a database
+  ---
+  duration_ms: 3.613578
+  type: 'test'
+  ...
+# Subtest: requiring an absent URL explains how to set one
+ok 4 - requiring an absent URL explains how to set one
+  ---
+  duration_ms: 6.577434
+  type: 'test'
+  ...
+# Subtest: TLS follows the URL unless it is set explicitly
+ok 5 - TLS follows the URL unless it is set explicitly
+  ---
+  duration_ms: 4.802689
+  type: 'test'
+  ...
+# Subtest: rejects anything that is not an exact decimal
+ok 6 - rejects anything that is not an exact decimal
+  ---
+  duration_ms: 13.807379
+  type: 'test'
+  ...
+# Subtest: normalises so equal amounts compare equal
+ok 7 - normalises so equal amounts compare equal
+  ---
+  duration_ms: 3.710598
+  type: 'test'
+  ...
+# Subtest: refuses more precision than the schema stores
+ok 8 - refuses more precision than the schema stores
+  ---
+  duration_ms: 2.019997
+  type: 'test'
+  ...
+# Subtest: refuses a number that is not exactly representable
+ok 9 - refuses a number that is not exactly representable
+  ---
+  duration_ms: 2.107502
+  type: 'test'
+  ...
+# Subtest: converts token units exactly, including past MAX_SAFE_INTEGER
+ok 10 - converts token units exactly, including past MAX_SAFE_INTEGER
+  ---
+  duration_ms: 2.27831
+  type: 'test'
+  ...
+# Subtest: rejects malformed token amounts rather than coercing them
+ok 11 - rejects malformed token amounts rather than coercing them
+  ---
+  duration_ms: 3.249912
+  type: 'test'
+  ...
+# Subtest: round-trips through token units
+ok 12 - round-trips through token units
+  ---
+  duration_ms: 2.61555
+  type: 'test'
+  ...
+# Subtest: refuses to silently truncate when converting to token units
+ok 13 - refuses to silently truncate when converting to token units
+  ---
+  duration_ms: 1.21545
+  type: 'test'
+  ...
+# Subtest: compares exactly where float would not
+ok 14 - compares exactly where float would not
+  ---
+  duration_ms: 3.936122
+  type: 'test'
+  ...
+# Subtest: negates without producing -0
+ok 15 - negates without producing -0
+  ---
+  duration_ms: 3.462562
+  type: 'test'
+  ...
+# Subtest: drops trailing zeros before judging precision
+ok 16 - drops trailing zeros before judging precision
+  ---
+  duration_ms: 2.002835
+  type: 'test'
+  ...
+# Subtest: add and subtract are exact where binary floating point is not
+ok 17 - add and subtract are exact where binary floating point is not
+  ---
+  duration_ms: 2.699053
+  type: 'test'
+  ...
+# Subtest: multiplyByRate truncates to the destination column's scale
+ok 18 - multiplyByRate truncates to the destination column's scale
+  ---
+  duration_ms: 2.318176
+  type: 'test'
+  ...
+# Subtest: a withdrawal quote is exact end to end
+ok 19 - a withdrawal quote is exact end to end
+  ---
+  duration_ms: 1.796003
+  type: 'test'
+  ...
+# Subtest: classification
+    # Subtest: treats a failed handshake as transient
+    ok 1 - treats a failed handshake as transient
+      ---
+      duration_ms: 29.419067
+      type: 'test'
+      ...
+    # Subtest: treats every SQLSTATE class 08 as transient
+    ok 2 - treats every SQLSTATE class 08 as transient
+      ---
+      duration_ms: 6.398702
+      type: 'test'
+      ...
+    # Subtest: does NOT retry an error the server actually returned
+    ok 3 - does NOT retry an error the server actually returned
+      ---
+      duration_ms: 11.597028
+      type: 'test'
+      ...
+    # Subtest: unwraps a nested cause
+    ok 4 - unwraps a nested cause
+      ---
+      duration_ms: 6.291444
+      type: 'test'
+      ...
+    # Subtest: treats a full connection pooler as transient
+    ok 5 - treats a full connection pooler as transient
+      ---
+      duration_ms: 18.050878
+      type: 'test'
+      ...
+    # Subtest: does NOT retry XX000 on its own
+    ok 6 - does NOT retry XX000 on its own
+      ---
+      duration_ms: 6.467713
+      type: 'test'
+      ...
+    # Subtest: finds a full pooler through Drizzle's wrapper
+    ok 7 - finds a full pooler through Drizzle's wrapper
+      ---
+      duration_ms: 7.522896
+      type: 'test'
+      ...
+    # Subtest: does not recurse forever on a self-referential cause
+    ok 8 - does not recurse forever on a self-referential cause
+      ---
+      duration_ms: 7.680807
+      type: 'test'
+      ...
+    1..8
+ok 20 - classification
+  ---
+  duration_ms: 179.520477
+  type: 'test'
+  ...
+# Subtest: retrying
+    # Subtest: recovers when a later attempt succeeds
+    ok 1 - recovers when a later attempt succeeds
+      ---
+      duration_ms: 528.799201
+      type: 'test'
+      ...
+    # Subtest: gives a permanent error straight back, on the first try
+    ok 2 - gives a permanent error straight back, on the first try
+      ---
+      duration_ms: 16.938746
+      type: 'test'
+      ...
+    # Subtest: stops at the retry limit and rethrows the real error
+    ok 3 - stops at the retry limit and rethrows the real error
+      ---
+      duration_ms: 724.48387
+      type: 'test'
+      ...
+    # Subtest: honours the time budget rather than only the count
+    ok 4 - honours the time budget rather than only the count
+      ---
+      duration_ms: 128.623815
+      type: 'test'
+      ...
+    # Subtest: runs the operation exactly once when it succeeds
+    ok 5 - runs the operation exactly once when it succeeds
+      ---
+      duration_ms: 2.298178
+      type: 'test'
+      ...
+    # Subtest: spends more attempts on a full pooler than on a bad endpoint
+    ok 6 - spends more attempts on a full pooler than on a bad endpoint
+      ---
+      duration_ms: 14086.46666
+      type: 'test'
+      ...
+    # Subtest: still honours the budget when the pooler is full
+    ok 7 - still honours the budget when the pooler is full
+      ---
+      duration_ms: 881.933231
+      type: 'test'
+      ...
+    # Subtest: reports each retry so a recovered fault is still visible
+    ok 8 - reports each retry so a recovered fault is still visible
+      ---
+      duration_ms: 546.217591
+      type: 'test'
+      ...
+    1..8
+ok 21 - retrying
+  ---
+  duration_ms: 16943.226625
+  type: 'test'
+  ...
+# Subtest: schema
+    # Subtest: every declared table exists, and nothing unexpected does
+    ok 1 - every declared table exists, and nothing unexpected does
+      ---
+      duration_ms: 2746.096949
+      type: 'test'
+      ...
+    # Subtest: every enum exists with exactly its declared labels
+    ok 2 - every enum exists with exactly its declared labels
+      ---
+      duration_ms: 248.623539
+      type: 'test'
+      ...
+    # Subtest: every foreign key exists and points where the schema says
+    ok 3 - every foreign key exists and points where the schema says
+      ---
+      duration_ms: 402.103596
+      type: 'test'
+      ...
+    # Subtest: every table has a primary key
+    ok 4 - every table has a primary key
+      ---
+      duration_ms: 213.228959
+      type: 'test'
+      ...
+    # Subtest: every declared index exists
+    ok 5 - every declared index exists
+      ---
+      duration_ms: 364.594478
+      type: 'test'
+      ...
+    # Subtest: money columns are numeric, never floating point
+    ok 6 - money columns are numeric, never floating point
+      ---
+      duration_ms: 254.374755
+      type: 'test'
+      ...
+    1..6
+ok 22 - schema
+  ---
+  duration_ms: 4528.347049
+  type: 'suite'
+  ...
+# Subtest: every table in the schema is seeded
+ok 23 - every table in the schema is seeded
+  ---
+  duration_ms: 94.306312
+  type: 'test'
+  ...
+# Subtest: clears children before parents
+ok 24 - clears children before parents
+  ---
+  duration_ms: 28.264738
+  type: 'test'
+  ...
+# Subtest: every foreign key resolves
+ok 25 - every foreign key resolves
+  ---
+  duration_ms: 22.416106
+  type: 'test'
+  ...
+# Subtest: primary keys are unique
+ok 26 - primary keys are unique
+  ---
+  duration_ms: 20.402551
+  type: 'test'
+  ...
+# Subtest: unique columns on users hold
+ok 27 - unique columns on users hold
+  ---
+  duration_ms: 41.078962
+  type: 'test'
+  ...
+# Subtest: the demo account's wallet reconciles against its allocations
+ok 28 - the demo account's wallet reconciles against its allocations
+  ---
+  duration_ms: 52.53584
+  type: 'test'
+  ...
+# Subtest: overlapping records are stored once
+ok 29 - overlapping records are stored once
+  ---
+  duration_ms: 41.808252
+  type: 'test'
+  ...
+# Subtest: exactly one platform settings row
+ok 30 - exactly one platform settings row
+  ---
+  duration_ms: 30.04776
+  type: 'test'
+  ...
+# Subtest: parseAdminListQuery
+    # Subtest: reads a well-formed query
+    ok 1 - reads a well-formed query
+      ---
+      duration_ms: 11.676973
+      type: 'test'
+      ...
+    # Subtest: falls back to the screen's defaults for unknown tokens
+    ok 2 - falls back to the screen's defaults for unknown tokens
+      ---
+      duration_ms: 2.110587
+      type: 'test'
+      ...
+    # Subtest: refuses a page that is not a positive number
+    ok 3 - refuses a page that is not a positive number
+      ---
+      duration_ms: 2.784453
+      type: 'test'
+      ...
+    # Subtest: clamps an absurd page rather than overflowing OFFSET
+    ok 4 - clamps an absurd page rather than overflowing OFFSET
+      ---
+      duration_ms: 3.811211
+      type: 'test'
+      ...
+    # Subtest: page size is never taken from the URL
+    ok 5 - page size is never taken from the URL
+      ---
+      duration_ms: 2.12459
+      type: 'test'
+      ...
+    # Subtest: bounds the search string
+    ok 6 - bounds the search string
+      ---
+      duration_ms: 1.883307
+      type: 'test'
+      ...
+    # Subtest: takes the first value when a parameter repeats
+    ok 7 - takes the first value when a parameter repeats
+      ---
+      duration_ms: 1.931442
+      type: 'test'
+      ...
+    # Subtest: reads prefixed keys, for a page carrying two lists
+    ok 8 - reads prefixed keys, for a page carrying two lists
+      ---
+      duration_ms: 3.310873
+      type: 'test'
+      ...
+    1..8
+ok 31 - parseAdminListQuery
+  ---
+  duration_ms: 46.458414
+  type: 'suite'
+  ...
+# Subtest: buildAdminListQueryString
+    # Subtest: omits defaults, so an unfiltered screen has a bare URL
+    ok 1 - omits defaults, so an unfiltered screen has a bare URL
+      ---
+      duration_ms: 6.805535
+      type: 'test'
+      ...
+    # Subtest: changing anything but the page returns to page 1
+    ok 2 - changing anything but the page returns to page 1
+      ---
+      duration_ms: 5.516894
+      type: 'test'
+      ...
+    # Subtest: preserves the sibling list's parameters
+    ok 3 - preserves the sibling list's parameters
+      ---
+      duration_ms: 3.803179
+      type: 'test'
+      ...
+    # Subtest: clears its own keys when they return to their default
+    ok 4 - clears its own keys when they return to their default
+      ---
+      duration_ms: 3.287452
+      type: 'test'
+      ...
+    1..4
+ok 32 - buildAdminListQueryString
+  ---
+  duration_ms: 23.021053
+  type: 'suite'
+  ...
+# Subtest: hasActiveFilters
+    # Subtest: is false for the untouched screen and true for any narrowing
+    ok 1 - is false for the untouched screen and true for any narrowing
+      ---
+      duration_ms: 2.412069
+      type: 'test'
+      ...
+    1..1
+ok 33 - hasActiveFilters
+  ---
+  duration_ms: 3.42908
+  type: 'suite'
+  ...
+# Subtest: authentication boundary
+    # Subtest: an unauthenticated request has no user, and is not given one
+    ok 1 - an unauthenticated request has no user, and is not given one
+      ---
+      duration_ms: 28.893794
+      type: 'test'
+      ...
+    # Subtest: account reads refuse rather than falling back to seed data
+    ok 2 - account reads refuse rather than falling back to seed data
+      ---
+      duration_ms: 378.898226
+      type: 'test'
+      ...
+    1..2
+ok 34 - authentication boundary
+  ---
+  duration_ms: 420.606057
+  type: 'suite'
+  ...
+# Subtest: development dataset
+    # Subtest: holds exactly the seeded number of accounts
+    not ok 1 - holds exactly the seeded number of accounts
+      ---
+      duration_ms: 2577.22389
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/auth-and-kyc.integration.test.ts:86:3'
+      failureType: 'testCodeFailure'
+      error: 'unexpectedly many users: 53'
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: '=='
+      stack: |-
+        TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/auth-and-kyc.integration.test.ts:97:12)
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1442:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    # Subtest: member ids are unique
+    ok 2 - member ids are unique
+      ---
+      duration_ms: 242.83533
+      type: 'test'
+      ...
+    # Subtest: every account has a wallet
+    ok 3 - every account has a wallet
+      ---
+      duration_ms: 271.803131
+      type: 'test'
+      ...
+    # Subtest: no dependent record references a user outside the dataset
+    ok 4 - no dependent record references a user outside the dataset
+      ---
+      duration_ms: 2048.079576
+      type: 'test'
+      ...
+    # Subtest: seeded accounts carry no Supabase credential
+    ok 5 - seeded accounts carry no Supabase credential
+      ---
+      duration_ms: 413.683363
+      type: 'test'
+      ...
+    # Subtest: no table stores a credential
+    ok 6 - no table stores a credential
+      ---
+      duration_ms: 327.664724
+      type: 'test'
+      ...
+    1..6
+not ok 35 - development dataset
+  ---
+  duration_ms: 6265.129365
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/auth-and-kyc.integration.test.ts:75:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: verification lifecycle
+    # Subtest: a submission becomes pending, and the operator queue sees it
+    ok 1 - a submission becomes pending, and the operator queue sees it
+      ---
+      duration_ms: 7895.728629
+      type: 'test'
+      ...
+    # Subtest: a submission never claims a liveness check that did not happen
+    ok 2 - a submission never claims a liveness check that did not happen
+      ---
+      duration_ms: 8106.682981
+      type: 'test'
+      ...
+    # Subtest: a submission with no documents is accepted and reaches pending_review
+    ok 3 - a submission with no documents is accepted and reaches pending_review
+      ---
+      duration_ms: 4571.385774
+      type: 'test'
+      ...
+    # Subtest: an absent document is absent — never a fabricated row
+    ok 4 - an absent document is absent — never a fabricated row
+      ---
+      duration_ms: 4690.799718
+      type: 'test'
+      ...
+    # Subtest: an operator can see and act on a case with no documents
+    ok 5 - an operator can see and act on a case with no documents
+      ---
+      duration_ms: 6587.784625
+      type: 'test'
+      ...
+    # Subtest: a submission with documents still records what Storage reported
+    ok 6 - a submission with documents still records what Storage reported
+      ---
+      duration_ms: 5122.343242
+      type: 'test'
+      ...
+    # Subtest: a second submission while one is under review is refused
+    ok 7 - a second submission while one is under review is refused
+      ---
+      duration_ms: 5307.34618
+      type: 'test'
+      ...
+    # Subtest: approval is an operator decision, and the user sees it
+    ok 8 - approval is an operator decision, and the user sees it
+      ---
+      duration_ms: 8410.032283
+      type: 'test'
+      ...
+    # Subtest: rejection stores the reason the user is shown
+    ok 9 - rejection stores the reason the user is shown
+      ---
+      duration_ms: 7035.3976
+      type: 'test'
+      ...
+    # Subtest: a rejection with no reason is refused
+    ok 10 - a rejection with no reason is refused
+      ---
+      duration_ms: 5045.798085
+      type: 'test'
+      ...
+    1..10
+ok 36 - verification lifecycle
+  ---
+  duration_ms: 78220.745076
+  type: 'suite'
+  ...
+# Subtest: operator identity and permissions
+    # Subtest: with no session there is no operator, and none is invented
+    ok 1 - with no session there is no operator, and none is invented
+      ---
+      duration_ms: 5.185426
+      type: 'test'
+      ...
+    # Subtest: operator server actions refuse without a session
+    ok 2 - operator server actions refuse without a session
+      ---
+      duration_ms: 586.72907
+      type: 'test'
+      ...
+    # Subtest: the permission model reads levels from the database
+    ok 3 - the permission model reads levels from the database
+      ---
+      duration_ms: 2514.21638
+      type: 'test'
+      ...
+    # Subtest: a master admin holds manage implicitly
+    ok 4 - a master admin holds manage implicitly
+      ---
+      duration_ms: 1.474751
+      type: 'test'
+      ...
+    1..4
+ok 37 - operator identity and permissions
+  ---
+  duration_ms: 3422.001178
+  type: 'suite'
+  ...
+# Subtest: deposit intents cannot become money
+    # Subtest: a development test deposit is pending, unverified and uncreditable
+    ok 1 - a development test deposit is pending, unverified and uncreditable
+      ---
+      duration_ms: 8434.157255
+      type: 'test'
+      ...
+    1..1
+ok 38 - deposit intents cannot become money
+  ---
+  duration_ms: 9881.856974
+  type: 'suite'
+  ...
+# Subtest: member ids
+    # Subtest: are NT- and exactly seven digits
+    ok 1 - are NT- and exactly seven digits
+      ---
+      duration_ms: 8.164532
+      type: 'test'
+      ...
+    # Subtest: do not come from the clock
+    ok 2 - do not come from the clock
+      ---
+      duration_ms: 23.146098
+      type: 'test'
+      ...
+    # Subtest: spread across the digit space
+    ok 3 - spread across the digit space
+      ---
+      duration_ms: 17.61156
+      type: 'test'
+      ...
+    1..3
+ok 39 - member ids
+  ---
+  duration_ms: 51.105131
+  type: 'suite'
+  ...
+# Subtest: a verdict about the token is not an outage
+    # Subtest: 4xx means the token was judged and rejected
+    ok 1 - 4xx means the token was judged and rejected
+      ---
+      duration_ms: 1.825448
+      type: 'test'
+      ...
+    1..1
+ok 40 - a verdict about the token is not an outage
+  ---
+  duration_ms: 3.501016
+  type: 'test'
+  ...
+# Subtest: a failure to reach a verdict is an outage
+    # Subtest: 5xx means the provider broke, not the token
+    ok 1 - 5xx means the provider broke, not the token
+      ---
+      duration_ms: 0.405874
+      type: 'test'
+      ...
+    # Subtest: a transport failure carries no status at all
+    ok 2 - a transport failure carries no status at all
+      ---
+      duration_ms: 0.332053
+      type: 'test'
+      ...
+    # Subtest: no status is treated as an outage, not as a rejection
+    ok 3 - no status is treated as an outage, not as a rejection
+      ---
+      duration_ms: 0.396747
+      type: 'test'
+      ...
+    # Subtest: a network message wins even with a 4xx attached
+    ok 4 - a network message wins even with a 4xx attached
+      ---
+      duration_ms: 0.259971
+      type: 'test'
+      ...
+    1..4
+ok 41 - a failure to reach a verdict is an outage
+  ---
+  duration_ms: 2.762232
+  type: 'test'
+  ...
+# Subtest: automatic commission release
+    # Subtest: an entry due in the future is not released
+    ok 1 - an entry due in the future is not released
+      ---
+      duration_ms: 8703.645051
+      type: 'test'
+      ...
+    # Subtest: an entry due in the past is released
+    ok 2 - an entry due in the past is released
+      ---
+      duration_ms: 6924.013163
+      type: 'test'
+      ...
+    # Subtest: an entry due exactly now is released — the boundary is inclusive
+    ok 3 - an entry due exactly now is released — the boundary is inclusive
+      ---
+      duration_ms: 7003.421201
+      type: 'test'
+      ...
+    # Subtest: a missed midnight is recovered by the next run
+    ok 4 - a missed midnight is recovered by the next run
+      ---
+      duration_ms: 6964.318748
+      type: 'test'
+      ...
+    # Subtest: an entry with no release date is never released automatically
+    ok 5 - an entry with no release date is never released automatically
+      ---
+      duration_ms: 8603.94556
+      type: 'test'
+      ...
+    # Subtest: running the job twice pays once
+    ok 6 - running the job twice pays once
+      ---
+      duration_ms: 12494.600928
+      type: 'test'
+      ...
+    # Subtest: two passes overlapping pay once
+    ok 7 - two passes overlapping pay once
+      ---
+      duration_ms: 7363.043973
+      type: 'test'
+      ...
+    # Subtest: the job racing an operator pays once
+    ok 8 - the job racing an operator pays once
+      ---
+      duration_ms: 7592.489107
+      type: 'test'
+      ...
+    # Subtest: a released entry cannot be released again by hand either
+    ok 9 - a released entry cannot be released again by hand either
+      ---
+      duration_ms: 7760.999079
+      type: 'test'
+      ...
+    # Subtest: release moves the aggregate from pending to earned, in the same transaction
+    ok 10 - release moves the aggregate from pending to earned, in the same transaction
+      ---
+      duration_ms: 6782.707747
+      type: 'test'
+      ...
+    # Subtest: the automatic release is audited, and names the system as the actor
+    ok 11 - the automatic release is audited, and names the system as the actor
+      ---
+      duration_ms: 7539.263519
+      type: 'test'
+      ...
+    # Subtest: a zero-amount entry is refused rather than written as a zero payment
+    ok 12 - a zero-amount entry is refused rather than written as a zero payment
+      ---
+      duration_ms: 4135.709559
+      type: 'test'
+      ...
+    1..12
+ok 42 - automatic commission release
+  ---
+  duration_ms: 99060.368441
+  type: 'suite'
+  ...
+# Subtest: business-calendar midnight
+    # Subtest: maps to 18:30 UTC the previous day
+    ok 1 - maps to 18:30 UTC the previous day
+      ---
+      duration_ms: 0.597098
+      type: 'test'
+      ...
+    # Subtest: an instant just before the boundary belongs to the earlier business day
+    ok 2 - an instant just before the boundary belongs to the earlier business day
+      ---
+      duration_ms: 0.492278
+      type: 'test'
+      ...
+    # Subtest: three days ahead is exactly three days, never two or four
+    ok 3 - three days ahead is exactly three days, never two or four
+      ---
+      duration_ms: 0.273968
+      type: 'test'
+      ...
+    # Subtest: the label writes the zone down
+    ok 4 - the label writes the zone down
+      ---
+      duration_ms: 0.204426
+      type: 'test'
+      ...
+    1..4
+ok 43 - business-calendar midnight
+  ---
+  duration_ms: 2.060049
+  type: 'suite'
+  ...
+# Subtest: repositories
+    # Subtest: reads the demo account's profile with its verification steps
+    ok 1 - reads the demo account's profile with its verification steps
+      ---
+      duration_ms: 3315.869653
+      type: 'test'
+      ...
+    # Subtest: reads the wallet, and the numbers are numbers
+    ok 2 - reads the wallet, and the numbers are numbers
+      ---
+      duration_ms: 414.149772
+      type: 'test'
+      ...
+    # Subtest: the wallet reconciles against the account's active allocations
+    ok 3 - the wallet reconciles against the account's active allocations
+      ---
+      duration_ms: 1222.529928
+      type: 'test'
+      ...
+    # Subtest: translates the stored investment status for the user application
+    ok 4 - translates the stored investment status for the user application
+      ---
+      duration_ms: 390.223565
+      type: 'test'
+      ...
+    # Subtest: reads the ledger for the account
+    ok 5 - reads the ledger for the account
+      ---
+      duration_ms: 433.423422
+      type: 'test'
+      ...
+    # Subtest: excludes disabled plans from the public catalogue
+    ok 6 - excludes disabled plans from the public catalogue
+      ---
+      duration_ms: 1849.318104
+      type: 'test'
+      ...
+    # Subtest: joins the account onto every CRM row
+    ok 7 - joins the account onto every CRM row
+      ---
+      duration_ms: 500.693853
+      type: 'test'
+      ...
+    # Subtest: groups KYC documents and notes onto their submissions
+    ok 8 - groups KYC documents and notes onto their submissions
+      ---
+      duration_ms: 1536.289101
+      type: 'test'
+      ...
+    # Subtest: rebuilds each agent's permission map from its rows
+    ok 9 - rebuilds each agent's permission map from its rows
+      ---
+      duration_ms: 353.269628
+      type: 'test'
+      ...
+    # Subtest: reads the audit trail newest first
+    ok 10 - reads the audit trail newest first
+      ---
+      duration_ms: 470.570697
+      type: 'test'
+      ...
+    1..10
+ok 44 - repositories
+  ---
+  duration_ms: 10878.209163
+  type: 'suite'
+  ...
+# Subtest: services read the database, not the seed modules
+    # Subtest: the CRM's allocations are the seeded rows, not @/data/admin
+    ok 1 - the CRM's allocations are the seeded rows, not @/data/admin
+      ---
+      duration_ms: 2313.075213
+      type: 'test'
+      ...
+    # Subtest: the commission ledger is the seeded ledger
+    ok 2 - the commission ledger is the seeded ledger
+      ---
+      duration_ms: 383.415905
+      type: 'test'
+      ...
+    # Subtest: computes referral standing against the stored VIP thresholds
+    ok 3 - computes referral standing against the stored VIP thresholds
+      ---
+      duration_ms: 813.059506
+      type: 'test'
+      ...
+    # Subtest: reads platform settings from the single configuration row
+    ok 4 - reads platform settings from the single configuration row
+      ---
+      duration_ms: 409.894752
+      type: 'test'
+      ...
+    1..4
+ok 45 - services read the database, not the seed modules
+  ---
+  duration_ms: 4128.285968
+  type: 'suite'
+  ...
+# Subtest: with no DATABASE_URL, services serve the seed data
+ok 46 - with no DATABASE_URL, services serve the seed data
+  ---
+  duration_ms: 4.409675
+  type: 'test'
+  ...
+# Subtest: a blank DATABASE_URL counts as no database, not as a broken one
+ok 47 - a blank DATABASE_URL counts as no database, not as a broken one
+  ---
+  duration_ms: 0.606977
+  type: 'test'
+  ...
+# Subtest: a configured but unreachable database fails instead of faking it
+ok 48 - a configured but unreachable database fails instead of faking it
+  ---
+  duration_ms: 586.633929
+  type: 'test'
+  ...
+# Subtest: an unresponsive database fails on a deadline rather than hanging
+ok 49 - an unresponsive database fails on a deadline rather than hanging
+  ---
+  duration_ms: 12226.41242
+  type: 'test'
+  ...
+# Subtest: the failure is not cached into a permanent outage
+ok 50 - the failure is not cached into a permanent outage
+  ---
+  duration_ms: 506.665001
+  type: 'test'
+  ...
+# Subtest: deposit address pool
+    # Subtest: A — first-time allocation claims an address from the pool
+    ok 1 - A — first-time allocation claims an address from the pool
+      ---
+      duration_ms: 11491.938897
+      type: 'test'
+      ...
+    # Subtest: B — the same user gets the same address on a later request
+    ok 2 - B — the same user gets the same address on a later request
+      ---
+      duration_ms: 7781.361791
+      type: 'test'
+      ...
+    # Subtest: C — two different users get two different addresses
+    ok 3 - C — two different users get two different addresses
+      ---
+      duration_ms: 13105.19621
+      type: 'test'
+      ...
+    # Subtest: D — ownership is decided only by the userId the caller passes in, never inferred
+    ok 4 - D — ownership is decided only by the userId the caller passes in, never inferred
+      ---
+      duration_ms: 15552.27001
+      type: 'test'
+      ...
+    # Subtest: two concurrent first-time requests for the same user never claim two addresses
+    ok 5 - two concurrent first-time requests for the same user never claim two addresses
+      ---
+      duration_ms: 6935.491715
+      type: 'test'
+      ...
+    # Subtest: P — an address is never reassigned merely by asking again
+    ok 6 - P — an address is never reassigned merely by asking again
+      ---
+      duration_ms: 7217.480358
+      type: 'test'
+      ...
+    # Subtest: pool exhaustion is refused loudly, not silently handed out twice
+    ok 7 - pool exhaustion is refused loudly, not silently handed out twice
+      ---
+      duration_ms: 2048.94394
+      type: 'test'
+      ...
+    # Subtest: claiming is scoped by network — an available address on one network is invisible to another
+    ok 8 - claiming is scoped by network — an available address on one network is invisible to another
+      ---
+      duration_ms: 4049.822881
+      type: 'test'
+      ...
+    # Subtest: E — a transfer to a known, assigned address credits its owner automatically
+    ok 9 - E — a transfer to a known, assigned address credits its owner automatically
+      ---
+      duration_ms: 7830.064902
+      type: 'test'
+      ...
+    # Subtest: F — a transfer to an unrecognised address credits nobody
+    ok 10 - F — a transfer to an unrecognised address credits nobody
+      ---
+      duration_ms: 2446.533454
+      type: 'test'
+      ...
+    # Subtest: I — the same physical address on a different network resolves to nobody
+    ok 11 - I — the same physical address on a different network resolves to nobody
+      ---
+      duration_ms: 4481.025216
+      type: 'test'
+      ...
+    # Subtest: K — an unconfirmed transfer to a known address is not credited yet
+    ok 12 - K — an unconfirmed transfer to a known address is not credited yet
+      ---
+      duration_ms: 4337.121252
+      type: 'test'
+      ...
+    # Subtest: L — the exact blockchain amount is credited, not a rounded one
+    ok 13 - L — the exact blockchain amount is credited, not a rounded one
+      ---
+      duration_ms: 6349.417392
+      type: 'test'
+      ...
+    # Subtest: M — the same transaction hash is only ever credited once
+    ok 14 - M — the same transaction hash is only ever credited once
+      ---
+      duration_ms: 9217.355273
+      type: 'test'
+      ...
+    # Subtest: N — two concurrent scans of the same transfer credit exactly once
+    ok 15 - N — two concurrent scans of the same transfer credit exactly once
+      ---
+      duration_ms: 7578.65295
+      type: 'test'
+      ...
+    # Subtest: O — the deposit record and the ledger entry agree on user, amount and reference
+    ok 16 - O — the deposit record and the ledger entry agree on user, amount and reference
+      ---
+      duration_ms: 7783.397968
+      type: 'test'
+      ...
+    # Subtest: Q — an address with unresolved deposit activity cannot be released
+    ok 17 - Q — an address with unresolved deposit activity cannot be released
+      ---
+      duration_ms: 5532.196093
+      type: 'test'
+      ...
+    # Subtest: an address with no unresolved activity releases back to the pool
+    ok 18 - an address with no unresolved activity releases back to the pool
+      ---
+      duration_ms: 5528.741866
+      type: 'test'
+      ...
+    # Subtest: R — an address with unresolved deposit activity cannot be retired either
+    ok 19 - R — an address with unresolved deposit activity cannot be retired either
+      ---
+      duration_ms: 5721.043027
+      type: 'test'
+      ...
+    # Subtest: retiring takes an address out of rotation without deleting it or its history
+    ok 20 - retiring takes an address out of rotation without deleting it or its history
+      ---
+      duration_ms: 5134.245609
+      type: 'test'
+      ...
+    # Subtest: a retired address is never claimed again, even when it is older than the replacement
+    ok 21 - a retired address is never claimed again, even when it is older than the replacement
+      ---
+      duration_ms: 12494.709833
+      type: 'test'
+      ...
+    # Subtest: retiring an already-retired address is refused rather than rewriting when it left
+    ok 22 - retiring an already-retired address is refused rather than rewriting when it left
+      ---
+      duration_ms: 8136.584235
+      type: 'test'
+      ...
+    # Subtest: retiring is recorded in the audit trail
+    ok 23 - retiring is recorded in the audit trail
+      ---
+      duration_ms: 7738.75964
+      type: 'test'
+      ...
+    # Subtest: S — an assigned address with no deposit, older than the idle window, releases
+    ok 24 - S — an assigned address with no deposit, older than the idle window, releases
+      ---
+      duration_ms: 7680.224249
+      type: 'test'
+      ...
+    # Subtest: T — an assigned address younger than the idle window stays assigned
+    ok 25 - T — an assigned address younger than the idle window stays assigned
+      ---
+      duration_ms: 3669.368623
+      type: 'test'
+      ...
+    # Subtest: U — an unresolved deposit protects the address at any age
+    ok 26 - U — an unresolved deposit protects the address at any age
+      ---
+      duration_ms: 4933.207387
+      type: 'test'
+      ...
+    # Subtest: V — an address whose deposits have all settled waits out the settle window
+    ok 27 - V — an address whose deposits have all settled waits out the settle window
+      ---
+      duration_ms: 11471.762565
+      type: 'test'
+      ...
+    # Subtest: W — re-running the sweep is idempotent
+    ok 28 - W — re-running the sweep is idempotent
+      ---
+      duration_ms: 11263.499106
+      type: 'test'
+      ...
+    # Subtest: X — inside the quarantine only the previous holder may take it back
+    ok 29 - X — inside the quarantine only the previous holder may take it back
+      ---
+      duration_ms: 14125.925665
+      type: 'test'
+      ...
+    # Subtest: Y — a stranger may claim it once the quarantine has elapsed
+    not ok 30 - Y — a stranger may claim it once the quarantine has elapsed
+      ---
+      duration_ms: 1031205.297503
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:989:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        Failed query: update "deposit_addresses" set "quarantine_until" = $1 where "deposit_addresses"."id" = $2
+        params: 2026-09-20T01:00:24.775Z,dpa_test_mu8sm4iy5wq91
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        PostgresJsPreparedQuery.queryWithCache (/home/rkbajiyaa/Project/nanotron/node_modules/src/pg-core/session.ts:73:11)
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:999:5)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    # Subtest: Z — a late transfer is credited to whoever held the address when it was SENT
+    not ok 31 - Z — a late transfer is credited to whoever held the address when it was SENT
+      ---
+      duration_ms: 10.294461
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:1016:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: AA — a transfer arriving while nobody held the address credits nobody
+    not ok 32 - AA — a transfer arriving while nobody held the address credits nobody
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:1093:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: AB — an operator may release a safe address at any age
+    not ok 33 - AB — an operator may release a safe address at any age
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:1128:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: AC — two concurrent releases: exactly one succeeds
+    not ok 34 - AC — two concurrent releases: exactly one succeeds
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:1158:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: AD — releasing something that is not assigned says so
+    not ok 35 - AD — releasing something that is not assigned says so
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:1185:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: AE — unresolved activity refuses first, whatever the clock says
+    not ok 36 - AE — unresolved activity refuses first, whatever the clock says
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:1201:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: AF — the idle boundary is inclusive, and a millisecond short is not
+    not ok 37 - AF — the idle boundary is inclusive, and a millisecond short is not
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:1218:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: AG — an assignment with no timestamp is never aged out
+    not ok 38 - AG — an assignment with no timestamp is never aged out
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:1235:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    1..38
+not ok 51 - deposit address pool
+  ---
+  duration_ms: 1252876.457287
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-address.integration.test.ts:103:1'
+  failureType: 'cancelledByParent'
+  error: 'Promise resolution is still pending but the event loop has already resolved'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    process.emit (node:events:519:28)
+    process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+  ...
+# Subtest: triggering the scanner from an open deposit screen
+    # Subtest: concurrent checks join one pass rather than starting several
+    ok 1 - concurrent checks join one pass rather than starting several
+      ---
+      duration_ms: 2.254157
+      type: 'test'
+      ...
+    # Subtest: a check arriving too soon after the last pass does not start another
+    ok 2 - a check arriving too soon after the last pass does not start another
+      ---
+      duration_ms: 0.558533
+      type: 'test'
+      ...
+    # Subtest: a failing scan is reported, not thrown, and does not wedge the trigger
+    ok 3 - a failing scan is reported, not thrown, and does not wedge the trigger
+      ---
+      duration_ms: 1.036924
+      type: 'test'
+      ...
+    1..3
+ok 52 - triggering the scanner from an open deposit screen
+  ---
+  duration_ms: 5.91049
+  type: 'suite'
+  ...
+# Subtest: the deposit check action
+    # Subtest: refuses a caller with no session, and never scans for one
+    ok 1 - refuses a caller with no session, and never scans for one
+      ---
+      duration_ms: 292.839512
+      type: 'test'
+      ...
+    # Subtest: takes no required argument, so nothing in the browser can name a user
+    ok 2 - takes no required argument, so nothing in the browser can name a user
+      ---
+      duration_ms: 1.726504
+      type: 'test'
+      ...
+    1..2
+ok 53 - the deposit check action
+  ---
+  duration_ms: 295.28596
+  type: 'suite'
+  ...
+# Subtest: the deposit screen's two cadences
+    # Subtest: the client's scan interval stays above the server's floor, and its poll below
+    ok 1 - the client's scan interval stays above the server's floor, and its poll below
+      ---
+      duration_ms: 34.698904
+      type: 'test'
+      ...
+    # Subtest: a tick that does not request a scan runs none
+    ok 2 - a tick that does not request a scan runs none
+      ---
+      duration_ms: 1.652125
+      type: 'test'
+      ...
+    1..2
+ok 54 - the deposit screen's two cadences
+  ---
+  duration_ms: 37.049656
+  type: 'suite'
+  ...
+# Subtest: what an open deposit screen reads back
+    # Subtest: two accounts polling at once each see only their own deposit
+    not ok 1 - two accounts polling at once each see only their own deposit
+      ---
+      duration_ms: 26.127315
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-check.test.ts:337:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        Failed query: insert into "users" ("id", "auth_user_id", "display_id", "full_name", "email", "phone", "country", "avatar_url", "registered_at", "last_active_at", "status", "kyc_status", "vip_level", "referral_code", "referred_by_code", "referral_count", "wallet_address", "two_factor_enabled", "google_auth_enabled", "account_frozen", "withdrawals_frozen", "investments_frozen", "internal_note", "created_at", "updated_at") values ($1, default, $2, $3, $4, $5, default, default, $6, $7, default, $8, default, $9, default, default, $10, default, default, default, default, default, default, default, default)
+        params: usr_test_mu940pcq69bci,NT-C40pcq69bci,Deposit Check Test,deposit-check-test-40pcq69bci@example.invalid,+91 00000 00000,2026-09-20T01:00:27.098Z,2026-09-20T01:00:27.098Z,verified,DCTEST40PCQ69BCI,T40pcq69bci
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        PostgresJsPreparedQuery.queryWithCache (/home/rkbajiyaa/Project/nanotron/node_modules/src/pg-core/session.ts:73:11)
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async makeUser (/home/rkbajiyaa/Project/nanotron/src/server/deposit-check.test.ts:266:5)
+        async TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/deposit-check.test.ts:338:27)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1442:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    # Subtest: a transfer still waiting for its block shows for its own address's owner
+    not ok 2 - a transfer still waiting for its block shows for its own address's owner
+      ---
+      duration_ms: 7.239669
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-check.test.ts:361:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: checking repeatedly shows one deposit, not one per check
+    not ok 3 - checking repeatedly shows one deposit, not one per check
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-check.test.ts:381:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    1..3
+not ok 55 - what an open deposit screen reads back
+  ---
+  duration_ms: 47.781105
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-check.test.ts:238:1'
+  failureType: 'cancelledByParent'
+  error: 'Promise resolution is still pending but the event loop has already resolved'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    process.emit (node:events:519:28)
+    process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+  ...
+# Subtest: new-deposit confirmation
+    # Subtest: a credited, unacknowledged deposit is announced
+    not ok 1 - a credited, unacknowledged deposit is announced
+      ---
+      duration_ms: 33.150743
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:121:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        Failed query: insert into "users" ("id", "auth_user_id", "display_id", "full_name", "email", "phone", "country", "avatar_url", "registered_at", "last_active_at", "status", "kyc_status", "vip_level", "referral_code", "referred_by_code", "referral_count", "wallet_address", "two_factor_enabled", "google_auth_enabled", "account_frozen", "withdrawals_frozen", "investments_frozen", "internal_note", "created_at", "updated_at") values ($1, default, $2, $3, $4, $5, default, default, $6, $7, default, $8, $9, $10, default, default, $11, default, default, default, default, default, default, default, default)
+        params: usr_depconf_mu940q2c4doe9,NT-D40q2c4doe9,Deposit Test 40q2c4doe9,deposit-conf-40q2c4doe9@example.invalid,+91 00000 00000,2026-09-20T01:00:28.020Z,2026-09-20T01:00:28.020Z,verified,vip1,DC40Q2C4DOE9,T40q2c4doe9
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        PostgresJsPreparedQuery.queryWithCache (/home/rkbajiyaa/Project/nanotron/node_modules/src/pg-core/session.ts:73:11)
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async makeUser (/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:71:5)
+        async TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:122:18)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1442:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+      ...
+    # Subtest: a deposit that has not been credited is never announced
+    not ok 2 - a deposit that has not been credited is never announced
+      ---
+      duration_ms: 9.390591
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:134:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a historical (acknowledged) deposit is not announced again
+    not ok 3 - a historical (acknowledged) deposit is not announced again
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:146:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: acknowledging removes it, permanently and on the server
+    not ok 4 - acknowledging removes it, permanently and on the server
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:157:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: acknowledging twice is a no-op, not an error
+    not ok 5 - acknowledging twice is a no-op, not an error
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:179:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: one account cannot acknowledge another's deposit
+    not ok 6 - one account cannot acknowledge another's deposit
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:191:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: acknowledging cannot credit, advance or resurrect a deposit
+    not ok 7 - acknowledging cannot credit, advance or resurrect a deposit
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:209:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: each new deposit gets its own confirmation
+    not ok 8 - each new deposit gets its own confirmation
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:232:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: the historical backfill left no seeded deposit unannounced
+    not ok 9 - the historical backfill left no seeded deposit unannounced
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:247:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    1..9
+not ok 56 - new-deposit confirmation
+  ---
+  duration_ms: 57.97884
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:47:1'
+  failureType: 'cancelledByParent'
+  error: 'Promise resolution is still pending but the event loop has already resolved'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    process.emit (node:events:519:28)
+    process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+  ...
+# Subtest: stops as soon as a batch comes back short
+ok 57 - stops as soon as a batch comes back short
+  ---
+  duration_ms: 1.933766
+  type: 'test'
+  ...
+# Subtest: an empty first batch costs exactly one statement
+ok 58 - an empty first batch costs exactly one statement
+  ---
+  duration_ms: 0.401579
+  type: 'test'
+  ...
+# Subtest: stops at the per-run ceiling and reports that there is more
+ok 59 - stops at the per-run ceiling and reports that there is more
+  ---
+  duration_ms: 0.531973
+  type: 'test'
+  ...
+# Subtest: a failing batch is not swallowed
+ok 60 - a failing batch is not swallowed
+  ---
+  duration_ms: 1.061544
+  type: 'test'
+  ...
+# Subtest: classification
+    # Subtest: a full pooler is a database outage, not a server error
+    ok 1 - a full pooler is a database outage, not a server error
+      ---
+      duration_ms: 2.405736
+      type: 'test'
+      ...
+    # Subtest: a refused permission is not an infrastructure failure
+    ok 2 - a refused permission is not an infrastructure failure
+      ---
+      duration_ms: 0.358874
+      type: 'test'
+      ...
+    # Subtest: an ordinary internal error stays a server error
+    ok 3 - an ordinary internal error stays a server error
+      ---
+      duration_ms: 0.869375
+      type: 'test'
+      ...
+    1..3
+ok 61 - classification
+  ---
+  duration_ms: 5.948382
+  type: 'test'
+  ...
+# Subtest: what a person is allowed to be shown
+    # Subtest: never leaks SQL or bound parameters
+    ok 1 - never leaks SQL or bound parameters
+      ---
+      duration_ms: 0.762109
+      type: 'test'
+      ...
+    # Subtest: this application's own refusals are shown verbatim
+    ok 2 - this application's own refusals are shown verbatim
+      ---
+      duration_ms: 0.314679
+      type: 'test'
+      ...
+    # Subtest: an unrecognised error falls back to the caller's wording
+    ok 3 - an unrecognised error falls back to the caller's wording
+      ---
+      duration_ms: 0.518716
+      type: 'test'
+      ...
+    1..3
+ok 62 - what a person is allowed to be shown
+  ---
+  duration_ms: 3.175949
+  type: 'test'
+  ...
+# Subtest: what an operator is allowed to see
+    # Subtest: the cause chain is recorded, not just the wrapper
+    ok 1 - the cause chain is recorded, not just the wrapper
+      ---
+      duration_ms: 1.642693
+      type: 'test'
+      ...
+    # Subtest: the code is filterable, not only readable
+    ok 2 - the code is filterable, not only readable
+      ---
+      duration_ms: 0.630212
+      type: 'test'
+      ...
+    # Subtest: a connection string in a driver error is still redacted
+    ok 3 - a connection string in a driver error is still redacted
+      ---
+      duration_ms: 0.380168
+      type: 'test'
+      ...
+    # Subtest: bound query parameters never reach the log
+    ok 4 - bound query parameters never reach the log
+      ---
+      duration_ms: 0.31326
+      type: 'test'
+      ...
+    # Subtest: a self-referential cause does not hang the describer
+    ok 5 - a self-referential cause does not hang the describer
+      ---
+      duration_ms: 0.314918
+      type: 'test'
+      ...
+    1..5
+ok 63 - what an operator is allowed to see
+  ---
+  duration_ms: 4.854626
+  type: 'test'
+  ...
+# Subtest: kyc document storage
+    # Subtest: a person can upload an accepted file into their own folder
+    not ok 1 - a person can upload an accepted file into their own folder
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:202:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    # Subtest: a disallowed file type is refused by the bucket, not by the app
+    not ok 2 - a disallowed file type is refused by the bucket, not by the app
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:207:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    # Subtest: an oversized file is refused by the bucket
+    not ok 3 - an oversized file is refused by the bucket
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:222:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    # Subtest: a person cannot upload into another account's folder
+    not ok 4 - a person cannot upload into another account's folder
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:229:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    # Subtest: an anonymous caller cannot upload at all
+    not ok 5 - an anonymous caller cannot upload at all
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:245:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    # Subtest: a person can read their own document; nobody else can
+    not ok 6 - a person can read their own document; nobody else can
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:255:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    # Subtest: a KYC operator can sign a link to somebody else's document
+    not ok 7 - a KYC operator can sign a link to somebody else's document
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:267:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    # Subtest: a signature cannot be minted for a document you cannot read
+    not ok 8 - a signature cannot be minted for a document you cannot read
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:280:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    # Subtest: an unsubmitted upload can be cleaned up; a submitted one cannot
+    not ok 9 - an unsubmitted upload can be cleaned up; a submitted one cannot
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:291:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    # Subtest: a resubmission writes a new object rather than replacing one
+    not ok 10 - a resubmission writes a new object rather than replacing one
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:344:3'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    1..10
+not ok 64 - kyc document storage
+  ---
+  duration_ms: 96.700602
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:162:1'
+  failureType: 'hookFailed'
+  error: 'fetch failed'
+  code: 'ERR_TEST_FAILURE'
+  name: 'TypeError'
+  stack: |-
+    node:internal/deps/undici/undici:15157:13
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async signIn (/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:68:20)
+    async SuiteContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:180:12)
+    async TestHook.run (node:internal/test_runner/test:1054:7)
+    async Suite.runHook (node:internal/test_runner/test:965:9)
+    async Suite.run (node:internal/test_runner/test:1436:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: postgrest exposure
+    # Subtest: an anonymous caller reads nothing from any application table
+    not ok 1 - an anonymous caller reads nothing from any application table
+      ---
+      duration_ms: 24.459132
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:400:3'
+      failureType: 'testCodeFailure'
+      error: 'fetch failed'
+      code: 'ERR_TEST_FAILURE'
+      name: 'TypeError'
+      stack: |-
+        node:internal/deps/undici/undici:15157:13
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async readAs (/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:392:22)
+        async TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:402:32)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1442:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    # Subtest: a signed-in customer reads nothing either
+    not ok 2 - a signed-in customer reads nothing either
+      ---
+      duration_ms: 7.44378
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:410:3'
+      failureType: 'testCodeFailure'
+      error: 'fetch failed'
+      code: 'ERR_TEST_FAILURE'
+      name: 'TypeError'
+      stack: |-
+        node:internal/deps/undici/undici:15157:13
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async signIn (/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:68:20)
+        async TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:411:23)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    1..2
+not ok 65 - postgrest exposure
+  ---
+  duration_ms: 32.90997
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/kyc-storage.integration.test.ts:371:1'
+  failureType: 'subtestsFailed'
+  error: '2 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: money lifecycle
+    # Subtest: a credit, an allocation and a maturity keep the ledger and balance agreeing
+    not ok 1 - a credit, an allocation and a maturity keep the ledger and balance agreeing
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:214:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: settling twice returns the principal once, and pays no period twice
+    not ok 2 - settling twice returns the principal once, and pays no period twice
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:318:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an open-ended allocation is never matured by the settler
+    not ok 3 - an open-ended allocation is never matured by the settler
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:360:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a person can return an open-ended allocation, exactly once
+    not ok 4 - a person can return an open-ended allocation, exactly once
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:395:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: one account cannot return another account's allocation
+    not ok 5 - one account cannot return another account's allocation
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:447:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a fixed-term allocation cannot be ended this way
+    not ok 6 - a fixed-term allocation cannot be ended this way
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:478:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a missed cron run catches up every overdue earning period in one pass
+    not ok 7 - a missed cron run catches up every overdue earning period in one pass
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:504:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: non-compounding periods split the total profit exactly, with no rounding drift
+    not ok 8 - non-compounding periods split the total profit exactly, with no rounding drift
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:606:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: crediting the final period and returning principal both happen in one pass at maturity
+    not ok 9 - crediting the final period and returning principal both happen in one pass at maturity
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:664:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: Flexible Reserve accrues no scheduled earnings — it has no term to schedule them over
+    not ok 10 - Flexible Reserve accrues no scheduled earnings — it has no term to schedule them over
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:715:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: changing a plan's rate does not alter an allocation already sold at the old one
+    not ok 11 - changing a plan's rate does not alter an allocation already sold at the old one
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:743:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: one settlement pass matures everything overdue, however long the gap
+    not ok 12 - one settlement pass matures everything overdue, however long the gap
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:806:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: the reward schedule shows the next uncredited period, not just the next calendar boundary
+    not ok 13 - the reward schedule shows the next uncredited period, not just the next calendar boundary
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:853:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a term that has run out has no schedule and clamped progress
+    not ok 14 - a term that has run out has no schedule and clamped progress
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:907:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    1..14
+not ok 66 - money lifecycle
+  ---
+  duration_ms: 45.43976
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/money-lifecycle.integration.test.ts:51:1'
+  failureType: 'cancelledByParent'
+  error: 'Promise resolution is still pending but the event loop has already resolved'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    process.emit (node:events:519:28)
+    process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+  ...
+# Subtest: redaction
+    # Subtest: strips connection strings, keys and JWTs from error text
+    ok 1 - strips connection strings, keys and JWTs from error text
+      ---
+      duration_ms: 2.112844
+      type: 'test'
+      ...
+    # Subtest: caps length, so one enormous error cannot dominate the table
+    ok 2 - caps length, so one enormous error cannot dominate the table
+      ---
+      duration_ms: 0.57963
+      type: 'test'
+      ...
+    1..2
+ok 67 - redaction
+  ---
+  duration_ms: 4.738729
+  type: 'suite'
+  ...
+# Subtest: correlation
+    # Subtest: one id spans everything a request calls
+    ok 1 - one id spans everything a request calls
+      ---
+      duration_ms: 3.290216
+      type: 'test'
+      ...
+    # Subtest: separate requests get separate ids
+    ok 2 - separate requests get separate ids
+      ---
+      duration_ms: 1.054655
+      type: 'test'
+      ...
+    1..2
+ok 68 - correlation
+  ---
+  duration_ms: 4.783954
+  type: 'suite'
+  ...
+# Subtest: pipeline events
+    # Subtest: a successful step is recorded with its duration
+    not ok 1 - a successful step is recorded with its duration
+      ---
+      duration_ms: 89.77781
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/pipeline.integration.test.ts:99:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        Failed query: select "id", "pipeline", "layer", "operation", "status", "route", "actor_type", "occurred_at", "duration_ms", "correlation_id", "user_id", "actor_id", "actor_name", "subject_type", "subject_id", "message", "error_message", "metadata", "created_at" from "pipeline_events" where "pipeline_events"."correlation_id" = $1
+        params: req_86b936cb821c403480de
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        PostgresJsPreparedQuery.queryWithCache (/home/rkbajiyaa/Project/nanotron/node_modules/src/pg-core/session.ts:73:11)
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async <anonymous> (/home/rkbajiyaa/Project/nanotron/node_modules/src/postgres-js/session.ts:58:17)
+        async TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/pipeline.integration.test.ts:117:19)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1442:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    # Subtest: a failure is recorded AND re-thrown
+    not ok 2 - a failure is recorded AND re-thrown
+      ---
+      duration_ms: 15.747271
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/pipeline.integration.test.ts:128:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: steps of one request share a correlation id and keep their order
+    not ok 3 - steps of one request share a correlation id and keep their order
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/pipeline.integration.test.ts:155:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: recording never throws, even with an impossible foreign key
+    not ok 4 - recording never throws, even with an impossible foreign key
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/pipeline.integration.test.ts:186:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: ten events in one trace are buffered and written together
+    not ok 5 - ten events in one trace are buffered and written together
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/pipeline.integration.test.ts:201:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an event may carry a correlation id that is not the trace's
+    not ok 6 - an event may carry a correlation id that is not the trace's
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/pipeline.integration.test.ts:236:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    1..6
+not ok 69 - pipeline events
+  ---
+  duration_ms: 119.363413
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/pipeline.integration.test.ts:81:1'
+  failureType: 'cancelledByParent'
+  error: 'Promise resolution is still pending but the event loop has already resolved'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    process.emit (node:events:519:28)
+    process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+  ...
+# Subtest: plan rate tiers
+    # Subtest: a valid ladder saves, and comes back in lower-bound order
+    not ok 1 - a valid ladder saves, and comes back in lower-bound order
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:166:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: the save is audited, with the ladder before and after
+    not ok 2 - the save is audited, with the ladder before and after
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:185:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an overlapping ladder is refused by the server, not only by the form
+    not ok 3 - an overlapping ladder is refused by the server, not only by the form
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:204:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a ladder leaving part of the plan's range unpriced is refused
+    not ok 4 - a ladder leaving part of the plan's range unpriced is refused
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:222:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a rate finer than the column stores is refused, not silently rounded
+    not ok 5 - a rate finer than the column stores is refused, not silently rounded
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:240:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a refused save leaves the stored ladder exactly as it was
+    not ok 6 - a refused save leaves the stored ladder exactly as it was
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:259:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: the preview prices an amount with the same function an allocation uses
+    not ok 7 - the preview prices an amount with the same function an allocation uses
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:271:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an allocation is priced at the band its amount falls into, and the band is recorded
+    not ok 8 - an allocation is priced at the band its amount falls into, and the band is recorded
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:292:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: the boundary is half-open where it actually matters — in the ledger
+    not ok 9 - the boundary is half-open where it actually matters — in the ledger
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:316:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an amount no band covers is refused, and nothing is debited
+    not ok 10 - an amount no band covers is refused, and nothing is debited
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:335:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a plan with no ladder is priced at its own estimated return
+    not ok 11 - a plan with no ladder is priced at its own estimated return
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:364:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: changing a band does not reprice an allocation already made
+    not ok 12 - changing a band does not reprice an allocation already made
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:381:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: deleting a band leaves the allocation that cited it intact
+    not ok 13 - deleting a band leaves the allocation that cited it intact
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:426:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an unverified account cannot allocate, whatever the ladder says
+    not ok 14 - an unverified account cannot allocate, whatever the ladder says
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:465:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an account with allocations frozen cannot allocate
+    not ok 15 - an account with allocations frozen cannot allocate
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:481:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a closed plan refuses allocations even with a valid ladder
+    not ok 16 - a closed plan refuses allocations even with a valid ladder
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:497:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: insufficient balance is refused, and nothing at all is written
+    not ok 17 - insufficient balance is refused, and nothing at all is written
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:512:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: exactly the available balance is allowed
+    not ok 18 - exactly the available balance is allowed
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:536:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: two identical allocations submitted together both take their own money
+    not ok 19 - two identical allocations submitted together both take their own money
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:548:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    1..19
+not ok 70 - plan rate tiers
+  ---
+  duration_ms: 43.398082
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/plan-tiers.integration.test.ts:51:1'
+  failureType: 'cancelledByParent'
+  error: 'Promise resolution is still pending but the event loop has already resolved'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    process.emit (node:events:519:28)
+    process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+  ...
+# Subtest: half-open bands: every boundary resolves to exactly one tier
+ok 71 - half-open bands: every boundary resolves to exactly one tier
+  ---
+  duration_ms: 4.121297
+  type: 'test'
+  ...
+# Subtest: the smallest representable step either side of a boundary lands on different tiers
+ok 72 - the smallest representable step either side of a boundary lands on different tiers
+  ---
+  duration_ms: 0.552021
+  type: 'test'
+  ...
+# Subtest: an inactive tier is skipped, and its range is not absorbed by a neighbour
+ok 73 - an inactive tier is skipped, and its range is not absorbed by a neighbour
+  ---
+  duration_ms: 0.471101
+  type: 'test'
+  ...
+# Subtest: ordering is by lower bound, whatever order the rows arrive in
+ok 74 - ordering is by lower bound, whatever order the rows arrive in
+  ---
+  duration_ms: 1.500763
+  type: 'test'
+  ...
+# Subtest: a plan with no ladder is sold at its own rate
+ok 75 - a plan with no ladder is sold at its own rate
+  ---
+  duration_ms: 0.522144
+  type: 'test'
+  ...
+# Subtest: a plan whose every band is inactive falls back to its own rate
+ok 76 - a plan whose every band is inactive falls back to its own rate
+  ---
+  duration_ms: 0.306028
+  type: 'test'
+  ...
+# Subtest: a matched band's rate wins over the plan's own
+ok 77 - a matched band's rate wins over the plan's own
+  ---
+  duration_ms: 0.472607
+  type: 'test'
+  ...
+# Subtest: an amount no band covers is refused, never sold at the plan rate
+ok 78 - an amount no band covers is refused, never sold at the plan rate
+  ---
+  duration_ms: 0.927225
+  type: 'test'
+  ...
+# Subtest: the top band being open-ended means no amount above it is ever unpriced
+ok 79 - the top band being open-ended means no amount above it is ever unpriced
+  ---
+  duration_ms: 0.727712
+  type: 'test'
+  ...
+# Subtest: a contiguous, non-overlapping ladder validates clean
+ok 80 - a contiguous, non-overlapping ladder validates clean
+  ---
+  duration_ms: 1.192028
+  type: 'test'
+  ...
+# Subtest: an empty ladder validates clean — no ladder is a supported configuration
+ok 81 - an empty ladder validates clean — no ladder is a supported configuration
+  ---
+  duration_ms: 0.340746
+  type: 'test'
+  ...
+# Subtest: overlapping tiers are refused
+ok 82 - overlapping tiers are refused
+  ---
+  duration_ms: 0.467617
+  type: 'test'
+  ...
+# Subtest: an overlap is still refused when one of the two is inactive
+ok 83 - an overlap is still refused when one of the two is inactive
+  ---
+  duration_ms: 0.332677
+  type: 'test'
+  ...
+# Subtest: a gap between tiers is refused
+ok 84 - a gap between tiers is refused
+  ---
+  duration_ms: 0.412846
+  type: 'test'
+  ...
+# Subtest: duplicate lower bounds are refused
+ok 85 - duplicate lower bounds are refused
+  ---
+  duration_ms: 2.000017
+  type: 'test'
+  ...
+# Subtest: an inverted band is refused
+ok 86 - an inverted band is refused
+  ---
+  duration_ms: 0.431946
+  type: 'test'
+  ...
+# Subtest: a zero-width band is refused
+ok 87 - a zero-width band is refused
+  ---
+  duration_ms: 0.234379
+  type: 'test'
+  ...
+# Subtest: a negative bound is refused
+ok 88 - a negative bound is refused
+  ---
+  duration_ms: 0.28686
+  type: 'test'
+  ...
+# Subtest: a zero or negative rate is refused
+ok 89 - a zero or negative rate is refused
+  ---
+  duration_ms: 0.244984
+  type: 'test'
+  ...
+# Subtest: only the highest tier may be open-ended
+ok 90 - only the highest tier may be open-ended
+  ---
+  duration_ms: 0.244465
+  type: 'test'
+  ...
+# Subtest: a ladder that cannot price every amount the plan accepts is refused
+ok 91 - a ladder that cannot price every amount the plan accepts is refused
+  ---
+  duration_ms: 0.45329
+  type: 'test'
+  ...
+# Subtest: every problem in a ladder is reported at once, not just the first
+ok 92 - every problem in a ladder is reported at once, not just the first
+  ---
+  duration_ms: 0.279813
+  type: 'test'
+  ...
+# Subtest: referral commission
+    # Subtest: an allocation pays the direct referrer at their VIP tier-1 rate
+    not ok 1 - an allocation pays the direct referrer at their VIP tier-1 rate
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:154:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: the allocation moves the referrer's standing and never their balance
+    not ok 2 - the allocation moves the referrer's standing and never their balance
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:186:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a second allocation adds volume but not a second active referral
+    not ok 3 - a second allocation adds volume but not a second active referral
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:241:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: the second tier is paid, and there is no third
+    not ok 4 - the second tier is paid, and there is no third
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:267:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a referrer is promoted once they meet both VIP requirements
+    not ok 5 - a referrer is promoted once they meet both VIP requirements
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:307:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: releasing a commission credits the wallet exactly once
+    not ok 6 - releasing a commission credits the wallet exactly once
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:365:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: the programme switch in platform settings is honoured
+    not ok 7 - the programme switch in platform settings is honoured
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:425:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an invite code is validated against a real, active account
+    not ok 8 - an invite code is validated against a real, active account
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:467:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an allocation by an unreferred account pays nobody
+    not ok 9 - an allocation by an unreferred account pays nobody
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:499:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    1..9
+not ok 93 - referral commission
+  ---
+  duration_ms: 43.528874
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/referrals.integration.test.ts:48:1'
+  failureType: 'cancelledByParent'
+  error: 'Promise resolution is still pending but the event loop has already resolved'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    process.emit (node:events:519:28)
+    process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+  ...
+# Subtest: likePattern
+    # Subtest: wraps the needle so it matches anywhere
+    ok 1 - wraps the needle so it matches anywhere
+      ---
+      duration_ms: 1.313894
+      type: 'test'
+      ...
+    # Subtest: neutralises LIKE's own wildcards
+    ok 2 - neutralises LIKE's own wildcards
+      ---
+      duration_ms: 0.285067
+      type: 'test'
+      ...
+    # Subtest: escapes the escape character first
+    ok 3 - escapes the escape character first
+      ---
+      duration_ms: 0.283369
+      type: 'test'
+      ...
+    1..3
+ok 94 - likePattern
+  ---
+  duration_ms: 3.785286
+  type: 'suite'
+  ...
+# Subtest: readPage
+    # Subtest: reports the filtered total, not the page size
+    ok 1 - reports the filtered total, not the page size
+      ---
+      duration_ms: 0.768877
+      type: 'test'
+      ...
+    # Subtest: an empty set still reads as page 1 of 1
+    ok 2 - an empty set still reads as page 1 of 1
+      ---
+      duration_ms: 0.349163
+      type: 'test'
+      ...
+    # Subtest: a page past the end falls back to page 1
+    ok 3 - a page past the end falls back to page 1
+      ---
+      duration_ms: 1.45717
+      type: 'test'
+      ...
+    # Subtest: does not retry an empty page 1
+    ok 4 - does not retry an empty page 1
+      ---
+      duration_ms: 0.502582
+      type: 'test'
+      ...
+    # Subtest: clamps the reported page to the page count
+    ok 5 - clamps the reported page to the page count
+      ---
+      duration_ms: 0.595719
+      type: 'test'
+      ...
+    1..5
+ok 95 - readPage
+  ---
+  duration_ms: 4.593803
+  type: 'suite'
+  ...
+# Subtest: validates base58check, not just the shape
+ok 96 - validates base58check, not just the shape
+  ---
+  duration_ms: 3.135129
+  type: 'test'
+  ...
+# Subtest: compares base58 and hex notations of the same address
+ok 97 - compares base58 and hex notations of the same address
+  ---
+  duration_ms: 0.81825
+  type: 'test'
+  ...
+# Subtest: accepts mainnet, and defaults its grid URL to the mainnet endpoint
+ok 98 - accepts mainnet, and defaults its grid URL to the mainnet endpoint
+  ---
+  duration_ms: 1.621432
+  type: 'test'
+  ...
+# Subtest: refuses to skip confirmation on mainnet, but allows it on a testnet
+ok 99 - refuses to skip confirmation on mainnet, but allows it on a testnet
+  ---
+  duration_ms: 2.34325
+  type: 'test'
+  ...
+# Subtest: refuses a network that is not a TRON network
+ok 100 - refuses a network that is not a TRON network
+  ---
+  duration_ms: 0.696741
+  type: 'test'
+  ...
+# Subtest: the configured mainnet USDT contract is a real TRON address
+ok 101 - the configured mainnet USDT contract is a real TRON address
+  ---
+  duration_ms: 0.315001
+  type: 'test'
+  ...
+# Subtest: refuses a mistyped contract or deposit address
+ok 102 - refuses a mistyped contract or deposit address
+  ---
+  duration_ms: 3.106594
+  type: 'test'
+  ...
+# Subtest: refuses a plaintext TronGrid URL
+ok 103 - refuses a plaintext TronGrid URL
+  ---
+  duration_ms: 0.863822
+  type: 'test'
+  ...
+# Subtest: refuses a deposit address that is the contract
+ok 104 - refuses a deposit address that is the contract
+  ---
+  duration_ms: 1.048436
+  type: 'test'
+  ...
+# Subtest: confirmation is required unless explicitly disabled
+ok 105 - confirmation is required unless explicitly disabled
+  ---
+  duration_ms: 1.130628
+  type: 'test'
+  ...
+# Subtest: reports whether TRON is configured at all
+ok 106 - reports whether TRON is configured at all
+  ---
+  duration_ms: 0.746137
+  type: 'test'
+  ...
+# Subtest: accepts a well-formed incoming USDT transfer
+ok 107 - accepts a well-formed incoming USDT transfer
+  ---
+  duration_ms: 1.441531
+  type: 'test'
+  ...
+# Subtest: ignores a different TRC-20 token
+ok 108 - ignores a different TRC-20 token
+  ---
+  duration_ms: 0.515532
+  type: 'test'
+  ...
+# Subtest: ignores a transfer to another address
+ok 109 - ignores a transfer to another address
+  ---
+  duration_ms: 0.566454
+  type: 'test'
+  ...
+# Subtest: ignores a self-transfer
+ok 110 - ignores a self-transfer
+  ---
+  duration_ms: 0.392502
+  type: 'test'
+  ...
+# Subtest: refuses to guess the token's decimals
+ok 111 - refuses to guess the token's decimals
+  ---
+  duration_ms: 0.452721
+  type: 'test'
+  ...
+# Subtest: scales by the decimals the token reports
+ok 112 - scales by the decimals the token reports
+  ---
+  duration_ms: 0.874021
+  type: 'test'
+  ...
+# Subtest: rejects invalid or empty transaction data
+ok 113 - rejects invalid or empty transaction data
+  ---
+  duration_ms: 1.842108
+  type: 'test'
+  ...
+# Subtest: handles a transfer with no block timestamp
+ok 114 - handles a transfer with no block timestamp
+  ---
+  duration_ms: 0.807858
+  type: 'test'
+  ...
+# Subtest: writes
+    # Subtest: a credit writes a ledger entry and moves the balance together
+    not ok 1 - a credit writes a ledger entry and moves the balance together
+      ---
+      duration_ms: 31.957279
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:118:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        Failed query: insert into "users" ("id", "auth_user_id", "display_id", "full_name", "email", "phone", "country", "avatar_url", "registered_at", "last_active_at", "status", "kyc_status", "vip_level", "referral_code", "referred_by_code", "referral_count", "wallet_address", "two_factor_enabled", "google_auth_enabled", "account_frozen", "withdrawals_frozen", "investments_frozen", "internal_note", "created_at", "updated_at") values ($1, default, $2, $3, $4, $5, default, default, $6, $7, default, $8, default, $9, default, default, $10, default, default, default, default, default, default, default, default)
+        params: usr_test_mu940w9k6u4iv,NT-T40w9k6u4iv,Write Test,write-test-40w9k6u4iv@example.invalid,+91 00000 00000,2026-09-20T01:00:36.056Z,2026-09-20T01:00:36.056Z,verified,TEST40W9K6U4IV,T40w9k6u4iv
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        PostgresJsPreparedQuery.queryWithCache (/home/rkbajiyaa/Project/nanotron/node_modules/src/pg-core/session.ts:73:11)
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async makeUser (/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:74:5)
+        async TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:119:20)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1442:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+      ...
+    # Subtest: the ledger always sums to the balance
+    not ok 2 - the ledger always sums to the balance
+      ---
+      duration_ms: 11.623072
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:142:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a debit that would overdraw is refused, and nothing is written
+    not ok 3 - a debit that would overdraw is refused, and nothing is written
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:164:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a failure inside the unit of work rolls the whole thing back
+    not ok 4 - a failure inside the unit of work rolls the whole thing back
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:186:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: the same blockchain transaction is only ever recorded once
+    not ok 5 - the same blockchain transaction is only ever recorded once
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:227:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: a recorded deposit belongs to nobody until an operator says so
+    not ok 6 - a recorded deposit belongs to nobody until an operator says so
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:249:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: assignment credits the wallet exactly once
+    not ok 7 - assignment credits the wallet exactly once
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:265:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an unconfirmed deposit cannot be credited
+    not ok 8 - an unconfirmed deposit cannot be credited
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:292:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an ignored deposit cannot be credited
+    not ok 9 - an ignored deposit cannot be credited
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:308:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: every deposit action leaves an audit entry
+    not ok 10 - every deposit action leaves an audit entry
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:321:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: an investment earning settles once per period
+    not ok 11 - an investment earning settles once per period
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:340:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: two concurrent settlement attempts for the same period pay once
+    not ok 12 - two concurrent settlement attempts for the same period pay once
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:383:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    # Subtest: verification status and notifications persist
+    not ok 13 - verification status and notifications persist
+      ---
+      duration_ms: 0
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:438:3'
+      failureType: 'cancelledByParent'
+      error: 'Promise resolution is still pending but the event loop has already resolved'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        process.emit (node:events:519:28)
+        process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+      ...
+    1..13
+not ok 115 - writes
+  ---
+  duration_ms: 57.488592
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/writes.integration.test.ts:44:1'
+  failureType: 'cancelledByParent'
+  error: 'Promise resolution is still pending but the event loop has already resolved'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    process.emit (node:events:519:28)
+    process.emit (/home/rkbajiyaa/Project/nanotron/node_modules/tsx/dist/suppress-warnings.cjs:1:472)
+  ...
+1..115
+# tests 338
+# suites 32
+# pass 243
+# fail 8
+# cancelled 87
+# skipped 0
+# todo 0
+# duration_ms 1552141.703083

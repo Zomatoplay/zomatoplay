@@ -1,0 +1,31 @@
+   ▲ Next.js 15.5.23
+   - Local:        http://localhost:3000
+   - Network:      http://10.79.40.107:3000
+
+ ✓ Starting...
+ ✓ Ready in 1262ms
+ ⨯ Error [NotAuthenticatedError]: Not signed in.
+    at g (.next/server/chunks/1811.js:1:2513)
+    at async N (.next/server/app/(app)/referral/page.js:11:7231)
+    at async U (.next/server/app/(app)/referral/page.js:11:10014) {
+  digest: '1884070169'
+}
+ ⨯ Error [NotAuthenticatedError]: Not signed in.
+    at g (.next/server/chunks/1811.js:1:2513)
+    at async N (.next/server/app/(app)/referral/page.js:11:7231)
+    at async U (.next/server/app/(app)/referral/page.js:11:10014) {
+  digest: '1884070169'
+}
+ ⨯ Error [NotAuthenticatedError]: Not signed in.
+    at g (.next/server/chunks/1811.js:1:2513)
+    at async N (.next/server/app/(app)/referral/page.js:11:7231)
+    at async U (.next/server/app/(app)/referral/page.js:11:10014) {
+  digest: '1884070169'
+}
+ ⨯ Error [NotAuthenticatedError]: Not signed in.
+    at g (.next/server/chunks/1811.js:1:2513)
+    at async N (.next/server/app/(app)/referral/page.js:11:7231)
+    at async U (.next/server/app/(app)/referral/page.js:11:10014) {
+  digest: '1884070169'
+}
+Killed

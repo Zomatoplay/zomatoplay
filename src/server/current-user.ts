@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getAuthenticatedAccount } from "./auth/account";
+import { getAuthenticatedAccount, isAccountLockedOut } from "./auth/account";
 
 /**
  * Who the request is acting as.
@@ -73,8 +73,42 @@ export async function requireCurrentUserId(): Promise<string> {
  * Actions keep `requireCurrentUserId`, which throws and is caught.
  */
 export async function requireCurrentUserIdForPage(): Promise<string> {
-  const userId = await getCurrentUserId();
-  if (userId) return userId;
+  const account = await getAuthenticatedAccount();
+
+  /*
+   * THE LOCKOUT AND PROFILE CHECKS LIVE HERE, NOT ONLY IN THE LAYOUT.
+   * -----------------------------------------------------------------
+   * They used to live *only* in `(app)/layout.tsx`, which was safe purely
+   * because that layout awaited them before rendering anything. It no longer
+   * does — the shell is flushed before the account is known, so that the page
+   * structure can reach the user in a few tens of milliseconds instead of
+   * several hundred (see the layout for the full reasoning).
+   *
+   * Next renders a layout and the page beneath it **in parallel**, so a gate
+   * that has been moved off the critical path cannot be the only thing
+   * stopping a blocked account from reading its own data. Every `(app)` page
+   * resolves its user through here, so enforcing it here is what keeps the
+   * guarantee — and it is strictly stronger than before, because it now
+   * applies per read rather than once per document.
+   *
+   * An operator blocking, suspending or deactivating an account in the CRM
+   * still takes effect on that account's next request.
+   */
+  if (account && isAccountLockedOut(account.status)) {
+    const { redirect } = await import("next/navigation");
+    redirect("/login");
+  }
+
+  /*
+   * A verified email with no name or phone yet. `/complete-profile` lives in
+   * the `(auth)` group, not this one, so redirecting here cannot loop.
+   */
+  if (account && !account.profileComplete) {
+    const { redirect } = await import("next/navigation");
+    redirect("/complete-profile");
+  }
+
+  if (account) return account.userId;
 
   /*
    * Imported here rather than at module scope.

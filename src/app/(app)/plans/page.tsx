@@ -1,10 +1,9 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 
 import { UserDataProvider } from "@/lib/prototype-store";
-import {
-  getUnreadNotificationCount,
-  getUserSlices,
-} from "@/server/services/account.service";
+import { getUserSlices } from "@/server/services/account.service";
+import { ListSkeleton } from "@/components/shared/page-skeleton";
 
 import { PageContainer } from "@/components/navigation/app-shell";
 import { TopBar } from "@/components/navigation/top-bar";
@@ -18,44 +17,51 @@ export const metadata: Metadata = {
     "Browse Nanotron investment plans by term, projected return and risk level.",
 };
 
-export default async function PlansPage() {
-  /*
-   * `profile` and the unread count are read here for `TopBar`, not for this
-   * page.
-   *
-   * `TopBar` is an async server component in the tree this page *returns*, so
-   * its own reads cannot begin until this function has already resolved — a
-   * whole extra round trip (~400ms) tacked onto the end of every one of the
-   * five primary sections. Naming the slices here puts them in the same wave as
-   * everything else; the reads are request-memoised, so `TopBar` awaiting them
-   * a moment later costs nothing.
-   */
+/**
+ * The catalogue's framing renders immediately; only the plan cards wait.
+ *
+ * The intro paragraph and the two notices are fixed copy, and `RiskNote` in
+ * particular must never be late — it is the disclosure that sits beside the
+ * projected returns.
+ */
+export default function PlansPage() {
+  return (
+    <>
+      <TopBar eyebrow="Investment products" title="Plans" />
+
+      <PageContainer className="space-y-5">
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          Choose a plan that matches how long you can leave funds invested and
+          how much variance you are comfortable with. All figures shown are
+          estimates.
+        </p>
+
+        <Suspense fallback={<ListSkeleton rows={3} />}>
+          <PlansSection />
+        </Suspense>
+
+        <RiskNote />
+        <RateNote />
+      </PageContainer>
+    </>
+  );
+}
+
+/**
+ * The plan cards and the balance the invest sheet checks against.
+ *
+ * `getPlans()` is catalogue data and usually served from the cross-request
+ * cache; the balance is per-account and never is. They are read in one wave.
+ */
+async function PlansSection() {
   const [plans, slices] = await Promise.all([
     getPlans(),
     getUserSlices(["balance", "profile"] as const),
-    // `TopBar`'s unread badge, in this page's wave rather than a later one.
-    getUnreadNotificationCount(),
   ]);
-
 
   return (
     <UserDataProvider data={slices}>
-      <>
-        <TopBar eyebrow="Investment products" title="Plans" />
-
-        <PageContainer className="space-y-5">
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            Choose a plan that matches how long you can leave funds invested and
-            how much variance you are comfortable with. All figures shown are
-            estimates.
-          </p>
-
-          <PlansBrowser plans={plans} />
-
-          <RiskNote />
-          <RateNote />
-        </PageContainer>
-      </>
-  </UserDataProvider>
+      <PlansBrowser plans={plans} />
+    </UserDataProvider>
   );
 }

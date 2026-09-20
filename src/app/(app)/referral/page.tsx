@@ -12,15 +12,13 @@ import { StatTile } from "@/components/shared/stat-tile";
 import { REFERRAL_BASE_URL } from "@/constants/app";
 import { referralSteps } from "@/data/referrals";
 import { generateQrSvg } from "@/lib/qr";
+import { getUserSlices } from "@/server/services/account.service";
+import { SectionBoundary } from "@/components/shared/section-boundary";
 import {
-  getUnreadNotificationCount,
-  getUserSlices,
-} from "@/server/services/account.service";
-import {
-  SectionBoundary,
-  deferred,
-} from "@/components/shared/section-boundary";
-import { ListSkeleton } from "@/components/shared/page-skeleton";
+  CardSkeleton,
+  ListSkeleton,
+  StatGridSkeleton,
+} from "@/components/shared/page-skeleton";
 import { getVipLevels } from "@/server/services/catalogue.service";
 import {
   getCommissionHistory,
@@ -34,76 +32,36 @@ export const metadata: Metadata = {
     "Invite friends to Nanotron, track your referrals and earn commission.",
 };
 
-export default async function ReferralPage() {
-  /*
-   * The activity lists are started here and awaited inside their own boundary.
-   *
-   * Started here so they ride the same wave as the rest (CLAUDE.md §16.1a item
-   * 6); awaited there so a failed commission ledger costs the reader the
-   * activity panel rather than the whole referral screen — including the link
-   * and QR code they most likely came for.
-   *
-   * The summary, profile and VIP levels stay on the critical path: the stat
-   * tiles and the level card are the primary reading here, and a referral page
-   * that silently drops its earnings figure is worse than one that errors.
-   */
-  const referrals = deferred(getReferrals());
-  const commissions = deferred(getCommissionHistory());
-
-  const [{ profile }, summary, vipLevels] = await Promise.all([
-    // `profile` and the unread count are for `TopBar` — see the note in the
-    // other sections: a component in the returned tree reads a round trip too
-    // late, so its reads are named in the page's own wave.
-    getUserSlices(["profile"] as const),
-    getReferralSummary(),
-    getVipLevels(),
-    getUnreadNotificationCount(),
-  ]);
-
-  const link = `${REFERRAL_BASE_URL}?ref=${profile.referralCode}`;
-  const qrSvg = await generateQrSvg(link);
-  const level = vipLevels.find((vip) => vip.id === summary.currentLevel);
-
+/**
+ * The referral explainer renders immediately; every number and the link wait.
+ *
+ * "How referrals work" and the VIP section framing are fixed copy and were
+ * previously held behind the summary read — measured at ~2,650ms before this
+ * change, the slowest structure on any primary route. The stat tiles, the
+ * link/QR card and the VIP table each wait in their own boundary now.
+ */
+export default function ReferralPage() {
   return (
     <>
       <TopBar eyebrow="Invite and earn" title="Referral" />
 
       <PageContainer className="space-y-6">
         <section className="space-y-3" aria-label="Referral summary">
-          <div className="grid grid-cols-2 gap-3">
-            <StatTile
-              label="Total Referrals"
-              value={String(summary.totalReferrals)}
-              icon={Users}
-            />
-            <StatTile
-              label="Active Referrals"
-              value={String(summary.activeReferrals)}
-              icon={UserCheck}
-            />
-            <StatTile
-              label="Referral Earnings"
-              amount={summary.totalEarnings}
-              icon={TrendingUp}
-              tone="positive"
-            />
-            <StatTile
-              label="VIP Level"
-              value={level?.name ?? "VIP 1"}
-              icon={Crown}
-              hint={
-                level ? `${level.tier1CommissionPercent}% tier 1 commission` : undefined
-              }
-            />
-          </div>
+          <SectionBoundary
+            title="Referral summary"
+            fallback={<StatGridSkeleton tiles={4} />}
+          >
+            <ReferralSummarySection />
+          </SectionBoundary>
           <RateNote className="px-1" />
         </section>
 
-        <ReferralLinkCard
-          link={link}
-          code={profile.referralCode}
-          qrSvg={qrSvg}
-        />
+        <SectionBoundary
+          title="Referral link"
+          fallback={<CardSkeleton lines={3} />}
+        >
+          <ReferralLinkSection />
+        </SectionBoundary>
 
         <section className="space-y-3">
           <SectionHeader title="How referrals work" />
@@ -131,11 +89,9 @@ export default async function ReferralPage() {
             title="VIP levels"
             description="Higher levels earn a larger share of your team's allocations."
           />
-          <VipLevels
-            levels={vipLevels}
-            currentLevel={summary.currentLevel}
-            summary={summary}
-          />
+          <SectionBoundary title="VIP levels" fallback={<ListSkeleton rows={3} />}>
+            <VipLevelsSection />
+          </SectionBoundary>
         </section>
 
         <section className="space-y-3">
@@ -144,10 +100,7 @@ export default async function ReferralPage() {
             title="Referral activity"
             fallback={<ListSkeleton rows={4} />}
           >
-            <ReferralActivitySection
-              referrals={referrals}
-              commissions={commissions}
-            />
+            <ReferralActivitySection />
           </SectionBoundary>
         </section>
       </PageContainer>
@@ -156,16 +109,85 @@ export default async function ReferralPage() {
 }
 
 /**
- * Awaits the activity reads inside the boundary above. Takes promises rather
- * than data so they start in the page's own wave.
+ * The four stat tiles.
+ *
+ * No placeholder tile renders a zero: an account with no referrals and an
+ * account whose summary has not loaded must not look the same.
  */
-async function ReferralActivitySection({
-  referrals,
-  commissions,
-}: {
-  referrals: ReturnType<typeof getReferrals>;
-  commissions: ReturnType<typeof getCommissionHistory>;
-}) {
-  const [list, ledger] = await Promise.all([referrals, commissions]);
+async function ReferralSummarySection() {
+  const [summary, vipLevels] = await Promise.all([
+    getReferralSummary(),
+    getVipLevels(),
+  ]);
+  const level = vipLevels.find((vip) => vip.id === summary.currentLevel);
+
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <StatTile
+        label="Total Referrals"
+        value={String(summary.totalReferrals)}
+        icon={Users}
+      />
+      <StatTile
+        label="Active Referrals"
+        value={String(summary.activeReferrals)}
+        icon={UserCheck}
+      />
+      <StatTile
+        label="Referral Earnings"
+        amount={summary.totalEarnings}
+        icon={TrendingUp}
+        tone="positive"
+      />
+      <StatTile
+        label="VIP Level"
+        value={level?.name ?? "VIP 1"}
+        icon={Crown}
+        hint={
+          level ? `${level.tier1CommissionPercent}% tier 1 commission` : undefined
+        }
+      />
+    </div>
+  );
+}
+
+/**
+ * The shareable link and its QR code.
+ *
+ * The QR is generated from the code, so it cannot start until the profile has
+ * been read; keeping it in here means that CPU cost is inside the boundary
+ * rather than in front of the whole page, which is where it used to sit.
+ */
+async function ReferralLinkSection() {
+  const { profile } = await getUserSlices(["profile"] as const);
+  const link = `${REFERRAL_BASE_URL}?ref=${profile.referralCode}`;
+  const qrSvg = await generateQrSvg(link);
+
+  return (
+    <ReferralLinkCard link={link} code={profile.referralCode} qrSvg={qrSvg} />
+  );
+}
+
+/** The VIP ladder and where this account sits on it. */
+async function VipLevelsSection() {
+  const [summary, vipLevels] = await Promise.all([
+    getReferralSummary(),
+    getVipLevels(),
+  ]);
+  return (
+    <VipLevels
+      levels={vipLevels}
+      currentLevel={summary.currentLevel}
+      summary={summary}
+    />
+  );
+}
+
+/** The referral list and the commission ledger. */
+async function ReferralActivitySection() {
+  const [list, ledger] = await Promise.all([
+    getReferrals(),
+    getCommissionHistory(),
+  ]);
   return <ReferralActivity referrals={list} commissions={ledger} />;
 }

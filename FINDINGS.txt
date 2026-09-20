@@ -1,0 +1,1097 @@
+===============================================================================
+NANOTRON — PRODUCTION READINESS & ARCHITECTURE INVESTIGATION
+Consulting findings. No code, config, schema or infrastructure was changed.
+===============================================================================
+
+Date of investigation : 2026-09-19
+Scope                 : read-only analysis of the repository at HEAD (branch
+                        `main`), plus the measurement history recorded in
+                        CLAUDE.md / FUTURE_TASKS.md / CHANGELOG.md.
+Trigger               : intermittent production
+                        `EMAXCONNSESSION: max clients reached in session mode
+                         - max clients are limited to pool_size: 15`
+                        on the current-user lookup, plus
+                        `infrastructure.fault / pool_exhausted` events.
+Launch target         : public launch tomorrow; ~1,000 users initially, with a
+                        path toward ~10,000.
+
+
+-------------------------------------------------------------------------------
+0. HOW TO READ THIS DOCUMENT — EVIDENCE GRADING
+-------------------------------------------------------------------------------
+
+Every claim below is tagged. Please hold me to these tags.
+
+  [CODE]     Read directly from the source in this repository. A file and,
+             where useful, a line reference is given. This is the strongest
+             category: it is what the program does.
+
+  [MEASURED] A number recorded in this repository's own measurement history,
+             with the date it was taken. I did NOT re-measure these in this
+             session. They were taken against the configured Supabase project
+             (session pooler, AWS ap-northeast-2) from India. The *shape*
+             generalises; the milliseconds do not travel to another region.
+
+  [DERIVED]  Arithmetic performed on [CODE] + [MEASURED] values. The inputs and
+             the assumption set are always stated so you can recompute.
+
+  [UNVERIFIED] A hypothesis consistent with the code but NOT confirmed. Each one
+             comes with the exact experiment that would settle it. Do not act on
+             these without running the experiment first.
+
+WHAT I COULD NOT DO, AND WHY IT MATTERS
+  - I have no access to the production deployment, its logs, its Vercel
+    instance count, or its `pipeline_events` table. Every statement about
+    production behaviour is inference from the code plus the symptoms you
+    reported.
+  - I deliberately did NOT run diagnostic queries against the development
+    database during this session, because the full test suite was running
+    against it. Two consumers share one 15-slot project budget, and a
+    diagnostic query could both taint the test run and itself trigger the
+    error under investigation.
+
+    That constraint is not an inconvenience to note in passing. It IS the
+    finding, reproduced in miniature: an engineer cannot safely run one
+    `SELECT` against this project while a test suite is running. Section E
+    explains why.
+
+
+===============================================================================
+A. CONFIRMED ROOT CAUSES
+===============================================================================
+
+A1. THE 15-CONNECTION CEILING IS PROJECT-WIDE, NOT PER-INSTANCE, AND THE
+    APPLICATION IS ARCHITECTED AS IF IT WERE PER-INSTANCE.
+    [CODE] [MEASURED]
+
+    `DATABASE_URL` points at the Supabase **session** pooler
+    (`…pooler.supabase.com:5432`). In session mode a client connection reserves
+    a Postgres backend for as long as it is held. Supavisor refuses the
+    sixteenth client for the WHOLE PROJECT with exactly the error you are
+    seeing.
+
+    The application holds `DATABASE_POOL_MAX ?? 5` per instance and warms
+    `DATABASE_WARM_CONNECTIONS ?? 3` of them eagerly on pool creation
+    (src/db/client.ts; src/db/warmup.ts). The warm-up is fire-and-forget on the
+    same tick the pool is created — so an instance claims 3 slots BEFORE it has
+    served a single request, and up to 5 under load.
+
+    The arithmetic is unforgiving [DERIVED from the above]:
+
+        instances × 5  +  crons  +  scripts  +  scanner  ≤  15
+
+        1 instance  →  5 held,  10 spare   — comfortable
+        2 instances → 10 held,   5 spare   — the shape this was tuned for
+        3 instances → 15 held,   0 spare   — at the ceiling
+        4 instances → REFUSED              — EMAXCONNSESSION
+
+    Vercel answers load by adding instances. That is the entire scaling model of
+    the platform. So the deployment's response to traffic is the precise action
+    that breaks it. **This is a direct architecture/platform mismatch, and it is
+    the primary root cause.**
+
+    Corroborating measurement already in the repo [MEASURED 2026-09-18]:
+    starting one `npm test` run took the project from 1 to 6 held Supavisor
+    backends. `next dev`, `next start`, `npm test`, `npm run db:*` and
+    `npm run tron:scan` are five separate processes, each claiming up to
+    `DATABASE_POOL_MAX`. Three reach the ceiling; the fourth is refused.
+
+A2. THE FAILING QUERY IS THE ONE QUERY EVERY AUTHENTICATED REQUEST MUST MAKE.
+    [CODE]
+
+    The query in your error report —
+
+        select "id","email","display_id","full_name","phone","status"
+        from "users" where "users"."auth_user_id" = $1 limit $2
+
+    — is `findAccountForPrincipal` in src/server/auth/account.ts. Its own
+    comment calls it "the single hottest query in the application: every
+    authenticated request resolves its account through here."
+
+    This is why the failure looks random. It is not a slow or exotic query; it
+    is the FIRST query of every request. When a connection cannot be acquired,
+    this is simply the query that was asking. The error is reporting the
+    scarcity, not a fault in the lookup.
+
+    Consequence for triage: optimising this query will change nothing. It is
+    already column-projected, indexed on a unique column, and wrapped in
+    `resilientRead`. The problem is upstream of it.
+
+A3. `idle_timeout = 120` MULTIPLIES THE CEILING PROBLEM UNDER SERVERLESS.
+    [CODE] [MEASURED]
+
+    src/db/client.ts sets `idle_timeout: Number(process.env.DATABASE_IDLE_TIMEOUT ?? 120)`.
+
+    An instance holds its connections for two minutes after its LAST query. On
+    Vercel, instances are created per concurrency burst and then sit idle. So a
+    traffic spike that briefly creates four instances leaves those four
+    instances holding up to 20 slots' worth of demand against a 15-slot budget
+    for two minutes after the spike has passed.
+
+    The value is not wrong — it was chosen carefully and the reasoning is sound
+    for one or two long-lived instances. [MEASURED 2026-09-18] with a 35-second
+    pause then one navigation:
+
+        page        idle_timeout 30    idle_timeout 120    warm
+        /settings   8.35s              0.84s               1.14s
+        /wallet     7.57s              1.42s               1.82s
+        /plans      4.54s              0.94s               0.76s
+        /referral   4.81s              2.11s               1.46s
+
+    So lowering it back to 30 reintroduces a 4–7× penalty on the most ordinary
+    user action (read a screen, then tap). **This is a genuine dilemma with no
+    good answer inside the current architecture**, and that is the useful
+    finding: the value is trapped between two failure modes because the
+    underlying connection model is wrong for the platform. Changing the number
+    trades one symptom for the other. Section F explains what actually resolves
+    it.
+
+A4. ABANDONED NAVIGATIONS CONTINUE TO CONSUME CONNECTIONS.
+    [CODE] [MEASURED]
+
+    Directly answering question 3. When a user leaves Page A for Page B:
+
+      - Next.js does NOT stop rendering when the browser stops listening.
+      - No abort signal is threaded into postgres.js anywhere in this codebase.
+      - Therefore Page A's queries run to completion, holding their connections,
+        while Page B's queries are also asking for connections.
+
+    [MEASURED, recorded in CLAUDE.md §16.1a item 7] aborting the client fetch
+    after 60ms still resulted in the server issuing every query the render
+    asked for.
+
+    So N rapid taps on the bottom navigation = N complete concurrent renders
+    competing for the same 5-connection pool. A user impatiently tapping through
+    Home → Wallet → Plans → Referral in two seconds generates four overlapping
+    renders, and on Home alone that is ~6 queries (see section 5 below).
+
+    There is no cancellation hook available in this stack. The only lever is to
+    make each render need fewer connections.
+
+A5. EVERY NAVIGATION GENERATES A SECOND, SEPARATE REQUEST THAT ALSO HITS THE
+    DATABASE.
+    [CODE]
+
+    `NavigationTracer` (src/components/shared/navigation-tracer.tsx) posts a
+    beacon to `/api/trace` on every navigation. That route
+    (src/app/api/trace/route.ts) returns 204 immediately, but inside `after()`
+    it performs:
+
+        1. `getAuthenticatedAccount()`  → one `users` round trip
+        2. `withTrace(...)` → one `pipeline_events` insert
+
+    `after()` moves the work off the USER's critical path. It does NOT move it
+    off the CONNECTION BUDGET. Those two queries execute while the person's next
+    page is reading from the same pool.
+
+    This was already partially addressed: before the `after()` change the same
+    work cost [MEASURED] 720–1,270ms per beacon synchronously. The fix removed
+    the latency but the connection demand remains.
+
+A6. THE OBSERVABILITY PATH ISSUES ADDITIONAL WRITES DURING RENDER.
+    [CODE]
+
+    `AsyncLocalStorage` does not cross from a layout into the page beneath it.
+    `traceRender` wraps `(app)/layout.tsx` only, so every pipeline event a PAGE
+    records finds no trace and goes to `enqueueUntraced`
+    (src/server/observability.ts), which flushes on a 100ms timer rather than
+    behind `after()`.
+
+    Net effect: at least one extra `pipeline_events` INSERT per page render,
+    issued while the render is still in flight, from the same pool.
+
+A7. THE RETRY STRATEGY AMPLIFIES THE SHORTAGE IT IS TRYING TO SURVIVE.
+    [CODE]
+
+    src/db/resilience.ts treats pool exhaustion as retryable with
+    `POOL_EXHAUSTION_RETRIES ?? 4` extra attempts at 700ms / 1.4s / 2.8s
+    backoff, bounded by a 12s budget.
+
+    The reasoning is correct in isolation: a full pooler frees up when someone
+    else releases a connection, so spaced retries make sense. But when the
+    shortage is project-wide and sustained — which is exactly the reported
+    production condition — every refused request now makes up to five connection
+    attempts instead of one. Under broad contention this converts a connection
+    shortage into a connection *storm*, and each waiting request holds a
+    serverless function alive (and billable) for up to 12 seconds.
+
+    This is a secondary amplifier, not the root cause. It should not be changed
+    before A1 is resolved — with adequate connections it is a correct and
+    valuable mechanism.
+
+A8. THE GATE IN THE LAYOUT BLOCKS THE ENTIRE DOCUMENT ON A DATABASE ROUND TRIP.
+    [CODE]
+
+    This is the answer to questions 6, 7 and 10, and it is an architecture
+    finding rather than a connection one.
+
+    `(app)/layout.tsx` is `export const dynamic = "force-dynamic"` and awaits
+    `getAuthenticatedAccount()` BEFORE returning any JSX — including before
+    `<AppShell>`, which is the navigation chrome.
+
+    `loading.tsx` does not help here. A `loading.tsx` creates a Suspense
+    boundary around the SEGMENT BELOW its layout. It is downstream of the
+    layout's own `await`. So on a cold load or a hard refresh, the sequence is:
+
+        middleware (getSession, local decode)
+          → layout awaits getAuthPrincipal()       (ES256 local verify)
+          → layout awaits the `users` lookup        (1 DB round trip)
+          → ONLY NOW can AppShell + loading.tsx skeleton be emitted
+          → page's own reads                        (wave 2)
+
+    Nothing paints — not the bottom nav, not the skeleton, not the header —
+    until that `users` query returns. Warm that is [MEASURED] ~200ms. Cold, with
+    a connection handshake, it is [MEASURED] ~2,000ms.
+
+    On SOFT navigation between the five tabs the layout is not re-executed
+    [UNVERIFIED — see B1], so the skeleton should appear promptly. This is why
+    the app "normally works" and why the problem presents as intermittent and
+    load-related.
+
+
+===============================================================================
+B. SUSPECTED CAUSES REQUIRING VERIFICATION
+===============================================================================
+
+B1. LINK PREFETCHING MAY BE FANNING OUT ~5 EXTRA SERVER RENDERS PER PAGE VIEW,
+    EACH RUNNING THE GATE QUERY.
+    [UNVERIFIED — HIGHEST-VALUE THING TO TEST]
+
+    Evidence assembled:
+      - [CODE] `grep -rn "prefetch" src/` returns NOTHING. No `prefetch={false}`
+        anywhere. Next.js defaults therefore apply.
+      - [CODE] `BottomNavigation` renders five `<Link>` elements
+        (src/components/navigation/bottom-navigation.tsx, PRIMARY_NAV in
+        src/constants/navigation.ts: /, /plans, /wallet, /referral, /settings).
+      - [CODE] It is a FIXED bottom bar. All five links are in the viewport on
+        every single page, continuously.
+      - [CODE] `DesktopSidebar` renders the same five again at `lg` and up.
+      - [CODE] Every one of those routes is under the `force-dynamic` layout.
+
+    In the App Router, a `<Link>` to a dynamic route with a `loading.tsx`
+    prefetches "up to the loading boundary" when it enters the viewport. My
+    concern is that producing that partial payload still requires the SERVER to
+    render the layout — and this layout's first act is the `users` gate query.
+
+    If that is what happens, then every page view triggers up to five additional
+    server renders, each acquiring a connection, each running the exact query in
+    your error report, all concurrent with the real navigation. That would
+    plausibly be the single largest multiplier on connection demand and would
+    explain why the error appears under light traffic.
+
+    HOW TO SETTLE IT (30 minutes, no code change):
+      1. Deploy nothing. Run a production build locally against the real
+         database with a real session.
+      2. Open the browser Network tab, filter to document/RSC requests, load
+         `/settings`, and count the RSC prefetch requests issued.
+      3. Cross-check server-side: count `auth.resolveAccount` rows in
+         `pipeline_events` for a single page view. If one page view produces
+         ~6 of them rather than 1, this is confirmed.
+      4. Then set `prefetch={false}` on the five nav links in a scratch branch
+         and re-count.
+
+    Do not change anything on the basis of this item until step 3 has been run.
+    If confirmed it is a small, low-risk, high-payoff fix. If not confirmed,
+    disabling prefetch would cost navigation responsiveness for nothing.
+
+B2. THE LAYOUT GATE MAY RE-EXECUTE ON SOFT NAVIGATION.
+    [UNVERIFIED]
+
+    Next.js normally preserves a shared layout across sibling navigations. With
+    `dynamic = "force-dynamic"` I am not confident of the behaviour, and the
+    difference matters a great deal: if the gate re-runs on every tab change,
+    the per-navigation query count in section 5 rises by one and the shell
+    blocking in A8 applies to soft navigation too.
+
+    HOW TO SETTLE IT: count `auth.resolveAccount` events in `pipeline_events`
+    across a sequence of five soft navigations. One per navigation means it
+    re-runs; one in total means it does not.
+
+    (Security note either way: each page independently resolves the session via
+    `getUserSlices` → `requireCurrentUserIdForPage`, so authorization is NOT
+    dependent on the layout re-running. This is a performance question only.)
+
+B3. THE NUMBER OF CONCURRENT VERCEL INSTANCES IN PRODUCTION IS UNKNOWN.
+    [UNVERIFIED — BLOCKS ALL CAPACITY PLANNING]
+
+    Everything in section A1 turns on this number and I cannot see it. Vercel's
+    observability shows concurrent executions per function.
+
+    This is the first number to obtain. If production routinely runs 3+
+    instances, A1 alone explains every symptom you have reported and no other
+    hypothesis is needed.
+
+B4. `after()` EXECUTION SEMANTICS ON VERCEL.
+    [UNVERIFIED]
+
+    Work in `after()` runs after the response but still inside the function
+    invocation. Whether Vercel keeps the instance (and its pool) alive for it,
+    and whether that extends the billed duration, affects both cost and
+    connection-hold time. Worth confirming against Vercel's current docs before
+    relying on `after()` as a latency escape hatch.
+
+B5. WHETHER THE PRODUCTION `infrastructure.fault / pool_exhausted` EVENTS ARE
+    COMPLETE.
+    [UNVERIFIED, AND STRUCTURALLY SUSPECT]
+
+    [CODE] `pipeline_events` rows are written via `getDb().insert(...)` over the
+    same runtime pool. When the pool is what failed, the insert fails for the
+    same reason and is swallowed by design.
+
+    [MEASURED, recorded in CLAUDE.md §22.1a] after a real `EMAXCONNSESSION` on
+    this project, `pipeline_events` held ZERO `database.connectRetry` rows for
+    the surrounding week.
+
+    `reportInfrastructureFault()` writes to stderr precisely to survive this, and
+    that is the channel to trust. **Treat the database-backed event table as a
+    LOWER BOUND on incident frequency, never as a complete record.** The real
+    incident rate is at least what you see and probably more.
+
+
+===============================================================================
+C. PRODUCTION RISKS BEFORE LAUNCH
+===============================================================================
+
+Ordered by expected severity.
+
+C1. LAUNCH-BLOCKING — CONNECTION EXHAUSTION UNDER CONCURRENT USE.
+    The failure mode is not graceful. When the pooler refuses, the gate cannot
+    resolve, and users see `SessionUnavailableNotice` — a shell with a retry
+    button and no application. Several users navigating simultaneously can
+    produce this. Directly answers question 26.
+
+    Mitigating factor worth crediting [CODE]: the gate degrades rather than
+    crashing and does NOT sign anyone out (`isInfrastructureFailure` branch in
+    `(app)/layout.tsx`). That is good defensive work and it converts a total
+    outage into a visibly-degraded app. It does not make the app usable.
+
+C2. LAUNCH-BLOCKING — THE FREE-TIER CEILING IS BELOW THE LAUNCH REQUIREMENT.
+    15 session-mode clients cannot be shared by a scaling serverless deployment
+    plus four cron jobs plus the scanner. No application-level tuning fixes
+    this; see section F.
+
+C3. HIGH — RETRY AMPLIFICATION UNDER SUSTAINED SHORTAGE (A7).
+    Under broad contention, up to 5 connection attempts per request and up to
+    12s of held function time per failed request. Converts a shortage into a
+    storm and inflates serverless cost during exactly the incident you least
+    want to be expensive.
+
+C4. HIGH — COLD-START LATENCY IS USER-VISIBLE AND UNBOUNDED-FEELING.
+    [MEASURED] a cold five-query burst is 2,008ms against 203ms warm. A user
+    arriving at an instance that has just scaled up pays the full handshake.
+    With A8, they pay it before ANY pixel of the app appears.
+
+C5. MEDIUM — THE DEPOSIT SCAN IS DAILY (from the separate cron work completed
+    today). A transfer arriving while nobody has `/wallet/deposit` open waits
+    up to ~24 hours to be credited. No money is at risk — recording is
+    idempotent on `(chain, tx_hash)` — but for a user who has just sent real
+    USDT this reads as the platform being broken. On a product whose core loop
+    is "deposit money and see it", this is close to launch-blocking as a
+    *product* matter even though it is safe as an *engineering* matter.
+
+C6. MEDIUM — NO RATE LIMITING ANYWHERE (already tracked as H10 in
+    FUTURE_TASKS). With the connection ceiling this low, rate limiting is not
+    only an abuse control, it is a capacity control. A single script hitting
+    `/api/trace` or any authenticated route can exhaust the project's
+    connections.
+
+C7. LOW BUT EMBARRASSING — THE TEST SUITE AND THE DEV MACHINE DRAW FROM THE
+    PRODUCTION PROJECT'S BUDGET. If development and production share a Supabase
+    project, an engineer running `npm test` during launch day can take
+    production down. [MEASURED] one test run took the project from 1 to 6 held
+    backends. **Verify whether prod and dev are separate Supabase projects
+    before launch.** If they are not, that is a launch blocker in its own right.
+
+
+===============================================================================
+D. UI-LOADING BOTTLENECKS
+===============================================================================
+
+Answering questions 6–14.
+
+D1. THE SHELL WAITS ON THE GATE (questions 6, 7, 10).
+    See A8. The single largest blocker to first paint. Every millisecond of the
+    `users` lookup is a millisecond of blank screen on cold load, because the
+    layout awaits before emitting `<AppShell>`.
+
+D2. EACH PAGE AWAITS ITS CRITICAL READS BEFORE RETURNING ANY JSX.
+    [CODE] Every primary page follows the same shape:
+
+        const [slices] = await Promise.all([...]);   // blocks
+        return ( <UserDataProvider> ... </UserDataProvider> );
+
+    So the page's own static structure — headers, section titles, list rows,
+    the "How referrals work" block, the settings menu — cannot be emitted until
+    the data arrives, even though none of it depends on the data.
+
+    On soft navigation `loading.tsx` covers this with a skeleton, which is why
+    it does not feel catastrophic today. But a skeleton is not the shell: the
+    user sees generic grey boxes rather than the real page structure with data
+    filling in.
+
+D3. SETTINGS SPECIFICALLY (question 7).
+    [CODE] src/app/(app)/settings/page.tsx awaits
+    `getUserSlices(["profile"])` + `getUnreadNotificationCount()` before
+    returning. The page is then ~95% static: `ListGroup`/`ListRow` navigation
+    entries with fixed labels and icons.
+
+    Only `ProfileHeader` (name, initials) and `KycStatusRow` need the profile,
+    and `TopBar`'s badge needs the count. So the entire settings menu — the part
+    the user is almost certainly navigating to Settings in order to tap — waits
+    on two database values it does not use.
+
+    This is the clearest single example of avoidable blocking in the codebase,
+    and it is entirely fixable without touching auth or correctness: wrap
+    `ProfileHeader` and `KycStatusRow` in their own Suspense boundaries and let
+    the menu render immediately.
+
+D4. REFERRAL SPECIFICALLY (question 8).
+    [CODE] src/app/(app)/referral/page.tsx already defers the two activity lists
+    via `SectionBoundary` + `deferred()` — good. But it still awaits
+    `getUserSlices(["profile"])`, `getReferralSummary()`, `getVipLevels()` and
+    the unread count on the critical path, and then additionally awaits
+    `generateQrSvg(link)` — a CPU-bound SVG generation — SEQUENTIALLY after the
+    `Promise.all`.
+
+    The page structure (the "How referrals work" ordered list, section headers,
+    the VIP explainer scaffolding) is fully static and could paint immediately.
+    The stat tiles and the referral link/QR are what genuinely need data.
+
+D5. WALLET SPECIFICALLY (question 9).
+    [CODE] src/app/(app)/wallet/page.tsx defers earnings and monthly history,
+    but keeps balance + transactions + profile on the critical path.
+
+    IMPORTANT NUANCE: this is a DELIBERATE, DOCUMENTED PRODUCT DECISION, not an
+    oversight. The comment states: "a wallet that quietly omits its balance
+    misinforms rather than degrades."
+
+    I think that reasoning is correct and should be preserved — but it does not
+    require blocking the SHELL. The distinction the code has not yet drawn is
+    between "never show a wrong balance" (correct, keep) and "never show the
+    wallet page until the balance is known" (unnecessary). A balance skeleton
+    that resolves to a real number is not misinformation; a balance of `0.00`
+    shown while loading would be. Suspense with an explicit loading state
+    satisfies the product rule and unblocks the shell.
+
+D6. THE QR CODE IS GENERATED SYNCHRONOUSLY ON THE CRITICAL PATH.
+    [CODE] `const qrSvg = await generateQrSvg(link);` in the referral page,
+    after the data await. Not a database cost, but a serial CPU cost on the
+    critical path of a page that could have painted already.
+
+D7. WHAT IS ALREADY DONE WELL — DO NOT "FIX" THESE.
+    In fairness, and to prevent churn:
+      - `loading.tsx` exists for every user and console route. [CODE]
+      - `SectionBoundary` correctly nests an error boundary OUTSIDE a Suspense
+        boundary, and `deferred()` correctly starts reads in the page's wave
+        while awaiting them in the child. This is a genuinely well-designed
+        primitive. [CODE]
+      - Reads are batched into one `Promise.all` wave per page rather than
+        awaited serially. [CODE]
+      - `TopBar`'s reads are hoisted into the page's wave to avoid a second
+        round trip — a subtle and correct optimisation. [CODE]
+      - Request-scoped `cache()` deduplicates repeated reads within a render.
+        [CODE]
+      - Catalogue reads (plans, VIP levels, networks) use `unstable_cache` with
+        a 300s TTL and a tag, so they are usually free. [CODE]
+
+    The component architecture is not naive. The blocking is concentrated in two
+    specific places — the layout gate (D1) and the page-level `await` before
+    `return` (D2) — and both are fixable without redesigning anything.
+
+
+===============================================================================
+E. DATABASE / CONNECTION BOTTLENECKS
+===============================================================================
+
+E1. DATABASE WORK PER NAVIGATION (question 5).
+    [CODE] — derived by reading each page's service calls. "Queries" means
+    round trips to Postgres. Catalogue reads are marked (c) and are usually
+    served from the 300s cache.
+
+    Common to EVERY authenticated navigation:
+        gate `users` lookup .................................. 1
+        untraced pipeline_events insert (A6) ................. ≥1
+        /api/trace beacon: users lookup + insert (A5) ........ 2   (separate request)
+
+    Per route, page reads only:
+
+        Home        profile, balance, investments, transactions   4
+                    unread notification count                     1
+                    earnings rollup                               1
+                                                            page total 6
+                                                     with gate + obs ~10
+
+        Plans       getPlans                                    (c)
+                    balance, profile                              2
+                    unread count                                  1
+                                                            page total 3
+                                                     with gate + obs  ~7
+
+        Referral    profile                                       1
+                    referral summary                              1
+                    VIP levels                                  (c)
+                    unread count                                  1
+                    referrals list        (deferred)              1
+                    commission history    (deferred)              1
+                                                            page total 5
+                                                     with gate + obs  ~9
+
+        Wallet      balance, transactions, profile                3
+                    new deposits                                  1
+                    unread count                                  1
+                    earnings rollup (memoised, serves both
+                      summary and monthly history)                1
+                                                            page total 6
+                                                     with gate + obs ~10
+
+        Settings    profile                                       1
+                    unread count                                  1
+                                                            page total 2
+                                                     with gate + obs  ~6
+
+        Investment  getPlans                                    (c)
+        detail      investments                                   1
+                                                            page total 1
+                                                     with gate + obs  ~5
+
+    If B1 is confirmed, add up to 5 more gate queries per page view for
+    prefetching.
+
+    THE HEADLINE: Settings needs TWO values and costs roughly SIX round trips
+    once the gate, the observability writes and the trace beacon are counted.
+    The overhead is 3× the payload. That is the answer to "why is Settings slow
+    when it needs almost nothing".
+
+E2. EVERY AUTHENTICATED PAGE COSTS AT LEAST TWO SEQUENTIAL ROUND TRIPS.
+    [CODE] [DERIVED] The gate must resolve before page reads can start (the page
+    needs the account id). At [MEASURED] ~200ms per round trip on a warm
+    connection, the floor for any authenticated page is ~400ms.
+
+    This matches the ~400ms TTFB you reported on many routes (question 24)
+    almost exactly. **That TTFB is not a mystery and not a regression — it is
+    the architecture's designed floor.** It cannot be reduced by query tuning;
+    only by removing a round trip from the critical path.
+
+E3. THE POOL SIZE IS CORRECTLY TUNED FOR THE WRONG CONSTRAINT (question 15).
+    [MEASURED 2026-09-01] eighteen concurrent authenticated requests against a
+    production build with a real session:
+
+        max 3, warm 2  →  wall 14.0s / 21.9s,  p50  8.3s / 16.5s
+                          (individual requests reached 14.3s against a 15s
+                           read deadline — one round trip from failing)
+        max 5, warm 3  →  wall  8.2s / 8.4s / 8.8s,  p50 5.3–5.5s
+
+    Five is demonstrably the right answer GIVEN the 15-slot ceiling and an
+    assumption of ~2 instances. The tuning work was done properly.
+
+    But note what those numbers say about capacity: **eighteen concurrent
+    requests took 8+ seconds wall clock and a p50 of over 5 seconds.** That is
+    the measured behaviour of this stack at eighteen concurrent authenticated
+    users. Not 1,000. Eighteen.
+
+    This is the most important measurement in this document.
+
+E4. THE SESSION POOLER IS THE WRONG POOLER, AND THE TRANSACTION POOLER IS
+    UNAVAILABLE TO THIS DRIVER (question 19).
+    [CODE] [MEASURED 2026-09-02]
+
+    Answering question 19 directly: **no, the session pooler is not appropriate
+    for production at 1,000 users on serverless.** Session mode holds a backend
+    per client; serverless multiplies clients. The two models are incompatible.
+
+    The obvious fix — the transaction pooler on :6543 — has been tested twice in
+    this repository and does not work with this driver stack. The reason is
+    specific and worth restating because it has already cost two sessions of
+    rediscovery:
+
+      - Drizzle issues everything through `client.unsafe(sql, params)`.
+      - postgres.js sets `simple: params.length === 0`.
+      - A Drizzle query with no WHERE clause and no bound values therefore has
+        ZERO parameters and takes the SIMPLE query protocol.
+      - Supavisor in transaction mode cannot demultiplex a pipelined simple
+        query. It stalls with no error and no timeout, and WEDGES THE POOL
+        PERMANENTLY.
+      - `catalogue.repository` emits four of its five queries this way (plans,
+        deposit_networks, vip_levels) — read by /plans, /referral,
+        /wallet/deposit and the admin console. Exactly the routes that wedged.
+
+    Note the earlier explanation involving `max_pipeline` was WRONG and has been
+    superseded; transactions work fine on :6543. The blocker is the simple query
+    protocol. Do not re-derive this.
+
+    **The way off session mode is a different DRIVER, not a different port.**
+    `node-postgres` does not pipeline, so the simple protocol is harmless there,
+    and `drizzle-orm/node-postgres` speaks to it. This is a real migration —
+    `db.execute()` returns a `QueryResult` rather than a row array, so every
+    caller changes — but it is the correct structural fix and it unlocks the
+    transaction pooler, which is what serverless actually needs.
+
+E5. DRIVER / ORM / POOLING / VERCEL INTERACTION (question 20).
+    Assessed component by component:
+
+      postgres.js         Correct for a long-running server. Its pipelining is
+                          an active liability behind Supavisor transaction mode.
+                          WRONG CHOICE for this deployment target.
+      Drizzle             Fine. Not implicated in any failure. Its use of
+                          `unsafe()` is what exposes the protocol issue, but the
+                          ORM itself is behaving correctly.
+      Session pooler      WRONG for serverless (E4).
+      Pool reuse          Correct and well-implemented — cached on `globalThis`,
+                          exactly one runtime `postgres()` call site (verified by
+                          grep during the 2026-09-18 audit, not assumed).
+      Idle behaviour      Trapped between two failure modes (A3).
+      Warm-up             Correct in intent, actively harmful at scale: it
+                          claims 3 slots per instance before serving anything.
+      Vercel model        Fundamentally mismatched with session-mode pooling.
+
+    Verdict: the individual pieces are competently built and correctly wired to
+    each other. **The mismatch is between the stack as a whole and the execution
+    model it is deployed onto.** That is why careful local tuning keeps failing
+    to fix production.
+
+E6. REDUCING WORK PER REQUEST vs RAISING LIMITS (question 21).
+    Both are needed, and in this order:
+
+      1. RAISE THE CEILING FIRST. At 15 project-wide connections, no plausible
+         per-request optimisation makes the app safe. Halving Home's query count
+         from 10 to 5 doubles headroom that is currently near zero. This is the
+         launch blocker.
+
+      2. REDUCE WORK PER REQUEST SECOND, and it is not optional. It determines
+         cost and latency permanently, and several items (the gate round trip,
+         the trace beacon, the prefetch fan-out if confirmed) are pure overhead
+         that no amount of paid infrastructure makes worth paying for.
+
+    A useful way to hold the two apart: raising the ceiling buys you a LAUNCH.
+    Reducing work per request buys you a BUSINESS. Doing only the first means
+    paying linearly for waste forever.
+
+E7. /wallet/deposit AS A LATENCY OUTLIER (question 24).
+    [CODE] `getOrCreateDepositAddress` may, on pool exhaustion, run
+    `sweepDepositAddresses()` INLINE before it can answer. It also takes a
+    transaction-scoped `pg_advisory_xact_lock` and uses
+    `FOR UPDATE SKIP LOCKED`.
+
+    So a user opening the deposit screen when the address pool is empty pays for
+    a full sweep synchronously. [CODE, from CLAUDE.md §23] the pool currently
+    holds exactly ONE address, because `TRON_DEPOSIT_POOL_ADDRESSES` is unset.
+
+    **At 1,000 users with a one-address pool, this is not a latency outlier, it
+    is a hard functional failure.** One address can serve one user at a time,
+    with a 24-hour quarantine before a different user may take it. The second
+    concurrent user to open the deposit screen gets `PoolExhaustedError`.
+
+    This is configuration, not code: the operator generates addresses with their
+    own wallet tooling and lists them. But it MUST be done before launch, and I
+    would treat it as equal in priority to the connection ceiling — a crypto
+    deposit platform where the second user cannot get a deposit address has no
+    product.
+
+
+===============================================================================
+F. WHAT PAID INFRASTRUCTURE WOULD CHANGE — AND WHAT IT WOULD NOT
+===============================================================================
+
+Answering questions 16, 25.
+
+F1. WHAT PAID INFRASTRUCTURE FIXES.
+
+    - The hard ceiling. A larger Supabase instance raises the pooler's client
+      limit well above 15. This alone removes the `EMAXCONNSESSION` failures
+      (A1, A2) and makes the retry amplification (A7) harmless.
+    - Cold-start frequency, indirectly: more headroom means fewer refused
+      connections and less retry churn.
+    - The `idle_timeout` dilemma (A3) becomes a tuning preference rather than a
+      trade between two failure modes.
+    - Cron frequency, if you move off Vercel Hobby: the deposit scan can return
+      to every 5–15 minutes, resolving C5.
+
+F2. WHAT PAID INFRASTRUCTURE DOES **NOT** FIX.
+    This is the part I most want to be clear about, because it is where money
+    gets spent on the wrong thing.
+
+    - **The two-round-trip floor (E2).** ~400ms TTFB is caused by the gate
+      awaiting before page reads. A bigger database does not remove a
+      sequential dependency. This is pure application architecture.
+    - **The blank shell on cold load (A8/D1).** Caused by `await` placement in a
+      layout. Unchanged by any infrastructure.
+    - **Page-level blocking before first paint (D2, D3, D4).** Settings will
+      still wait on two values it does not render. Unchanged.
+    - **Abandoned navigations consuming connections (A4).** A property of
+      Next.js and postgres.js. Unchanged — though with more headroom it stops
+      being dangerous and becomes merely wasteful.
+    - **The trace beacon's two extra queries per navigation (A5).** Unchanged.
+    - **The observability insert during render (A6).** Unchanged.
+    - **The prefetch fan-out, if B1 is confirmed.** Unchanged.
+    - **The one-address deposit pool (E7).** Entirely unrelated to database
+      capacity. A functional gap that paid infrastructure cannot touch.
+    - **The absence of rate limiting (C6).** More capacity raises the bar for
+      abuse; it does not add a control.
+    - **postgres.js's incompatibility with transaction-mode pooling (E4).** If
+      you stay on Supabase and eventually want the transaction pooler for
+      density, the driver migration is still required.
+
+    SUMMARY ANSWER TO QUESTION 25: yes. Roughly **half** of what you are
+    experiencing is application architecture and will survive the upgrade
+    unchanged. The upgrade converts "the site is broken" into "the site is
+    slower and more expensive than it should be". That is a large and necessary
+    improvement, and it is not the same as the problem being solved.
+
+F3. WHAT THE ARCHITECTURE SHOULD CHANGE WHEN MOVING TO PAID (question 16).
+
+    Whichever platform you choose:
+      - Re-evaluate `DATABASE_POOL_MAX` and `DATABASE_WARM_CONNECTIONS` TOGETHER
+        against the new ceiling. They must always move together; raising one
+        alone is worse than raising neither (documented in src/db/warmup.ts).
+      - Re-evaluate `idle_timeout` once the ceiling is no longer binding — with
+        headroom, a longer timeout is close to free and is the faster choice.
+      - Separate the production Supabase project from development, if they are
+        not already separate (C7).
+      - Move the four cron jobs to a scheduler that permits real frequencies.
+      - Keep `reportInfrastructureFault()`'s stderr channel. It is the only
+        signal that survives a database outage (B5).
+
+
+===============================================================================
+G. REQUIREMENTS FOR RELIABLY SUPPORTING ~1,000 USERS
+===============================================================================
+
+Answering questions 17, 18.
+
+G1. FIRST, A NECESSARY CLARIFICATION ABOUT "1,000 USERS".
+    1,000 registered users is not 1,000 concurrent users, and the two differ by
+    one to two orders of magnitude depending on usage pattern. I do not have
+    your expected concurrency and **I will not invent a ratio** — it is the
+    single most important input to sizing and it must come from you or from
+    measurement. See question I1 in section I.
+
+    What I CAN give you is the measured ceiling, which you can map onto whatever
+    concurrency you expect:
+
+    [DERIVED, from MEASURED inputs — assumptions stated]
+      Inputs:  ~200ms per query on an open connection [MEASURED]
+               15 concurrent connections project-wide [CODE/platform]
+      Assume:  connections are perfectly utilised (optimistic)
+      Then:    15 / 0.2s  =  ~75 queries/second, project-wide ceiling
+      A Home navigation costs ~10 queries (E1)
+      Therefore: ~7.5 Home navigations/second, absolute theoretical maximum,
+                 with zero headroom for crons, scripts or the scanner.
+
+    The empirical figure is worse than the theoretical one, as always:
+    [MEASURED] eighteen concurrent requests produced a p50 of 5.3–5.5s.
+
+    Conclusion: the CURRENT free-tier architecture does not support 1,000
+    registered users under any realistic concurrency assumption. This is not a
+    marginal call.
+
+G2. OPTION COMPARISON (question 17).
+    Cost figures are indicative orders of magnitude for planning only — I have
+    not priced these against current vendor pricing and you must confirm them.
+    Everything else is assessed from the code and measurements.
+
+    OPTION 1 — SUPABASE PRO + THE EXISTING VERCEL DEPLOYMENT
+      Connection handling : Larger pooler ceiling; session mode still
+                            structurally wrong for serverless but no longer
+                            binding at this scale.
+      Scaling             : Adequate to ~1,000 users. Strained approaching
+                            10,000 without the driver migration.
+      Reliability         : Removes the current failure class outright.
+      Effort              : Lowest by a wide margin. Configuration, not code.
+      Cost                : Supabase Pro + Vercel Pro, both modest monthly.
+      VERDICT             : **RECOMMENDED FOR LAUNCH.** It is the only option
+                            that is deliverable on your timeline, it directly
+                            removes the launch blocker, and it preserves every
+                            architectural decision already validated by
+                            measurement. It buys time to do section H properly
+                            rather than under deadline pressure.
+
+    OPTION 2 — SUPABASE PRO + MIGRATE TO `node-postgres` + TRANSACTION POOLER
+      Connection handling : Correct for serverless. Transaction mode gives far
+                            higher client density per backend.
+      Scaling             : The right shape for 10,000.
+      Reliability         : Best of the realistic options.
+      Effort              : Real migration. `db.execute()` returns a
+                            `QueryResult` rather than a row array, so EVERY
+                            CALLER CHANGES. Needs the full test suite green
+                            both ways.
+      VERDICT             : The correct destination. **Not before tomorrow.**
+                            Attempting a driver migration on the eve of a
+                            financial product's launch would be reckless.
+                            Schedule it deliberately, post-launch.
+
+    OPTION 3 — AWS (RDS/Aurora + ECS/Fargate or App Runner)
+      Connection handling : Full control. With long-lived containers rather than
+                            serverless functions, postgres.js's pooling model
+                            becomes CORRECT rather than mismatched, and
+                            `idle_timeout: 0` becomes the right setting again.
+      Scaling             : Excellent, and predictable.
+      Reliability         : Excellent, with competent operation.
+      Effort              : HIGHEST. New deployment pipeline, networking, secret
+                            management, migration runner, monitoring, plus
+                            replacing Supabase Auth and Supabase Storage — both
+                            of which this application depends on deeply
+                            (`auth.users` linkage, the `kyc-documents` bucket
+                            with its four RLS policies, `getClaims()` ES256
+                            verification against the project JWKS).
+      Cost                : Higher fixed cost; cheaper at high scale.
+      VERDICT             : **Do not do this for launch, and probably not for
+                            1,000 users.** The Supabase Auth and Storage
+                            coupling means "move to AWS" is not an
+                            infrastructure swap, it is a partial rewrite of
+                            authentication and document handling — the two
+                            areas where this codebase has invested most heavily
+                            in getting security right. Revisit at 10,000 users
+                            with a real cost model.
+
+    OPTION 4 — KEEP SERVERLESS, ADD AN EXTERNAL POOLER (PgBouncer/RDS Proxy)
+      Adds an operational component to solve a problem Supabase's own
+      transaction pooler already solves, and runs into the SAME simple-query
+      protocol issue with postgres.js. **Not recommended** — it is Option 2's
+      work plus extra infrastructure.
+
+    OPTION 5 — ONE LONG-RUNNING NODE SERVER (single container, any host)
+      Worth naming because the codebase is, in several places, explicitly tuned
+      for it: `idle_timeout: 0`, `DATABASE_POOL_MAX` and
+      `DATABASE_WARM_CONNECTIONS` all have comments describing the
+      single-long-running-server case as the one they were measured on.
+      Container hosting with one or two instances and a modest Postgres would
+      comfortably serve 1,000 users, remove the entire connection-exhaustion
+      class, and let the pool stay warm permanently.
+      VERDICT             : A genuinely under-considered option. Less
+                            fashionable than serverless and a better fit for
+                            this application's actual shape. Worth evaluating
+                            seriously before committing to Option 2 or 3.
+
+G3. MINIMUM REQUIREMENTS TO LAUNCH SAFELY AT ~1,000 USERS.
+
+    MUST (launch blockers):
+      1. Raise the connection ceiling — Supabase Pro (Option 1).
+      2. Confirm production and development use SEPARATE Supabase projects
+         (C7).
+      3. Populate `TRON_DEPOSIT_POOL_ADDRESSES` with enough addresses (E7). A
+         one-address pool cannot serve a second concurrent user.
+      4. Set `TRON_LOOKBACK_MS=259200000` in the Vercel project environment —
+         it exists in `.env.example`/`.env.local` but neither deploys.
+      5. Re-tune `DATABASE_POOL_MAX` / `DATABASE_WARM_CONNECTIONS` together
+         against the new ceiling, and verify under concurrent load.
+      6. Verify B1 (prefetch fan-out) and B3 (instance count) — both are cheap
+         and both change the sizing.
+
+    SHOULD (strongly recommended before launch):
+      7. Unblock the shell: move the layout gate's blocking await so `AppShell`
+         can render before the `users` query resolves (A8/D1). Largest perceived
+         performance win available, and independent of infrastructure.
+      8. Rate limiting on authenticated routes and `/api/trace` (C6).
+      9. Tighten the deposit scan cadence (C5) — needs the cron plan change.
+
+    CAN WAIT (post-launch):
+      10. The `node-postgres` driver migration (Option 2).
+      11. Per-page Suspense decomposition (D3, D4, D5).
+      12. Removing the trace beacon's account lookup (A5).
+      13. The seed-count test assertion currently failing (a fixture bug, not a
+          product defect — it asserts `users <= 50` against a live table that
+          now holds 53).
+
+
+===============================================================================
+H. LONGER-TERM REQUIREMENTS FOR ~10,000 USERS
+===============================================================================
+
+H1. THE DRIVER MIGRATION BECOMES MANDATORY.
+    Session-mode pooling cannot reach this scale on serverless at any price
+    tier. `node-postgres` + `drizzle-orm/node-postgres` + the transaction pooler
+    is the path (E4). Budget it as a real project with full test coverage both
+    with and without a database configured.
+
+H2. DATABASE WORK PER NAVIGATION MUST COME DOWN STRUCTURALLY.
+    At 10,000 users, ~10 round trips for a Home view and ~6 for a Settings view
+    is the dominant cost driver. Targets, in order of value:
+      - Eliminate the gate's separate round trip (fold the account resolution
+        into the page's own wave, or cache the principal→account mapping in a
+        signed short-lived cookie with an explicit revocation story).
+      - Remove the `/api/trace` account lookup — attribute from the session
+        cookie or accept anonymous navigation events.
+      - Consolidate the per-page slice reads into fewer statements where they
+        target the same user (several are independent `SELECT`s that could be a
+        single query).
+
+H3. SEARCH WILL BECOME A BOTTLENECK IN THE CRM.
+    Already identified in the codebase: CRM search is `ILIKE '%needle%'` and no
+    btree can serve it. `pg_trgm` is the fix, already deferred with a trigger
+    (~50k rows) rather than done speculatively. That trigger is correct; just
+    make sure someone is watching for it.
+
+H4. READ REPLICAS AND CACHING.
+    The catalogue cache (300s, tag-invalidated) is already correct and should
+    NOT be extended to user-scoped data under any circumstances — doing so would
+    serve one person's balance to another. At 10,000 users, consider a read
+    replica for CRM reporting rather than widening any cache.
+
+H5. BACKGROUND WORK NEEDS ITS OWN CONNECTION BUDGET.
+    Crons, the TRON scanner and settlement currently draw from the same pool as
+    user traffic. At scale they need a separate connection allocation so a
+    settlement pass cannot degrade a user's page load.
+
+H6. RECONSIDER THE EXECUTION MODEL.
+    At 10,000 users the choice between serverless-plus-transaction-pooler and
+    long-running containers should be made on measured cost, not on default. The
+    codebase's own tuning history suggests it is naturally a long-running-server
+    application.
+
+
+===============================================================================
+I. PRIORITISED QUESTIONS AND DECISIONS BEFORE IMPLEMENTATION
+===============================================================================
+
+Ordered so that each answer unblocks the next decision.
+
+I1.  [BLOCKING] What concurrency do you actually expect at launch? Peak
+     simultaneous active users, and expected navigations per session. Without
+     this, every sizing number is guesswork. If unknown, state an assumption
+     explicitly and size to it with margin.
+
+I2.  [BLOCKING] Are production and development using the SAME Supabase project?
+     If yes, that is a launch blocker independent of everything else (C7).
+
+I3.  [BLOCKING] How many concurrent Vercel instances does production actually
+     run at peak? (B3) Available in Vercel observability. This single number
+     confirms or eliminates A1 as the dominant cause.
+
+I4.  [BLOCKING] Is the launch date movable? Several findings here (E7's address
+     pool, the connection ceiling) are hard blockers requiring action today. If
+     the date cannot move, the scope of what ships must.
+
+I5.  [HIGH] Run the prefetch experiment in B1. Thirty minutes, no code change,
+     and it may be the largest single multiplier on your connection demand.
+
+I6.  [HIGH] How many TRON deposit addresses can the operator generate and
+     provide before launch? (E7) This gates whether the deposit flow works for
+     more than one concurrent user.
+
+I7.  [HIGH] Decide the infrastructure path. My recommendation is Option 1
+     (Supabase Pro, no code change) for launch, with Option 2 or Option 5
+     scheduled deliberately afterwards. Confirm you accept that the ~400ms TTFB
+     and the blank-shell-on-cold-load will persist until the application work in
+     D1–D5 is done.
+
+I8.  [MEDIUM] Do you want the shell-unblocking work (G3 item 7) before launch?
+     It is the largest perceived-performance win available and it is independent
+     of infrastructure — but it touches the authentication gate, which is the
+     most security-sensitive file in the user application. My honest advice: do
+     it, but do it with the full test suite green and a careful review, not in a
+     rush the night before.
+
+I9.  [MEDIUM] What is your monitoring plan for launch day, and who is watching
+     it? See section J.
+
+I10. [MEDIUM] What is the rollback plan if connection exhaustion recurs after
+     the upgrade? At minimum: a documented way to reduce `DATABASE_POOL_MAX`
+     via environment variable without a deploy, and a known-good previous
+     deployment to promote.
+
+I11. [LOW] Confirm `after()` semantics and billing on Vercel (B4) before relying
+     on it further as a latency escape hatch.
+
+
+===============================================================================
+J. MONITORING AND PRODUCTION MEASUREMENT REQUIREMENTS
+===============================================================================
+
+Answering question 29.
+
+J1. THE MOST IMPORTANT RULE: DO NOT RELY ON `pipeline_events` FOR CONNECTION
+    INCIDENTS.
+    [CODE] [MEASURED] Rows are written over the same pool that failed, and the
+    write is swallowed by design. After a real `EMAXCONNSESSION` the table held
+    ZERO `database.connectRetry` rows for the surrounding week. The incident
+    erases its own evidence.
+
+    `reportInfrastructureFault()` already writes one structured, redacted,
+    rate-limited JSON line to **stderr** for exactly this reason, and Vercel
+    keeps stderr in Runtime Logs. **Alerting must be built on that stderr
+    channel, not on the database table.**
+
+J2. ALERT ON (page someone):
+      - Any `EMAXCONNSESSION` / `pool_exhausted` line in Runtime Logs. At the
+        current ceiling this should be zero; treat any occurrence as an
+        incident.
+      - HTTP 5xx rate above a small threshold.
+      - `SessionUnavailableNotice` renders — instrument this, because it is what
+        the user actually sees when the gate degrades, and it is currently
+        invisible to you.
+      - Cron job failures (all four routes return 500 on failure precisely so
+        the scheduler's log is the monitor).
+      - `PoolExhaustedError` from the deposit-address service (E7) — this means
+        a user could not get a deposit address.
+
+J3. DASHBOARD (watch continuously on launch day):
+      - Concurrent Supabase connections, against the ceiling. THE single most
+        important number. If it is not on a screen, nothing else here matters.
+      - Concurrent Vercel function executions (this is the instance count that
+        drives A1).
+      - TTFB p50 / p95 / p99 per route. You have a measured baseline of ~400ms;
+        watch for divergence.
+      - Database query duration p95.
+      - `auth.resolveAccount` failure count and duration — this is the canary
+        query; it fails first.
+
+J4. MEASURE BEFORE LAUNCH, NOT AFTER:
+      - Load-test the five primary routes at your expected peak concurrency
+        against the PAID infrastructure, with a production build and real
+        sessions. The existing measurement of eighteen concurrent requests →
+        p50 5.3s is your baseline to beat.
+      - Count connections held at idle, one minute after traffic stops. This
+        validates whatever `idle_timeout` you settle on.
+      - Verify the deposit flow with two concurrent users on two different
+        accounts. This is the specific scenario a one-address pool fails.
+
+J5. WHAT IS ALREADY IN PLACE AND SHOULD BE USED:
+      - `pipeline_events` with per-request correlation ids joining browser and
+        server — genuinely good, and the right tool for everything EXCEPT
+        connection incidents (J1).
+      - `/admin/system-logs` reads it with filtering.
+      - Errors are recorded with their full cause chain and redacted.
+      - `chain_scan_state` distinguishes "no deposits" from "no successful scan
+        since Tuesday".
+
+    The observability investment here is well above average for a project at
+    this stage. The gap is not instrumentation; it is ALERTING. Nothing
+    currently pages a human, and on launch day that is the difference between a
+    five-minute incident and a five-hour one.
+
+
+===============================================================================
+K. CLOSING ASSESSMENT
+===============================================================================
+
+This is a carefully engineered codebase. The connection problem is not the
+result of carelessness — it is the result of competent local tuning against a
+constraint (15 project-wide session-mode connections) that cannot be satisfied
+by tuning at all. Every individual decision in `src/db/client.ts` is defensible
+and measured; the sum of them cannot work on a platform that scales by adding
+processes. That is the central finding.
+
+The honest summary for a launch decision:
+
+  - The database connection ceiling is a genuine launch blocker and is fixable
+    today with a paid Supabase plan and no code change.
+  - The one-address deposit pool is an equally hard blocker, is configuration
+    rather than code, and appears to have had less attention than the
+    connection issue. A crypto deposit platform where the second concurrent
+    user cannot obtain a deposit address has no product.
+  - Roughly half the latency complaints are application architecture and will
+    survive the infrastructure upgrade unchanged. Expect the upgrade to fix
+    "broken", not "slow".
+  - The perceived-performance goal in question 11 (a 200–600ms shell) is
+    ACHIEVABLE with this architecture, but not by infrastructure. It requires
+    moving the gate's await and decomposing the page-level awaits into Suspense
+    boundaries. Neither is a rewrite; both touch sensitive code and deserve
+    more care than a pre-launch night allows.
+
+Launching tomorrow on paid Supabase, with the deposit address pool populated and
+someone watching the connection count, is a defensible decision. Launching
+tomorrow on the free tier is not.
+
+-------------------------------------------------------------------------------
+END OF FINDINGS. No files other than this one were created or modified.
+-------------------------------------------------------------------------------

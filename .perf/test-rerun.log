@@ -1,0 +1,1590 @@
+
+> nanotron@0.1.0 test
+> tsx --conditions=react-server --test --test-concurrency=1 $(find src -name '*.test.ts')
+
+TAP version 13
+# Subtest: connection
+    # Subtest: the runtime pool answers
+    ok 1 - the runtime pool answers
+      ---
+      duration_ms: 2681.331235
+      type: 'test'
+      ...
+    # Subtest: the admin connection answers and is closable
+    ok 2 - the admin connection answers and is closable
+      ---
+      duration_ms: 4242.270365
+      type: 'test'
+      ...
+    # Subtest: prepared statements are off exactly when the pooler needs them off
+    ok 3 - prepared statements are off exactly when the pooler needs them off
+      ---
+      duration_ms: 1.303896
+      type: 'test'
+      ...
+    # Subtest: survives a page's worth of parallel queries
+    ok 4 - survives a page's worth of parallel queries
+      ---
+      duration_ms: 2499.50645
+      type: 'test'
+      ...
+    # Subtest: queues more work than the pool has connections
+    ok 5 - queues more work than the pool has connections
+      ---
+      duration_ms: 217.545904
+      type: 'test'
+      ...
+    # Subtest: the pool cannot exhaust the project's session-mode budget
+    ok 6 - the pool cannot exhaust the project's session-mode budget
+      ---
+      duration_ms: 0.759266
+      type: 'test'
+      ...
+    1..6
+ok 1 - connection
+  ---
+  duration_ms: 9849.528755
+  type: 'suite'
+  ...
+# Subtest: an unset or blank URL means no database
+ok 2 - an unset or blank URL means no database
+  ---
+  duration_ms: 2.714421
+  type: 'test'
+  ...
+# Subtest: a URL means a database
+ok 3 - a URL means a database
+  ---
+  duration_ms: 0.600414
+  type: 'test'
+  ...
+# Subtest: requiring an absent URL explains how to set one
+ok 4 - requiring an absent URL explains how to set one
+  ---
+  duration_ms: 1.060226
+  type: 'test'
+  ...
+# Subtest: TLS follows the URL unless it is set explicitly
+ok 5 - TLS follows the URL unless it is set explicitly
+  ---
+  duration_ms: 0.852353
+  type: 'test'
+  ...
+# Subtest: rejects anything that is not an exact decimal
+ok 6 - rejects anything that is not an exact decimal
+  ---
+  duration_ms: 3.736467
+  type: 'test'
+  ...
+# Subtest: normalises so equal amounts compare equal
+ok 7 - normalises so equal amounts compare equal
+  ---
+  duration_ms: 1.689563
+  type: 'test'
+  ...
+# Subtest: refuses more precision than the schema stores
+ok 8 - refuses more precision than the schema stores
+  ---
+  duration_ms: 1.586164
+  type: 'test'
+  ...
+# Subtest: refuses a number that is not exactly representable
+ok 9 - refuses a number that is not exactly representable
+  ---
+  duration_ms: 1.179712
+  type: 'test'
+  ...
+# Subtest: converts token units exactly, including past MAX_SAFE_INTEGER
+ok 10 - converts token units exactly, including past MAX_SAFE_INTEGER
+  ---
+  duration_ms: 1.158583
+  type: 'test'
+  ...
+# Subtest: rejects malformed token amounts rather than coercing them
+ok 11 - rejects malformed token amounts rather than coercing them
+  ---
+  duration_ms: 1.342219
+  type: 'test'
+  ...
+# Subtest: round-trips through token units
+ok 12 - round-trips through token units
+  ---
+  duration_ms: 1.103747
+  type: 'test'
+  ...
+# Subtest: refuses to silently truncate when converting to token units
+ok 13 - refuses to silently truncate when converting to token units
+  ---
+  duration_ms: 0.606037
+  type: 'test'
+  ...
+# Subtest: compares exactly where float would not
+ok 14 - compares exactly where float would not
+  ---
+  duration_ms: 2.091578
+  type: 'test'
+  ...
+# Subtest: negates without producing -0
+ok 15 - negates without producing -0
+  ---
+  duration_ms: 1.638327
+  type: 'test'
+  ...
+# Subtest: drops trailing zeros before judging precision
+ok 16 - drops trailing zeros before judging precision
+  ---
+  duration_ms: 0.872679
+  type: 'test'
+  ...
+# Subtest: add and subtract are exact where binary floating point is not
+ok 17 - add and subtract are exact where binary floating point is not
+  ---
+  duration_ms: 1.095205
+  type: 'test'
+  ...
+# Subtest: multiplyByRate truncates to the destination column's scale
+ok 18 - multiplyByRate truncates to the destination column's scale
+  ---
+  duration_ms: 1.053886
+  type: 'test'
+  ...
+# Subtest: a withdrawal quote is exact end to end
+ok 19 - a withdrawal quote is exact end to end
+  ---
+  duration_ms: 0.841709
+  type: 'test'
+  ...
+# Subtest: classification
+    # Subtest: treats a failed handshake as transient
+    ok 1 - treats a failed handshake as transient
+      ---
+      duration_ms: 1.690727
+      type: 'test'
+      ...
+    # Subtest: treats every SQLSTATE class 08 as transient
+    ok 2 - treats every SQLSTATE class 08 as transient
+      ---
+      duration_ms: 0.567689
+      type: 'test'
+      ...
+    # Subtest: does NOT retry an error the server actually returned
+    ok 3 - does NOT retry an error the server actually returned
+      ---
+      duration_ms: 0.708797
+      type: 'test'
+      ...
+    # Subtest: unwraps a nested cause
+    ok 4 - unwraps a nested cause
+      ---
+      duration_ms: 0.565335
+      type: 'test'
+      ...
+    # Subtest: treats a full connection pooler as transient
+    ok 5 - treats a full connection pooler as transient
+      ---
+      duration_ms: 0.870184
+      type: 'test'
+      ...
+    # Subtest: does NOT retry XX000 on its own
+    ok 6 - does NOT retry XX000 on its own
+      ---
+      duration_ms: 0.479512
+      type: 'test'
+      ...
+    # Subtest: finds a full pooler through Drizzle's wrapper
+    ok 7 - finds a full pooler through Drizzle's wrapper
+      ---
+      duration_ms: 0.513488
+      type: 'test'
+      ...
+    # Subtest: does not recurse forever on a self-referential cause
+    ok 8 - does not recurse forever on a self-referential cause
+      ---
+      duration_ms: 0.596167
+      type: 'test'
+      ...
+    1..8
+ok 20 - classification
+  ---
+  duration_ms: 10.839565
+  type: 'test'
+  ...
+# Subtest: retrying
+    # Subtest: recovers when a later attempt succeeds
+    ok 1 - recovers when a later attempt succeeds
+      ---
+      duration_ms: 501.849562
+      type: 'test'
+      ...
+    # Subtest: gives a permanent error straight back, on the first try
+    ok 2 - gives a permanent error straight back, on the first try
+      ---
+      duration_ms: 1.526443
+      type: 'test'
+      ...
+    # Subtest: stops at the retry limit and rethrows the real error
+    ok 3 - stops at the retry limit and rethrows the real error
+      ---
+      duration_ms: 513.850734
+      type: 'test'
+      ...
+    # Subtest: honours the time budget rather than only the count
+    ok 4 - honours the time budget rather than only the count
+      ---
+      duration_ms: 121.587612
+      type: 'test'
+      ...
+    # Subtest: runs the operation exactly once when it succeeds
+    ok 5 - runs the operation exactly once when it succeeds
+      ---
+      duration_ms: 0.806844
+      type: 'test'
+      ...
+    # Subtest: spends more attempts on a full pooler than on a bad endpoint
+    ok 6 - spends more attempts on a full pooler than on a bad endpoint
+      ---
+      duration_ms: 13130.350059
+      type: 'test'
+      ...
+    # Subtest: still honours the budget when the pooler is full
+    ok 7 - still honours the budget when the pooler is full
+      ---
+      duration_ms: 0.829266
+      type: 'test'
+      ...
+    # Subtest: reports each retry so a recovered fault is still visible
+    ok 8 - reports each retry so a recovered fault is still visible
+      ---
+      duration_ms: 480.799719
+      type: 'test'
+      ...
+    1..8
+ok 21 - retrying
+  ---
+  duration_ms: 14754.745367
+  type: 'test'
+  ...
+# Subtest: schema
+    # Subtest: every declared table exists, and nothing unexpected does
+    ok 1 - every declared table exists, and nothing unexpected does
+      ---
+      duration_ms: 2057.350182
+      type: 'test'
+      ...
+    # Subtest: every enum exists with exactly its declared labels
+    ok 2 - every enum exists with exactly its declared labels
+      ---
+      duration_ms: 193.740539
+      type: 'test'
+      ...
+    # Subtest: every foreign key exists and points where the schema says
+    ok 3 - every foreign key exists and points where the schema says
+      ---
+      duration_ms: 231.82906
+      type: 'test'
+      ...
+    # Subtest: every table has a primary key
+    ok 4 - every table has a primary key
+      ---
+      duration_ms: 395.989013
+      type: 'test'
+      ...
+    # Subtest: every declared index exists
+    ok 5 - every declared index exists
+      ---
+      duration_ms: 413.670984
+      type: 'test'
+      ...
+    # Subtest: money columns are numeric, never floating point
+    ok 6 - money columns are numeric, never floating point
+      ---
+      duration_ms: 283.42186
+      type: 'test'
+      ...
+    1..6
+ok 22 - schema
+  ---
+  duration_ms: 3924.369808
+  type: 'suite'
+  ...
+# Subtest: every table in the schema is seeded
+ok 23 - every table in the schema is seeded
+  ---
+  duration_ms: 44.319275
+  type: 'test'
+  ...
+# Subtest: clears children before parents
+ok 24 - clears children before parents
+  ---
+  duration_ms: 5.952269
+  type: 'test'
+  ...
+# Subtest: every foreign key resolves
+ok 25 - every foreign key resolves
+  ---
+  duration_ms: 6.06423
+  type: 'test'
+  ...
+# Subtest: primary keys are unique
+ok 26 - primary keys are unique
+  ---
+  duration_ms: 3.417012
+  type: 'test'
+  ...
+# Subtest: unique columns on users hold
+ok 27 - unique columns on users hold
+  ---
+  duration_ms: 4.982232
+  type: 'test'
+  ...
+# Subtest: the demo account's wallet reconciles against its allocations
+ok 28 - the demo account's wallet reconciles against its allocations
+  ---
+  duration_ms: 5.269806
+  type: 'test'
+  ...
+# Subtest: overlapping records are stored once
+ok 29 - overlapping records are stored once
+  ---
+  duration_ms: 4.646273
+  type: 'test'
+  ...
+# Subtest: exactly one platform settings row
+ok 30 - exactly one platform settings row
+  ---
+  duration_ms: 3.584136
+  type: 'test'
+  ...
+# Subtest: parseAdminListQuery
+    # Subtest: reads a well-formed query
+    ok 1 - reads a well-formed query
+      ---
+      duration_ms: 3.134111
+      type: 'test'
+      ...
+    # Subtest: falls back to the screen's defaults for unknown tokens
+    ok 2 - falls back to the screen's defaults for unknown tokens
+      ---
+      duration_ms: 0.590734
+      type: 'test'
+      ...
+    # Subtest: refuses a page that is not a positive number
+    ok 3 - refuses a page that is not a positive number
+      ---
+      duration_ms: 0.665142
+      type: 'test'
+      ...
+    # Subtest: clamps an absurd page rather than overflowing OFFSET
+    ok 4 - clamps an absurd page rather than overflowing OFFSET
+      ---
+      duration_ms: 0.774004
+      type: 'test'
+      ...
+    # Subtest: page size is never taken from the URL
+    ok 5 - page size is never taken from the URL
+      ---
+      duration_ms: 0.38739
+      type: 'test'
+      ...
+    # Subtest: bounds the search string
+    ok 6 - bounds the search string
+      ---
+      duration_ms: 0.315366
+      type: 'test'
+      ...
+    # Subtest: takes the first value when a parameter repeats
+    ok 7 - takes the first value when a parameter repeats
+      ---
+      duration_ms: 0.287538
+      type: 'test'
+      ...
+    # Subtest: reads prefixed keys, for a page carrying two lists
+    ok 8 - reads prefixed keys, for a page carrying two lists
+      ---
+      duration_ms: 0.533919
+      type: 'test'
+      ...
+    1..8
+ok 31 - parseAdminListQuery
+  ---
+  duration_ms: 10.643839
+  type: 'suite'
+  ...
+# Subtest: buildAdminListQueryString
+    # Subtest: omits defaults, so an unfiltered screen has a bare URL
+    ok 1 - omits defaults, so an unfiltered screen has a bare URL
+      ---
+      duration_ms: 0.969035
+      type: 'test'
+      ...
+    # Subtest: changing anything but the page returns to page 1
+    ok 2 - changing anything but the page returns to page 1
+      ---
+      duration_ms: 0.713003
+      type: 'test'
+      ...
+    # Subtest: preserves the sibling list's parameters
+    ok 3 - preserves the sibling list's parameters
+      ---
+      duration_ms: 0.638935
+      type: 'test'
+      ...
+    # Subtest: clears its own keys when they return to their default
+    ok 4 - clears its own keys when they return to their default
+      ---
+      duration_ms: 0.661223
+      type: 'test'
+      ...
+    1..4
+ok 32 - buildAdminListQueryString
+  ---
+  duration_ms: 3.620125
+  type: 'suite'
+  ...
+# Subtest: hasActiveFilters
+    # Subtest: is false for the untouched screen and true for any narrowing
+    ok 1 - is false for the untouched screen and true for any narrowing
+      ---
+      duration_ms: 0.572983
+      type: 'test'
+      ...
+    1..1
+ok 33 - hasActiveFilters
+  ---
+  duration_ms: 0.792773
+  type: 'suite'
+  ...
+# Subtest: authentication boundary
+    # Subtest: an unauthenticated request has no user, and is not given one
+    ok 1 - an unauthenticated request has no user, and is not given one
+      ---
+      duration_ms: 7.55021
+      type: 'test'
+      ...
+    # Subtest: account reads refuse rather than falling back to seed data
+    ok 2 - account reads refuse rather than falling back to seed data
+      ---
+      duration_ms: 83.326333
+      type: 'test'
+      ...
+    1..2
+ok 34 - authentication boundary
+  ---
+  duration_ms: 94.369453
+  type: 'suite'
+  ...
+# Subtest: development dataset
+    # Subtest: holds exactly the seeded number of accounts
+    not ok 1 - holds exactly the seeded number of accounts
+      ---
+      duration_ms: 2468.566751
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/auth-and-kyc.integration.test.ts:86:3'
+      failureType: 'testCodeFailure'
+      error: 'unexpectedly many users: 89'
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: '=='
+      stack: |-
+        TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/auth-and-kyc.integration.test.ts:97:12)
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1442:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    # Subtest: member ids are unique
+    ok 2 - member ids are unique
+      ---
+      duration_ms: 224.495378
+      type: 'test'
+      ...
+    # Subtest: every account has a wallet
+    ok 3 - every account has a wallet
+      ---
+      duration_ms: 310.099804
+      type: 'test'
+      ...
+    # Subtest: no dependent record references a user outside the dataset
+    ok 4 - no dependent record references a user outside the dataset
+      ---
+      duration_ms: 2043.586269
+      type: 'test'
+      ...
+    # Subtest: seeded accounts carry no Supabase credential
+    ok 5 - seeded accounts carry no Supabase credential
+      ---
+      duration_ms: 408.752678
+      type: 'test'
+      ...
+    # Subtest: no table stores a credential
+    ok 6 - no table stores a credential
+      ---
+      duration_ms: 369.506507
+      type: 'test'
+      ...
+    1..6
+not ok 35 - development dataset
+  ---
+  duration_ms: 6031.806336
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/auth-and-kyc.integration.test.ts:75:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: verification lifecycle
+    # Subtest: a submission becomes pending, and the operator queue sees it
+    ok 1 - a submission becomes pending, and the operator queue sees it
+      ---
+      duration_ms: 7429.695478
+      type: 'test'
+      ...
+    # Subtest: a submission never claims a liveness check that did not happen
+    ok 2 - a submission never claims a liveness check that did not happen
+      ---
+      duration_ms: 5527.740651
+      type: 'test'
+      ...
+    # Subtest: a submission with no documents is accepted and reaches pending_review
+    ok 3 - a submission with no documents is accepted and reaches pending_review
+      ---
+      duration_ms: 4707.925237
+      type: 'test'
+      ...
+    # Subtest: an absent document is absent — never a fabricated row
+    ok 4 - an absent document is absent — never a fabricated row
+      ---
+      duration_ms: 4739.964121
+      type: 'test'
+      ...
+    # Subtest: an operator can see and act on a case with no documents
+    ok 5 - an operator can see and act on a case with no documents
+      ---
+      duration_ms: 7017.367956
+      type: 'test'
+      ...
+    # Subtest: a submission with documents still records what Storage reported
+    ok 6 - a submission with documents still records what Storage reported
+      ---
+      duration_ms: 6505.261766
+      type: 'test'
+      ...
+    # Subtest: a second submission while one is under review is refused
+    ok 7 - a second submission while one is under review is refused
+      ---
+      duration_ms: 6913.13977
+      type: 'test'
+      ...
+    # Subtest: approval is an operator decision, and the user sees it
+    ok 8 - approval is an operator decision, and the user sees it
+      ---
+      duration_ms: 8193.961422
+      type: 'test'
+      ...
+    # Subtest: rejection stores the reason the user is shown
+    ok 9 - rejection stores the reason the user is shown
+      ---
+      duration_ms: 10691.144175
+      type: 'test'
+      ...
+    # Subtest: a rejection with no reason is refused
+    ok 10 - a rejection with no reason is refused
+      ---
+      duration_ms: 4155.492614
+      type: 'test'
+      ...
+    1..10
+ok 36 - verification lifecycle
+  ---
+  duration_ms: 80936.746094
+  type: 'suite'
+  ...
+# Subtest: operator identity and permissions
+    # Subtest: with no session there is no operator, and none is invented
+    ok 1 - with no session there is no operator, and none is invented
+      ---
+      duration_ms: 1.544854
+      type: 'test'
+      ...
+    # Subtest: operator server actions refuse without a session
+    ok 2 - operator server actions refuse without a session
+      ---
+      duration_ms: 143.990581
+      type: 'test'
+      ...
+    # Subtest: the permission model reads levels from the database
+    ok 3 - the permission model reads levels from the database
+      ---
+      duration_ms: 1927.6125
+      type: 'test'
+      ...
+    # Subtest: a master admin holds manage implicitly
+    ok 4 - a master admin holds manage implicitly
+      ---
+      duration_ms: 0.624674
+      type: 'test'
+      ...
+    1..4
+ok 37 - operator identity and permissions
+  ---
+  duration_ms: 2269.76715
+  type: 'suite'
+  ...
+# Subtest: deposit intents cannot become money
+    # Subtest: a development test deposit is pending, unverified and uncreditable
+    ok 1 - a development test deposit is pending, unverified and uncreditable
+      ---
+      duration_ms: 6865.338734
+      type: 'test'
+      ...
+    1..1
+ok 38 - deposit intents cannot become money
+  ---
+  duration_ms: 7957.779122
+  type: 'suite'
+  ...
+# Subtest: member ids
+    # Subtest: are NT- and exactly seven digits
+    ok 1 - are NT- and exactly seven digits
+      ---
+      duration_ms: 12.23506
+      type: 'test'
+      ...
+    # Subtest: do not come from the clock
+    ok 2 - do not come from the clock
+      ---
+      duration_ms: 27.452055
+      type: 'test'
+      ...
+    # Subtest: spread across the digit space
+    ok 3 - spread across the digit space
+      ---
+      duration_ms: 18.11509
+      type: 'test'
+      ...
+    1..3
+ok 39 - member ids
+  ---
+  duration_ms: 60.568324
+  type: 'suite'
+  ...
+# Subtest: a verdict about the token is not an outage
+    # Subtest: 4xx means the token was judged and rejected
+    ok 1 - 4xx means the token was judged and rejected
+      ---
+      duration_ms: 3.344162
+      type: 'test'
+      ...
+    1..1
+ok 40 - a verdict about the token is not an outage
+  ---
+  duration_ms: 5.260584
+  type: 'test'
+  ...
+# Subtest: a failure to reach a verdict is an outage
+    # Subtest: 5xx means the provider broke, not the token
+    ok 1 - 5xx means the provider broke, not the token
+      ---
+      duration_ms: 0.474393
+      type: 'test'
+      ...
+    # Subtest: a transport failure carries no status at all
+    ok 2 - a transport failure carries no status at all
+      ---
+      duration_ms: 0.659777
+      type: 'test'
+      ...
+    # Subtest: no status is treated as an outage, not as a rejection
+    ok 3 - no status is treated as an outage, not as a rejection
+      ---
+      duration_ms: 0.56178
+      type: 'test'
+      ...
+    # Subtest: a network message wins even with a 4xx attached
+    ok 4 - a network message wins even with a 4xx attached
+      ---
+      duration_ms: 0.339543
+      type: 'test'
+      ...
+    1..4
+ok 41 - a failure to reach a verdict is an outage
+  ---
+  duration_ms: 3.969407
+  type: 'test'
+  ...
+# Subtest: automatic commission release
+    # Subtest: an entry due in the future is not released
+    ok 1 - an entry due in the future is not released
+      ---
+      duration_ms: 7346.17974
+      type: 'test'
+      ...
+    # Subtest: an entry due in the past is released
+    ok 2 - an entry due in the past is released
+      ---
+      duration_ms: 6691.274225
+      type: 'test'
+      ...
+    # Subtest: an entry due exactly now is released — the boundary is inclusive
+    ok 3 - an entry due exactly now is released — the boundary is inclusive
+      ---
+      duration_ms: 7584.53645
+      type: 'test'
+      ...
+    # Subtest: a missed midnight is recovered by the next run
+    ok 4 - a missed midnight is recovered by the next run
+      ---
+      duration_ms: 6140.565625
+      type: 'test'
+      ...
+    # Subtest: an entry with no release date is never released automatically
+    ok 5 - an entry with no release date is never released automatically
+      ---
+      duration_ms: 9438.421067
+      type: 'test'
+      ...
+    # Subtest: running the job twice pays once
+    ok 6 - running the job twice pays once
+      ---
+      duration_ms: 8308.689857
+      type: 'test'
+      ...
+    # Subtest: two passes overlapping pay once
+    ok 7 - two passes overlapping pay once
+      ---
+      duration_ms: 7864.235009
+      type: 'test'
+      ...
+    # Subtest: the job racing an operator pays once
+    ok 8 - the job racing an operator pays once
+      ---
+      duration_ms: 9725.087276
+      type: 'test'
+      ...
+    # Subtest: a released entry cannot be released again by hand either
+    ok 9 - a released entry cannot be released again by hand either
+      ---
+      duration_ms: 10344.091215
+      type: 'test'
+      ...
+    # Subtest: release moves the aggregate from pending to earned, in the same transaction
+    ok 10 - release moves the aggregate from pending to earned, in the same transaction
+      ---
+      duration_ms: 6961.781507
+      type: 'test'
+      ...
+    # Subtest: the automatic release is audited, and names the system as the actor
+    ok 11 - the automatic release is audited, and names the system as the actor
+      ---
+      duration_ms: 7579.649542
+      type: 'test'
+      ...
+    # Subtest: a zero-amount entry is refused rather than written as a zero payment
+    ok 12 - a zero-amount entry is refused rather than written as a zero payment
+      ---
+      duration_ms: 3827.696453
+      type: 'test'
+      ...
+    1..12
+ok 42 - automatic commission release
+  ---
+  duration_ms: 99694.431585
+  type: 'suite'
+  ...
+# Subtest: business-calendar midnight
+    # Subtest: maps to 18:30 UTC the previous day
+    ok 1 - maps to 18:30 UTC the previous day
+      ---
+      duration_ms: 0.517321
+      type: 'test'
+      ...
+    # Subtest: an instant just before the boundary belongs to the earlier business day
+    ok 2 - an instant just before the boundary belongs to the earlier business day
+      ---
+      duration_ms: 0.285113
+      type: 'test'
+      ...
+    # Subtest: three days ahead is exactly three days, never two or four
+    ok 3 - three days ahead is exactly three days, never two or four
+      ---
+      duration_ms: 0.248474
+      type: 'test'
+      ...
+    # Subtest: the label writes the zone down
+    ok 4 - the label writes the zone down
+      ---
+      duration_ms: 0.230033
+      type: 'test'
+      ...
+    1..4
+ok 43 - business-calendar midnight
+  ---
+  duration_ms: 1.767183
+  type: 'suite'
+  ...
+# Subtest: repositories
+    # Subtest: reads the demo account's profile with its verification steps
+    ok 1 - reads the demo account's profile with its verification steps
+      ---
+      duration_ms: 7765.343024
+      type: 'test'
+      ...
+    # Subtest: reads the wallet, and the numbers are numbers
+    ok 2 - reads the wallet, and the numbers are numbers
+      ---
+      duration_ms: 435.806543
+      type: 'test'
+      ...
+    # Subtest: the wallet reconciles against the account's active allocations
+    ok 3 - the wallet reconciles against the account's active allocations
+      ---
+      duration_ms: 1165.516354
+      type: 'test'
+      ...
+    # Subtest: translates the stored investment status for the user application
+    ok 4 - translates the stored investment status for the user application
+      ---
+      duration_ms: 437.707696
+      type: 'test'
+      ...
+    # Subtest: reads the ledger for the account
+    ok 5 - reads the ledger for the account
+      ---
+      duration_ms: 561.143888
+      type: 'test'
+      ...
+    # Subtest: excludes disabled plans from the public catalogue
+    ok 6 - excludes disabled plans from the public catalogue
+      ---
+      duration_ms: 1677.744155
+      type: 'test'
+      ...
+    # Subtest: joins the account onto every CRM row
+    ok 7 - joins the account onto every CRM row
+      ---
+      duration_ms: 659.987803
+      type: 'test'
+      ...
+    # Subtest: groups KYC documents and notes onto their submissions
+    ok 8 - groups KYC documents and notes onto their submissions
+      ---
+      duration_ms: 1407.571987
+      type: 'test'
+      ...
+    # Subtest: rebuilds each agent's permission map from its rows
+    ok 9 - rebuilds each agent's permission map from its rows
+      ---
+      duration_ms: 208.744158
+      type: 'test'
+      ...
+    # Subtest: reads the audit trail newest first
+    ok 10 - reads the audit trail newest first
+      ---
+      duration_ms: 390.451788
+      type: 'test'
+      ...
+    1..10
+ok 44 - repositories
+  ---
+  duration_ms: 14906.754196
+  type: 'suite'
+  ...
+# Subtest: services read the database, not the seed modules
+    # Subtest: the CRM's allocations are the seeded rows, not @/data/admin
+    ok 1 - the CRM's allocations are the seeded rows, not @/data/admin
+      ---
+      duration_ms: 3905.598882
+      type: 'test'
+      ...
+    # Subtest: the commission ledger is the seeded ledger
+    ok 2 - the commission ledger is the seeded ledger
+      ---
+      duration_ms: 215.107277
+      type: 'test'
+      ...
+    # Subtest: computes referral standing against the stored VIP thresholds
+    ok 3 - computes referral standing against the stored VIP thresholds
+      ---
+      duration_ms: 591.535833
+      type: 'test'
+      ...
+    # Subtest: reads platform settings from the single configuration row
+    ok 4 - reads platform settings from the single configuration row
+      ---
+      duration_ms: 446.762661
+      type: 'test'
+      ...
+    1..4
+ok 45 - services read the database, not the seed modules
+  ---
+  duration_ms: 5367.998735
+  type: 'suite'
+  ...
+# Subtest: with no DATABASE_URL, services serve the seed data
+ok 46 - with no DATABASE_URL, services serve the seed data
+  ---
+  duration_ms: 6.369656
+  type: 'test'
+  ...
+# Subtest: a blank DATABASE_URL counts as no database, not as a broken one
+ok 47 - a blank DATABASE_URL counts as no database, not as a broken one
+  ---
+  duration_ms: 0.76799
+  type: 'test'
+  ...
+# Subtest: a configured but unreachable database fails instead of faking it
+ok 48 - a configured but unreachable database fails instead of faking it
+  ---
+  duration_ms: 745.488537
+  type: 'test'
+  ...
+# Subtest: an unresponsive database fails on a deadline rather than hanging
+ok 49 - an unresponsive database fails on a deadline rather than hanging
+  ---
+  duration_ms: 12265.011685
+  type: 'test'
+  ...
+# Subtest: the failure is not cached into a permanent outage
+ok 50 - the failure is not cached into a permanent outage
+  ---
+  duration_ms: 571.999813
+  type: 'test'
+  ...
+# Subtest: deposit address pool
+    # Subtest: A — first-time allocation claims an address from the pool
+    ok 1 - A — first-time allocation claims an address from the pool
+      ---
+      duration_ms: 25797.513107
+      type: 'test'
+      ...
+    # Subtest: B — the same user gets the same address on a later request
+    ok 2 - B — the same user gets the same address on a later request
+      ---
+      duration_ms: 9096.885791
+      type: 'test'
+      ...
+    # Subtest: C — two different users get two different addresses
+    ok 3 - C — two different users get two different addresses
+      ---
+      duration_ms: 21355.227725
+      type: 'test'
+      ...
+    # Subtest: D — ownership is decided only by the userId the caller passes in, never inferred
+    ok 4 - D — ownership is decided only by the userId the caller passes in, never inferred
+      ---
+      duration_ms: 13069.608448
+      type: 'test'
+      ...
+    # Subtest: two concurrent first-time requests for the same user never claim two addresses
+    ok 5 - two concurrent first-time requests for the same user never claim two addresses
+      ---
+      duration_ms: 8281.99779
+      type: 'test'
+      ...
+    # Subtest: P — an address is never reassigned merely by asking again
+    ok 6 - P — an address is never reassigned merely by asking again
+      ---
+      duration_ms: 26548.466277
+      type: 'test'
+      ...
+    # Subtest: pool exhaustion is refused loudly, not silently handed out twice
+    ok 7 - pool exhaustion is refused loudly, not silently handed out twice
+      ---
+      duration_ms: 1588.81372
+      type: 'test'
+      ...
+    # Subtest: claiming is scoped by network — an available address on one network is invisible to another
+    ok 8 - claiming is scoped by network — an available address on one network is invisible to another
+      ---
+      duration_ms: 4965.430894
+      type: 'test'
+      ...
+    # Subtest: E — a transfer to a known, assigned address credits its owner automatically
+    ok 9 - E — a transfer to a known, assigned address credits its owner automatically
+      ---
+      duration_ms: 7595.752148
+      type: 'test'
+      ...
+    # Subtest: F — a transfer to an unrecognised address credits nobody
+    ok 10 - F — a transfer to an unrecognised address credits nobody
+      ---
+      duration_ms: 1986.168899
+      type: 'test'
+      ...
+    # Subtest: I — the same physical address on a different network resolves to nobody
+    ok 11 - I — the same physical address on a different network resolves to nobody
+      ---
+      duration_ms: 3737.752291
+      type: 'test'
+      ...
+    # Subtest: K — an unconfirmed transfer to a known address is not credited yet
+    ok 12 - K — an unconfirmed transfer to a known address is not credited yet
+      ---
+      duration_ms: 3658.815984
+      type: 'test'
+      ...
+    # Subtest: L — the exact blockchain amount is credited, not a rounded one
+    ok 13 - L — the exact blockchain amount is credited, not a rounded one
+      ---
+      duration_ms: 5763.942874
+      type: 'test'
+      ...
+    # Subtest: M — the same transaction hash is only ever credited once
+    ok 14 - M — the same transaction hash is only ever credited once
+      ---
+      duration_ms: 13821.18625
+      type: 'test'
+      ...
+    # Subtest: N — two concurrent scans of the same transfer credit exactly once
+    ok 15 - N — two concurrent scans of the same transfer credit exactly once
+      ---
+      duration_ms: 11379.419968
+      type: 'test'
+      ...
+    # Subtest: O — the deposit record and the ledger entry agree on user, amount and reference
+    ok 16 - O — the deposit record and the ledger entry agree on user, amount and reference
+      ---
+      duration_ms: 6760.861082
+      type: 'test'
+      ...
+    # Subtest: Q — an address with unresolved deposit activity cannot be released
+    ok 17 - Q — an address with unresolved deposit activity cannot be released
+      ---
+      duration_ms: 4476.922153
+      type: 'test'
+      ...
+    # Subtest: an address with no unresolved activity releases back to the pool
+    ok 18 - an address with no unresolved activity releases back to the pool
+      ---
+      duration_ms: 4935.431663
+      type: 'test'
+      ...
+    # Subtest: R — an address with unresolved deposit activity cannot be retired either
+    ok 19 - R — an address with unresolved deposit activity cannot be retired either
+      ---
+      duration_ms: 7283.776944
+      type: 'test'
+      ...
+    # Subtest: retiring takes an address out of rotation without deleting it or its history
+    ok 20 - retiring takes an address out of rotation without deleting it or its history
+      ---
+      duration_ms: 5225.199692
+      type: 'test'
+      ...
+    # Subtest: a retired address is never claimed again, even when it is older than the replacement
+    ok 21 - a retired address is never claimed again, even when it is older than the replacement
+      ---
+      duration_ms: 12906.810749
+      type: 'test'
+      ...
+    # Subtest: retiring an already-retired address is refused rather than rewriting when it left
+    ok 22 - retiring an already-retired address is refused rather than rewriting when it left
+      ---
+      duration_ms: 6783.154127
+      type: 'test'
+      ...
+    # Subtest: retiring is recorded in the audit trail
+    ok 23 - retiring is recorded in the audit trail
+      ---
+      duration_ms: 4895.200371
+      type: 'test'
+      ...
+    # Subtest: S — an assigned address with no deposit, older than the idle window, releases
+    ok 24 - S — an assigned address with no deposit, older than the idle window, releases
+      ---
+      duration_ms: 77815.545083
+      type: 'test'
+      ...
+    # Subtest: T — an assigned address younger than the idle window stays assigned
+    ok 25 - T — an assigned address younger than the idle window stays assigned
+      ---
+      duration_ms: 15483.724286
+      type: 'test'
+      ...
+    # Subtest: U — an unresolved deposit protects the address at any age
+    ok 26 - U — an unresolved deposit protects the address at any age
+      ---
+      duration_ms: 8793.679211
+      type: 'test'
+      ...
+    # Subtest: V — an address whose deposits have all settled waits out the settle window
+    ok 27 - V — an address whose deposits have all settled waits out the settle window
+      ---
+      duration_ms: 19094.149206
+      type: 'test'
+      ...
+    # Subtest: W — re-running the sweep is idempotent
+    ok 28 - W — re-running the sweep is idempotent
+      ---
+      duration_ms: 21490.19684
+      type: 'test'
+      ...
+    # Subtest: X — inside the quarantine only the previous holder may take it back
+    ok 29 - X — inside the quarantine only the previous holder may take it back
+      ---
+      duration_ms: 19068.644928
+      type: 'test'
+      ...
+    # Subtest: Y — a stranger may claim it once the quarantine has elapsed
+    ok 30 - Y — a stranger may claim it once the quarantine has elapsed
+      ---
+      duration_ms: 21877.791351
+      type: 'test'
+      ...
+    # Subtest: Z — a late transfer is credited to whoever held the address when it was SENT
+    ok 31 - Z — a late transfer is credited to whoever held the address when it was SENT
+      ---
+      duration_ms: 21704.937644
+      type: 'test'
+      ...
+    # Subtest: AA — a transfer arriving while nobody held the address credits nobody
+    ok 32 - AA — a transfer arriving while nobody held the address credits nobody
+      ---
+      duration_ms: 13894.70149
+      type: 'test'
+      ...
+    # Subtest: AB — an operator may release a safe address at any age
+    ok 33 - AB — an operator may release a safe address at any age
+      ---
+      duration_ms: 5335.799902
+      type: 'test'
+      ...
+    # Subtest: AC — two concurrent releases: exactly one succeeds
+    ok 34 - AC — two concurrent releases: exactly one succeeds
+      ---
+      duration_ms: 4933.011871
+      type: 'test'
+      ...
+    # Subtest: AD — releasing something that is not assigned says so
+    ok 35 - AD — releasing something that is not assigned says so
+      ---
+      duration_ms: 1229.09253
+      type: 'test'
+      ...
+    # Subtest: AE — unresolved activity refuses first, whatever the clock says
+    ok 36 - AE — unresolved activity refuses first, whatever the clock says
+      ---
+      duration_ms: 0.644687
+      type: 'test'
+      ...
+    # Subtest: AF — the idle boundary is inclusive, and a millisecond short is not
+    ok 37 - AF — the idle boundary is inclusive, and a millisecond short is not
+      ---
+      duration_ms: 0.380348
+      type: 'test'
+      ...
+    # Subtest: AG — an assignment with no timestamp is never aged out
+    ok 38 - AG — an assignment with no timestamp is never aged out
+      ---
+      duration_ms: 0.295522
+      type: 'test'
+      ...
+    1..38
+ok 51 - deposit address pool
+  ---
+  duration_ms: 506489.659436
+  type: 'suite'
+  ...
+# Subtest: triggering the scanner from an open deposit screen
+    # Subtest: concurrent checks join one pass rather than starting several
+    ok 1 - concurrent checks join one pass rather than starting several
+      ---
+      duration_ms: 2.095809
+      type: 'test'
+      ...
+    # Subtest: a check arriving too soon after the last pass does not start another
+    ok 2 - a check arriving too soon after the last pass does not start another
+      ---
+      duration_ms: 0.546393
+      type: 'test'
+      ...
+    # Subtest: a failing scan is reported, not thrown, and does not wedge the trigger
+    ok 3 - a failing scan is reported, not thrown, and does not wedge the trigger
+      ---
+      duration_ms: 0.982757
+      type: 'test'
+      ...
+    1..3
+ok 52 - triggering the scanner from an open deposit screen
+  ---
+  duration_ms: 5.592006
+  type: 'suite'
+  ...
+# Subtest: the deposit check action
+    # Subtest: refuses a caller with no session, and never scans for one
+    ok 1 - refuses a caller with no session, and never scans for one
+      ---
+      duration_ms: 289.247041
+      type: 'test'
+      ...
+    # Subtest: takes no required argument, so nothing in the browser can name a user
+    ok 2 - takes no required argument, so nothing in the browser can name a user
+      ---
+      duration_ms: 1.651746
+      type: 'test'
+      ...
+    1..2
+ok 53 - the deposit check action
+  ---
+  duration_ms: 291.613558
+  type: 'suite'
+  ...
+# Subtest: the deposit screen's two cadences
+    # Subtest: the client's scan interval stays above the server's floor, and its poll below
+    ok 1 - the client's scan interval stays above the server's floor, and its poll below
+      ---
+      duration_ms: 30.798033
+      type: 'test'
+      ...
+    # Subtest: a tick that does not request a scan runs none
+    ok 2 - a tick that does not request a scan runs none
+      ---
+      duration_ms: 1.522582
+      type: 'test'
+      ...
+    1..2
+ok 54 - the deposit screen's two cadences
+  ---
+  duration_ms: 33.026294
+  type: 'suite'
+  ...
+# Subtest: what an open deposit screen reads back
+    # Subtest: two accounts polling at once each see only their own deposit
+    ok 1 - two accounts polling at once each see only their own deposit
+      ---
+      duration_ms: 15993.498143
+      type: 'test'
+      ...
+    # Subtest: a transfer still waiting for its block shows for its own address's owner
+    ok 2 - a transfer still waiting for its block shows for its own address's owner
+      ---
+      duration_ms: 5732.561798
+      type: 'test'
+      ...
+    # Subtest: checking repeatedly shows one deposit, not one per check
+    ok 3 - checking repeatedly shows one deposit, not one per check
+      ---
+      duration_ms: 8803.959846
+      type: 'test'
+      ...
+    1..3
+ok 55 - what an open deposit screen reads back
+  ---
+  duration_ms: 38308.894596
+  type: 'suite'
+  ...
+# Subtest: new-deposit confirmation
+    # Subtest: a credited, unacknowledged deposit is announced
+    ok 1 - a credited, unacknowledged deposit is announced
+      ---
+      duration_ms: 9180.936663
+      type: 'test'
+      ...
+    # Subtest: a deposit that has not been credited is never announced
+    ok 2 - a deposit that has not been credited is never announced
+      ---
+      duration_ms: 4129.203243
+      type: 'test'
+      ...
+    # Subtest: a historical (acknowledged) deposit is not announced again
+    ok 3 - a historical (acknowledged) deposit is not announced again
+      ---
+      duration_ms: 1643.142815
+      type: 'test'
+      ...
+    # Subtest: acknowledging removes it, permanently and on the server
+    ok 4 - acknowledging removes it, permanently and on the server
+      ---
+      duration_ms: 3676.216702
+      type: 'test'
+      ...
+    # Subtest: acknowledging twice is a no-op, not an error
+    ok 5 - acknowledging twice is a no-op, not an error
+      ---
+      duration_ms: 2846.308758
+      type: 'test'
+      ...
+    # Subtest: one account cannot acknowledge another's deposit
+    ok 6 - one account cannot acknowledge another's deposit
+      ---
+      duration_ms: 4116.991315
+      type: 'test'
+      ...
+    # Subtest: acknowledging cannot credit, advance or resurrect a deposit
+    ok 7 - acknowledging cannot credit, advance or resurrect a deposit
+      ---
+      duration_ms: 2864.596372
+      type: 'test'
+      ...
+    # Subtest: each new deposit gets its own confirmation
+    ok 8 - each new deposit gets its own confirmation
+      ---
+      duration_ms: 3891.13152
+      type: 'test'
+      ...
+    # Subtest: the historical backfill left no seeded deposit unannounced
+    not ok 9 - the historical backfill left no seeded deposit unannounced
+      ---
+      duration_ms: 411.274448
+      type: 'test'
+      location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:247:3'
+      failureType: 'testCodeFailure'
+      error: 'deposit dep_mu8sitnj95zum predates the backfill and would be re-announced'
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: '=='
+      stack: |-
+        TestContext.<anonymous> (/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:269:14)
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+      ...
+    1..9
+not ok 56 - new-deposit confirmation
+  ---
+  duration_ms: 43877.270986
+  type: 'suite'
+  location: '/home/rkbajiyaa/Project/nanotron/src/server/deposit-confirmation.integration.test.ts:47:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: stops as soon as a batch comes back short
+ok 57 - stops as soon as a batch comes back short
+  ---
+  duration_ms: 1.966205
+  type: 'test'
+  ...
+# Subtest: an empty first batch costs exactly one statement
+ok 58 - an empty first batch costs exactly one statement
+  ---
+  duration_ms: 0.467041
+  type: 'test'
+  ...
+# Subtest: stops at the per-run ceiling and reports that there is more
+ok 59 - stops at the per-run ceiling and reports that there is more
+  ---
+  duration_ms: 0.626094
+  type: 'test'
+  ...
+# Subtest: a failing batch is not swallowed
+ok 60 - a failing batch is not swallowed
+  ---
+  duration_ms: 1.224361
+  type: 'test'
+  ...
+# Subtest: classification
+    # Subtest: a full pooler is a database outage, not a server error
+    ok 1 - a full pooler is a database outage, not a server error
+      ---
+      duration_ms: 2.79492
+      type: 'test'
+      ...
+    # Subtest: a refused permission is not an infrastructure failure
+    ok 2 - a refused permission is not an infrastructure failure
+      ---
+      duration_ms: 0.449778
+      type: 'test'
+      ...
+    # Subtest: an ordinary internal error stays a server error
+    ok 3 - an ordinary internal error stays a server error
+      ---
+      duration_ms: 0.966965
+      type: 'test'
+      ...
+    1..3
+ok 61 - classification
+  ---
+  duration_ms: 7.011087
+  type: 'test'
+  ...
+# Subtest: what a person is allowed to be shown
+    # Subtest: never leaks SQL or bound parameters
+    ok 1 - never leaks SQL or bound parameters
+      ---
+      duration_ms: 0.881908
+      type: 'test'
+      ...
+    # Subtest: this application's own refusals are shown verbatim
+    ok 2 - this application's own refusals are shown verbatim
+      ---
+      duration_ms: 0.409453
+      type: 'test'
+      ...
+    # Subtest: an unrecognised error falls back to the caller's wording
+    ok 3 - an unrecognised error falls back to the caller's wording
+      ---
+      duration_ms: 0.498728
+      type: 'test'
+      ...
+    1..3
+ok 62 - what a person is allowed to be shown
+  ---
+  duration_ms: 3.922469
+  type: 'test'
+  ...
+# Subtest: what an operator is allowed to see
+    # Subtest: the cause chain is recorded, not just the wrapper
+    ok 1 - the cause chain is recorded, not just the wrapper
+      ---
+      duration_ms: 1.82954
+      type: 'test'
+      ...
+    # Subtest: the code is filterable, not only readable
+    ok 2 - the code is filterable, not only readable
+      ---
+      duration_ms: 0.759474
+      type: 'test'
+      ...
+    # Subtest: a connection string in a driver error is still redacted
+    ok 3 - a connection string in a driver error is still redacted
+      ---
+      duration_ms: 0.439036
+      type: 'test'
+      ...
+    # Subtest: bound query parameters never reach the log
+    ok 4 - bound query parameters never reach the log
+      ---
+      duration_ms: 0.373828
+      type: 'test'
+      ...
+    # Subtest: a self-referential cause does not hang the describer
+    ok 5 - a self-referential cause does not hang the describer
+      ---
+      duration_ms: 0.543505
+      type: 'test'
+      ...
+    1..5
+ok 63 - what an operator is allowed to see
+  ---
+  duration_ms: 6.127725
+  type: 'test'
+  ...
+# Subtest: kyc document storage
+    # Subtest: a person can upload an accepted file into their own folder
+    ok 1 - a person can upload an accepted file into their own folder
+      ---
+      duration_ms: 1209.726861
+      type: 'test'
+      ...
+    # Subtest: a disallowed file type is refused by the bucket, not by the app
+    ok 2 - a disallowed file type is refused by the bucket, not by the app
+      ---
+      duration_ms: 692.670912
+      type: 'test'
+      ...
+    # Subtest: an oversized file is refused by the bucket
+    ok 3 - an oversized file is refused by the bucket
+      ---
+      duration_ms: 229733.396624
+      type: 'test'
+      ...
+    # Subtest: a person cannot upload into another account's folder
+    ok 4 - a person cannot upload into another account's folder
+      ---
+      duration_ms: 2013.569504
+      type: 'test'
+      ...
+    # Subtest: an anonymous caller cannot upload at all
+    ok 5 - an anonymous caller cannot upload at all
+      ---
+      duration_ms: 819.626532
+      type: 'test'
+      ...
+    # Subtest: a person can read their own document; nobody else can
+    ok 6 - a person can read their own document; nobody else can
+      ---
+      duration_ms: 3886.200536
+      type: 'test'
+      ...
+    # Subtest: a KYC operator can sign a link to somebody else's document
+    ok 7 - a KYC operator can sign a link to somebody else's document
+      ---
+      duration_ms: 2666.393257
+      type: 'test'
+      ...
+    # Subtest: a signature cannot be minted for a document you cannot read
+    ok 8 - a signature cannot be minted for a document you cannot read
+      ---
+      duration_ms: 577.149285
+      type: 'test'
+      ...
+    # Subtest: an unsubmitted upload can be cleaned up; a submitted one cannot
+    ok 9 - an unsubmitted upload can be cleaned up; a submitted one cannot
+      ---
+      duration_ms: 8116.134589
+      type: 'test'
+      ...
+    # Subtest: a resubmission writes a new object rather than replacing one
+    ok 10 - a resubmission writes a new object rather than replacing one
+      ---
+      duration_ms: 3799.096512
+      type: 'test'
+      ...
+    1..10
+ok 64 - kyc document storage
+  ---
+  duration_ms: 262490.312079
+  type: 'suite'
+  ...
+# Subtest: postgrest exposure
+    # Subtest: an anonymous caller reads nothing from any application table
+    ok 1 - an anonymous caller reads nothing from any application table
+      ---
+      duration_ms: 18431.606362
+      type: 'test'
+      ...
+    # Subtest: a signed-in customer reads nothing either
+    ok 2 - a signed-in customer reads nothing either
+      ---
+      duration_ms: 13517.034884
+      type: 'test'
+      ...
+    1..2
+ok 65 - postgrest exposure
+  ---
+  duration_ms: 31949.179297
+  type: 'suite'
+  ...
+# Subtest: money lifecycle
+    # Subtest: a credit, an allocation and a maturity keep the ledger and balance agreeing
+    ok 1 - a credit, an allocation and a maturity keep the ledger and balance agreeing
+      ---
+      duration_ms: 126742.847257
+      type: 'test'
+      ...
+    # Subtest: settling twice returns the principal once, and pays no period twice
+    ok 2 - settling twice returns the principal once, and pays no period twice
+      ---
+      duration_ms: 96034.495595
+      type: 'test'
+      ...
+    # Subtest: an open-ended allocation is never matured by the settler
+    ok 3 - an open-ended allocation is never matured by the settler
+      ---
+      duration_ms: 10437.008845
+      type: 'test'
+      ...
+    # Subtest: a person can return an open-ended allocation, exactly once
+    ok 4 - a person can return an open-ended allocation, exactly once
+      ---
+      duration_ms: 19043.191103
+      type: 'test'
+      ...
+    # Subtest: one account cannot return another account's allocation
+    ok 5 - one account cannot return another account's allocation
+      ---
+      duration_ms: 14510.39928
+      type: 'test'
+      ...
+    # Subtest: a fixed-term allocation cannot be ended this way
+    ok 6 - a fixed-term allocation cannot be ended this way
+      ---
+      duration_ms: 11891.529732
+      type: 'test'
+      ...

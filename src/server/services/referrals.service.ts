@@ -63,13 +63,15 @@ export async function getReferralSummary(
 /**
  * These two keep the throwing resolver deliberately.
  *
- * `/referral` starts both through `deferred()` and awaits them inside a
- * `SectionBoundary`, whose error boundary catches whatever the read throws and
- * renders a section notice — and it does not re-throw Next's redirect signal.
- * Resolving the identity by redirecting here would therefore be *swallowed*
- * rather than honoured. The page's critical path reads `getReferralSummary`,
- * which does redirect, so an unauthenticated visitor still leaves for sign-in;
- * these panels simply fail inside their own boundary on the way out.
+ * `/referral` awaits both inside a `SectionBoundary`, whose error boundary
+ * catches whatever the read throws and renders a section notice — and it does
+ * not re-throw Next's redirect signal. Resolving the identity by redirecting
+ * here would therefore be *swallowed* rather than honoured.
+ *
+ * An unauthenticated visitor still leaves for sign-in: the layout's gate
+ * redirects on an absent session before any of this renders, and every other
+ * boundary on the page resolves through `requireCurrentUserIdForPage`. These
+ * panels simply fail inside their own boundary on the way out.
  */
 export async function getReferrals(userId?: string): Promise<Referral[]> {
   const id = await resolveUserId(userId);

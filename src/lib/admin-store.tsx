@@ -10,7 +10,6 @@ import type {
   AdminAgent,
   AdminCommissionEntry,
   AdminDeposit,
-  AdminDepositAddress,
   AdminInvestment,
   AdminNotificationCampaign,
   AdminPlan,
@@ -76,8 +75,6 @@ interface AdminStoreValue {
   users: AdminUser[];
   kyc: KycSubmission[];
   deposits: AdminDeposit[];
-  /** The deposit-address pool. Read only by `/admin/deposits/addresses`. */
-  depositAddresses: AdminDepositAddress[];
   withdrawals: AdminWithdrawal[];
   plans: AdminPlan[];
   agents: AdminAgent[];
@@ -95,7 +92,6 @@ const EMPTY: Omit<AdminStoreValue, "session" | "settings"> = {
   users: [],
   kyc: [],
   deposits: [],
-  depositAddresses: [],
   withdrawals: [],
   plans: [],
   agents: [],

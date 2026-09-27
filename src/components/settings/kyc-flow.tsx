@@ -27,6 +27,7 @@ import {
   submitKycAction,
 } from "@/app/(app)/settings/kyc/actions";
 import { cn } from "@/lib/utils";
+import type { KycUploadMode } from "@/types";
 
 import {
   FilePhotoButton,
@@ -77,9 +78,11 @@ import {
  */
 
 const DOCUMENT_TYPES = [
-  { id: "national_id", label: "Aadhaar / National ID" },
+  { id: "aadhaar", label: "Aadhaar" },
+  { id: "pan", label: "PAN card" },
   { id: "passport", label: "Passport" },
   { id: "driving_licence", label: "Driving licence" },
+  { id: "national_id", label: "Other national ID" },
 ] as const;
 
 type DocumentType = (typeof DOCUMENT_TYPES)[number]["id"];
@@ -152,9 +155,17 @@ export function KycFlow({
    * account's own latest case — see `getOwnKycCase`.
    */
   reviewerNote = null,
+  /**
+   * Where attached files go, decided server-side (`kycUploadModeFor`).
+   * `unavailable` hides the attach controls rather than offering a button
+   * that cannot work — declared details still submit.
+   */
+  uploadMode = "unavailable",
 }: {
   reviewerNote?: string | null;
+  uploadMode?: KycUploadMode;
 } = {}) {
+  const canAttach = uploadMode !== "unavailable";
   // Status only. The store is a cache of what the database said at render
   // time; it cannot change a verification state, and nothing here asks it to.
   const { kycStatus } = usePrototypeStore();
@@ -163,7 +174,7 @@ export function KycFlow({
   const [step, setStep] = useState(0);
   const [fullName, setFullName] = useState("");
   const [dob, setDob] = useState("");
-  const [documentType, setDocumentType] = useState<DocumentType>("national_id");
+  const [documentType, setDocumentType] = useState<DocumentType>("aadhaar");
   const [documentNumber, setDocumentNumber] = useState("");
   const [document, setDocument] = useState<CapturedImage | null>(null);
   const [selfie, setSelfie] = useState<CapturedImage | null>(null);
@@ -290,8 +301,10 @@ export function KycFlow({
         try {
           setUploading(true);
           [documentPath, selfiePath] = await Promise.all([
-            document ? uploadKycFile(document, "document") : Promise.resolve(undefined),
-            selfie ? uploadKycFile(selfie, "selfie") : Promise.resolve(undefined),
+            document
+              ? uploadKycFile(document, "document", uploadMode)
+              : Promise.resolve(undefined),
+            selfie ? uploadKycFile(selfie, "selfie", uploadMode) : Promise.resolve(undefined),
           ]);
         } catch (error) {
           toast.error(
@@ -442,7 +455,13 @@ export function KycFlow({
             onDocumentNumber={setDocumentNumber}
             document={document}
             onDocument={setDocument}
+            canAttach={canAttach}
           />
+        ) : !canAttach ? (
+          <p className="rounded-xl border border-border bg-secondary/60 p-3 text-xs leading-relaxed text-muted-foreground">
+            Photo upload is not available right now. You can submit your details
+            without a selfie, and we will ask for one if a reviewer needs it.
+          </p>
         ) : (
           <div className="space-y-3">
             <SelfieCapture
@@ -534,7 +553,9 @@ function DocumentStep({
   onDocumentNumber,
   document,
   onDocument,
+  canAttach,
 }: {
+  canAttach: boolean;
   documentType: DocumentType;
   onDocumentType: (value: DocumentType) => void;
   documentNumber: string;
@@ -549,7 +570,7 @@ function DocumentStep({
     <div className="space-y-4">
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium text-foreground">Document type</legend>
-        {/* Radios rather than a select: three options, and a native select on
+        {/* Radios rather than a select: a few options, and a native select on
             Android renders a modal that hides the rest of the step. */}
         <div className="space-y-2">
           {DOCUMENT_TYPES.map((option) => (
@@ -595,7 +616,12 @@ function DocumentStep({
         </p>
       </div>
 
-      {document ? (
+      {!canAttach ? (
+        <p className="rounded-xl border border-border bg-secondary/60 p-3 text-xs leading-relaxed text-muted-foreground">
+          Photo upload is not available right now. Your document type and number
+          are enough to submit.
+        </p>
+      ) : document ? (
         <div className="space-y-3">
           <div className="flex items-start gap-3 rounded-xl border border-brand bg-brand-soft p-4">
             <FileCheck2 className="mt-0.5 size-5 shrink-0 text-brand" aria-hidden />

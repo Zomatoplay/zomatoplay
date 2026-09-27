@@ -17,7 +17,13 @@ interface ListRowBaseProps {
 
 type ListRowProps = ListRowBaseProps &
   (
-    | { href: string; onClick?: never; as?: never }
+    | {
+        href: string;
+        onClick?: never;
+        as?: never;
+        /** Leaves the app (e.g. Telegram): a plain anchor in a new tab. */
+        external?: boolean;
+      }
     | { href?: never; onClick: () => void; as?: never }
     | { href?: never; onClick?: never; as: "div" }
   );
@@ -75,13 +81,28 @@ function RowInner({
  * The row primitive behind Settings lists and other tappable lists.
  * Minimum height 56px keeps every row a comfortable touch target.
  */
-export function ListRow({ href, onClick, as, className, ...rest }: ListRowProps) {
+export function ListRow(props: ListRowProps) {
+  // The union is for callers; inside, every variant's fields are optional.
+  const { href, onClick, as, className, external, ...rest } = props as ListRowBaseProps & {
+    href?: string;
+    onClick?: () => void;
+    as?: "div";
+    external?: boolean;
+  };
   const shared = cn(
     "flex min-h-14 w-full items-center gap-3 px-4 py-3 text-left transition-colors",
     (href || onClick) &&
       "hover:bg-secondary/60 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
     className,
   );
+
+  if (href && external) {
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" className={shared}>
+        <RowInner {...rest} interactive />
+      </a>
+    );
+  }
 
   if (href) {
     return (

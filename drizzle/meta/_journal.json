@@ -134,6 +134,27 @@
       "when": 1789616790660,
       "tag": "0018_flimsy_calypso",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790495339676,
+      "tag": "0019_firebase_s3_deposit_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1790538385394,
+      "tag": "0020_deposit_request_cancellation",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1790539121719,
+      "tag": "0021_customer_session_epoch",
+      "breakpoints": true
     }
   ]
 }

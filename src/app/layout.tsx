@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 
 import { Toaster } from "@/components/ui/sonner";
 import { NavigationTracer } from "@/components/shared/navigation-tracer";
+import { ServiceWorkerRegistration } from "@/components/shared/service-worker-registration";
 import { APP_DESCRIPTION, APP_NAME, APP_TAGLINE } from "@/constants/app";
 
 import "./globals.css";
@@ -77,6 +78,8 @@ export default function RootLayout({
         {children}
         {/* Times the browser half of every navigation. Renders nothing. */}
         <NavigationTracer />
+        {/* Static assets + an offline page only; never a page or data. */}
+        <ServiceWorkerRegistration />
         <Toaster />
       </body>
     </html>

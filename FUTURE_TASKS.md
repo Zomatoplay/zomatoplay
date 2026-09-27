@@ -1377,3 +1377,36 @@ payment date. An operator releases those by hand, and the CRM marks them
   closed. That is the existing "real notification delivery beyond in-app" gap,
   now with an obvious trigger for it.
 
+
+---
+
+## Added 2026-09-27 — phone sign-in, S3, single-address deposits, PWA
+
+- **Move Supabase-stored KYC objects to S3.** Rows carry `storage_backend`, so
+  old documents stay openable while the Supabase project exists. A migration job
+  must copy each object to `kyc/{userId}/{kind}/{uuid}`, verify size and type,
+  update the row's key and backend in one statement per row, and only then allow
+  the Supabase bucket to be retired. *Trigger:* before the Supabase project is
+  shut down.
+- **Orphaned S3 uploads.** A presigned slot that is used but never submitted
+  leaves an object no row claims. Needs a listing job (and `s3:ListBucket` on the
+  prefix) that deletes unclaimed objects older than a day. *Trigger:* once S3 is
+  live and the bucket grows.
+- **Shared rate-limit store.** `server/rate-limit.ts` is process-local — exact
+  on one EC2 process, weaker with several. *Trigger:* a second instance or a
+  cluster-mode process manager.
+- **Per-device customer sign-out.** Sign-out advances `users.session_epoch`,
+  which ends every phone session the account holds on every device. Signing
+  out one device only would need sessions stored per device. *Trigger:*
+  customers asking to stay signed in elsewhere.
+- **Archive the retired address-pool tables.** `deposit_addresses` and
+  `deposit_address_assignments` are history (CLAUDE.md §18.8). Dropping them
+  needs a decision on how their attributions stay answerable. *Trigger:* none
+  urgent.
+- **Deposit evidence upload.** The request flow has no screenshot upload by
+  design until there is somewhere to keep one (S3, own prefix, same presign
+  pattern). *Trigger:* the S3 bucket going live and support asking for it.
+- **Exact-amount decimals.** Offsets are 0.01–0.99 (two places) because most
+  exchanges withdraw to two decimals. If the review queue fills with
+  fee-deducted amounts, the remedy is customer guidance ("send the exact amount
+  from a wallet that does not deduct fees"), **never** a matching tolerance.

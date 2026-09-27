@@ -18,12 +18,16 @@ import { Label } from "@/components/ui/label";
  * thing with different handling.
  */
 export function CompleteProfileForm({
-  email,
+  signedInAs,
   initialFullName,
+  phoneVerified,
 }: {
-  email: string;
+  /** An email, or a masked verified number. */
+  signedInAs: string;
   /** From sign-up. Empty for accounts created by one-time code. */
   initialFullName: string;
+  /** A verified number needs no phone field — it is already on the account. */
+  phoneVerified: boolean;
 }) {
   const router = useRouter();
   const [fullName, setFullName] = useState(initialFullName);
@@ -33,7 +37,10 @@ export function CompleteProfileForm({
   function submit(event: React.FormEvent) {
     event.preventDefault();
     startTransition(async () => {
-      const result = await saveProfile({ fullName, phone });
+      const result = await saveProfile({
+        fullName,
+        phone: phoneVerified ? undefined : phone,
+      });
       if (!result.ok) {
         toast.error(result.message);
         return;
@@ -51,7 +58,7 @@ export function CompleteProfileForm({
           Complete your profile
         </h1>
         <p className="text-sm text-muted-foreground">
-          Signed in as {email}.
+          Signed in as {signedInAs}.
         </p>
       </div>
 
@@ -68,6 +75,7 @@ export function CompleteProfileForm({
             required
           />
         </div>
+        {phoneVerified ? null : (
         <div className="space-y-1.5">
           <Label htmlFor="phone">Phone number</Label>
           <Input
@@ -82,6 +90,7 @@ export function CompleteProfileForm({
             required
           />
         </div>
+        )}
       </div>
 
       <Button

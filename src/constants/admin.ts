@@ -238,6 +238,11 @@ export const ADMIN_LIST_SPECS = {
   deposits: {
     statuses: [
       "all",
+      /*
+       * Not a column value: confirmed transfers with no account — the queue an
+       * operator works. The repository translates it (`pageAdminDeposits`).
+       */
+      "unmatched",
       "pending",
       "detected",
       "confirming",

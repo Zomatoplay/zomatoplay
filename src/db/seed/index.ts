@@ -212,6 +212,10 @@ async function clear(db: Database) {
   await db.delete(t.kycDocuments);
   await db.delete(t.kycSubmissions);
   await db.delete(t.withdrawals);
+  // Requests reference deposits; cleared first. `deposit_settings` is NOT
+  // cleared: it is an operator's choice of where real money goes, and a reseed
+  // must never silently move it back to the environment's default.
+  await db.delete(t.depositRequests);
   await db.delete(t.deposits);
   await db.delete(t.transactions);
   await db.delete(t.investments);

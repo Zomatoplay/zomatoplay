@@ -5,10 +5,9 @@ import { AppShell } from "@/components/navigation/app-shell";
 import { SessionUnavailableNotice } from "@/components/shared/session-unavailable-notice";
 import { PrototypeStoreProvider } from "@/lib/prototype-store";
 import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
-import {
-  AuthProviderUnavailableError,
-  getAuthPrincipal,
-} from "@/server/auth/session";
+import { getCustomerPrincipal } from "@/server/auth/customer-session";
+import { isPhoneSignInLive } from "@/server/auth/phone-sign-in";
+import { AuthProviderUnavailableError } from "@/server/auth/session";
 import { isInfrastructureFailure } from "@/server/errors";
 import {
   describeError,
@@ -128,6 +127,15 @@ async function AccountGate() {
   // An operator's decision in the CRM has to reach the product.
   if (isAccountLockedOut(account.status)) redirect("/login");
   if (!account.profileComplete) redirect("/complete-profile");
+  /*
+   * An account that predates phone sign-in, reached through the legacy email
+   * session, links a verified number before going further — once phone
+   * sign-in is live. This is the whole existing-customer migration: nobody is
+   * linked by the unverified number on their profile (CLAUDE.md §19.7).
+   */
+  if (account.signInMethod === "email" && !account.firebaseUid && isPhoneSignInLive()) {
+    redirect("/link-phone");
+  }
 
   return null;
 }
@@ -139,7 +147,7 @@ async function renderAppLayout(children: React.ReactNode) {
      * Local signature verification, no database. This is the check that must
      * stay synchronous — see `AccountGate` above.
      */
-    principal = await getAuthPrincipal();
+    principal = await getCustomerPrincipal();
   } catch (error) {
     /*
      * "WE COULD NOT CHECK" IS NOT "YOU ARE NOT SIGNED IN"

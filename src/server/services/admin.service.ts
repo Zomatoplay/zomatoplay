@@ -19,7 +19,6 @@ import { adminPlans as seedAdminPlans } from "@/data/admin/plans";
 import type {
   AdminAgent,
   AdminDashboardMetrics,
-  AdminDepositAddress,
   PipelineEvent,
   AdminCommissionEntry,
   AdminDeposit,
@@ -43,15 +42,12 @@ import type {
   UserSecurityEvent,
 } from "@/types/admin";
 
-import { isDatabaseConfigured } from "@/db";
-
 import { fromDatabase } from "../database";
 import {
   pageSeed,
   seedSearchMatches,
   seedStatusCounts,
 } from "./admin-seed-page";
-import { listDepositAddressesForAdmin } from "./deposit-address.service";
 import {
   findPlatformSettings,
   listAdminAgents,
@@ -220,7 +216,11 @@ function seedDepositMatcher(
   deposit: AdminDeposit,
   query: AdminListQuery,
 ): boolean {
-  if (query.status !== "all" && deposit.status !== query.status) return false;
+  if (query.status === "unmatched") {
+    if (!(deposit.status === "confirmed" && deposit.userId === null)) return false;
+  } else if (query.status !== "all" && deposit.status !== query.status) {
+    return false;
+  }
   return seedSearchMatches(query.search, [
     deposit.txHash,
     deposit.walletAddress,
@@ -472,20 +472,6 @@ export async function getAdminDeposits(): Promise<AdminDeposit[]> {
   return fromDatabase(listAdminDeposits, () => seedDeposits);
 }
 
-/**
- * The deposit-address pool.
- *
- * No seed-data fallback, unlike its neighbours, and that is deliberate: there
- * is no fixture pool to fall back *to* — the addresses are whatever an
- * operator configured or added, and an invented list on this screen would be
- * a set of addresses somebody might send real USDT to. With no database
- * configured this returns nothing, which is the truth.
- */
-export async function getAdminDepositAddresses(): Promise<AdminDepositAddress[]> {
-  if (!isDatabaseConfigured()) return [];
-  return listDepositAddressesForAdmin();
-}
-
 export async function getAdminWithdrawals(): Promise<AdminWithdrawal[]> {
   return fromDatabase(listAdminWithdrawals, () => seedWithdrawals);
 }
@@ -687,7 +673,6 @@ export interface AdminSliceData {
   pipelineEvents?: PipelineEvent[];
   kyc?: KycSubmission[];
   deposits?: AdminDeposit[];
-  depositAddresses?: AdminDepositAddress[];
   withdrawals?: AdminWithdrawal[];
   investments?: AdminInvestment[];
   plans?: AdminPlan[];

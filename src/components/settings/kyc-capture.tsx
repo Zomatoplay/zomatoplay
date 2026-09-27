@@ -5,6 +5,8 @@ import { Camera, RotateCw, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
+import { createKycUploadTargetAction } from "@/app/(app)/settings/kyc/actions";
+import type { KycUploadMode } from "@/types";
 
 /**
  * The device camera, opened for real.
@@ -399,7 +401,13 @@ export class UploadError extends Error {}
 export async function uploadKycFile(
   image: CapturedImage,
   kind: "document" | "selfie",
+  mode: KycUploadMode,
 ): Promise<string> {
+  if (mode === "s3") return uploadToS3(image, kind);
+  if (mode !== "supabase") {
+    throw new UploadError("Document upload is not available right now.");
+  }
+
   const supabase = getSupabaseBrowserClient();
 
   const { data: sessionData } = await supabase.auth.getSession();
@@ -444,6 +452,48 @@ export async function uploadKycFile(
   }
 
   return key;
+}
+
+/**
+ * The S3 path: ask the server for a one-file upload slot, then PUT the bytes
+ * straight to the private bucket.
+ *
+ * The server generates the key (`kyc/{userId}/{kind}/{uuid}`) from the
+ * session and signs the exact content type and length into the URL, so this
+ * function cannot choose where the file goes or smuggle a different file in —
+ * S3 refuses a body that does not match. The returned key is then verified
+ * again, server-side, when the submission claims it.
+ */
+async function uploadToS3(
+  image: CapturedImage,
+  kind: "document" | "selfie",
+): Promise<string> {
+  const blob = await fetch(image.previewUrl).then((response) => response.blob());
+  const contentType = image.mimeType || blob.type || "application/octet-stream";
+
+  const target = await createKycUploadTargetAction({
+    kind,
+    contentType,
+    byteSize: blob.size,
+  });
+  if (!target.ok || !target.url || !target.key) {
+    throw new UploadError(target.message ?? "Could not prepare the upload. Try again.");
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(target.url, {
+      method: "PUT",
+      headers: target.headers,
+      body: blob,
+    });
+  } catch {
+    throw new UploadError("The upload failed. Check your connection and try again.");
+  }
+  if (!response.ok) {
+    throw new UploadError("The upload was refused. Try again, or choose a different file.");
+  }
+  return target.key;
 }
 
 function extensionFor(image: CapturedImage): string {

@@ -153,9 +153,18 @@ test("refuses a mistyped contract or deposit address", () => {
   process.env.TRON_USDT_CONTRACT = "TNotARealContractAddressAtAll11111";
   assert.throws(() => getTronConfig(), TronConfigError);
 
+  // A mistyped address is refused outright…
+  config();
+  process.env.TRON_PLATFORM_DEPOSIT_ADDRESS = "TNotARealDepositAddressAtAll11111";
+  assert.throws(() => getTronConfig(), TronConfigError);
+
+  // …while an absent one is "none configured here": since 2026-09-27 the
+  // active address may be saved in the CRM (`deposit_settings`), so the
+  // environment's is an optional default rather than a requirement.
   config();
   process.env.TRON_PLATFORM_DEPOSIT_ADDRESS = "";
-  assert.throws(() => getTronConfig(), TronConfigError);
+  delete process.env.TRON_DEPOSIT_ADDRESS;
+  assert.equal(getTronConfig().depositAddress, null);
   config();
 });
 

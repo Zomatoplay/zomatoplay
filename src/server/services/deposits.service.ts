@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, desc, eq, exists, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 
 import { unstable_noStore as noStore } from "next/cache";
 
@@ -8,7 +8,12 @@ import { decimalFrom, isPositive, numericValue, type Decimal } from "@/db/money"
 import * as t from "@/db/schema";
 import { getDb, isDatabaseConfigured, type Tx } from "@/db";
 
-import { findOwnerOfAddressAt } from "../repositories/deposit-address.repository";
+import {
+  findMatchingRequest,
+  MATCHABLE_REQUEST_STATUSES,
+  UNMATCHED_REASON_LABELS,
+  type UnmatchedReason,
+} from "./deposit-matching";
 import { getTronConfig, isTronConfigured } from "../tron/config";
 import { applyLedgerEntry, ensureWallet } from "../repositories/wallet.repository";
 import { fromDatabase, resilientRead } from "../database";
@@ -19,20 +24,19 @@ import { mutate, newId, withReason, SYSTEM_ACTOR, type Actor } from "../write";
  *
  * Two separate concerns, kept separate on purpose:
  *
- * - **Recording** is mechanical and automatic. The scanner sees a transfer and
- *   writes a row.
- * - **Attribution** is a lookup, not a guess: the recipient address is checked
- *   against `deposit_addresses`. When it resolves to a user, that user is
- *   credited automatically, in the same transaction as the recording — the
- *   address *is* the identity, structurally, so there is nothing left for an
- *   operator to decide. When it does not resolve (an address never assigned,
- *   already released, or a transfer to the pre-pool shared address from before
- *   this existed), the deposit is recorded unattributed exactly as before, and
- *   `assignDepositToUser` below is how an operator resolves it by hand.
+ * - **Recording** is mechanical and automatic. The scanner — or a customer's
+ *   submitted hash, looked up on the chain — sees a transfer and writes a row.
+ * - **Attribution** is a lookup, not a guess: the transfer's recipient, exact
+ *   amount and block time are matched against open deposit requests
+ *   (`findMatchingRequest`). Exactly one match is credited automatically, in
+ *   the same transaction as the recording. Anything else is recorded
+ *   unattributed with a named `unmatched_reason`, and `assignDepositToUser`
+ *   below is how an operator resolves it by hand.
  *
  * Crediting only ever happens once, whichever path resolves it: both are
- * guarded by the same re-asserted `WHERE status = …` pattern used everywhere
- * else money moves in this codebase.
+ * guarded by the unique index on (chain, tx_hash), the unique index on
+ * `deposit_requests.deposit_id`, and the same re-asserted `WHERE status = …`
+ * pattern used everywhere else money moves in this codebase.
  */
 
 export interface ObservedTransfer {
@@ -51,9 +55,25 @@ export interface ObservedTransfer {
 
 export type RecordOutcome = "created" | "updated" | "unchanged";
 
+/**
+ * What happened to a customer's claim on this transfer, when there was one.
+ *
+ *   credited      matched THEIR request and is in their wallet (now or before)
+ *   needs_review  on-chain and valid, but not matchable — an operator decides
+ *   not_yours     attributed to a different request; their claim changes nothing
+ */
+export type ClaimOutcome = "credited" | "needs_review" | "not_yours";
+
 export interface RecordResult {
   outcome: RecordOutcome;
   depositId: string;
+  claim?: ClaimOutcome;
+}
+
+/** A customer saying "this transfer is for my request". Never decides ownership. */
+export interface DepositClaim {
+  requestId: string;
+  userId: string;
 }
 
 /**
@@ -63,27 +83,30 @@ export interface RecordResult {
  * -----------
  * `onConflictDoNothing` against the unique index on (chain, tx_hash) is what
  * makes a re-scan harmless. It is a database constraint rather than a prior
- * `SELECT … WHERE tx_hash = ?` because two scanners — or one scanner and its
- * own retry — can pass that check simultaneously and both insert. The index
- * cannot be raced.
+ * `SELECT … WHERE tx_hash = ?` because two scanners — or one scanner and a
+ * customer's Verify Payment, or one of them and its own retry — can pass that
+ * check simultaneously and both insert. The index cannot be raced.
  *
  * A transfer seen again while still unconfirmed gets its confirmation state
  * refreshed; one that is already credited is never touched again.
  *
  * AUTOMATIC ATTRIBUTION
  * ----------------------
- * Once a deposit reaches `confirmed` and has no `userId` yet, its recipient
- * address is looked up in `deposit_addresses`. A resolved, currently-assigned
- * owner is credited immediately, in this same transaction, through the exact
- * ledger path an operator's manual assignment uses (`ensureWallet` +
- * `applyLedgerEntry`) — this does not create a second way for money to move.
- * An address that does not resolve (never assigned, released, or the legacy
- * shared address) is left `userId = null`, exactly as before, for
- * `assignDepositToUser` to resolve by hand.
+ * Once a deposit is `confirmed` and has no `userId`, it is matched against
+ * deposit requests (`findMatchingRequest`). One match is credited through the
+ * exact ledger path an operator's manual assignment uses (`ensureWallet` +
+ * `applyLedgerEntry`) — this is not a second way for money to move.
+ *
+ * THE CLAIM
+ * ---------
+ * `claim` is present when a customer submitted this hash. It is processed
+ * AFTER attribution and cannot influence it: it only records, on the
+ * claimant's own request, what attribution decided.
  */
 export async function recordObservedDeposit(
   transfer: ObservedTransfer,
   actor: Actor = SYSTEM_ACTOR,
+  claim?: DepositClaim,
 ): Promise<RecordResult> {
   return mutate(actor, async ({ tx, now, audit }) => {
     const id = newId("dep", now);
@@ -121,7 +144,7 @@ export async function recordObservedDeposit(
 
     let depositId: string;
     let outcome: RecordOutcome;
-    let eligibleForAutoCredit: boolean;
+    let eligibleForAutoCredit = false;
 
     if (inserted.length > 0) {
       depositId = inserted[0].id;
@@ -145,15 +168,20 @@ export async function recordObservedDeposit(
         .select({ id: t.deposits.id, status: t.deposits.status, userId: t.deposits.userId })
         .from(t.deposits)
         .where(and(eq(t.deposits.chain, "tron"), eq(t.deposits.txHash, transfer.txHash)))
-        .limit(1);
+        .limit(1)
+        .for("update");
 
       if (!existing) return { outcome: "unchanged" as const, depositId: id };
+      depositId = existing.id;
+      outcome = "unchanged";
 
-      if (existing.status === "credited" || existing.status === "ignored") {
-        return { outcome: "unchanged" as const, depositId: existing.id };
-      }
-
-      if (transfer.confirmed && existing.status !== "confirmed") {
+      if (
+        transfer.confirmed &&
+        existing.status !== "confirmed" &&
+        existing.status !== "credited" &&
+        existing.status !== "ignored" &&
+        existing.status !== "failed"
+      ) {
         await tx
           .update(t.deposits)
           .set({
@@ -165,101 +193,195 @@ export async function recordObservedDeposit(
             updatedAt: now,
           })
           .where(eq(t.deposits.id, existing.id));
-        depositId = existing.id;
         outcome = "updated";
         eligibleForAutoCredit = existing.userId === null;
-      } else {
-        return { outcome: "unchanged" as const, depositId: existing.id };
       }
     }
 
-    if (!eligibleForAutoCredit) return { outcome, depositId };
-
-    /*
-     * ATTRIBUTED BY WHEN THE TRANSFER HAPPENED, NOT BY WHO HOLDS THE ADDRESS NOW.
-     *
-     * The instant that decides ownership is the transfer's own **block
-     * timestamp** — a fact about the chain. Using the scanner's clock instead
-     * would make attribution depend on when a cron happened to run, so a pass
-     * delayed past a release would credit the wrong account. `detectedAt` is
-     * the fallback only for a transfer whose block time TronGrid did not
-     * report, which places it at detection and is the most conservative
-     * reading available.
-     *
-     * A null answer is not a failure: it means nobody held this address at
-     * that moment, so the deposit stays unattributed and an operator assigns
-     * it. See `findOwnerOfAddressAt`.
-     */
-    const owner = await findOwnerOfAddressAt(
-      tx,
-      {
-        chain: "tron",
-        network: transfer.network as "shasta" | "nile" | "mainnet",
-        asset: "usdt",
-        address: transfer.to,
-      },
-      transfer.blockTimestamp ?? now,
-    );
-    if (!owner) return { outcome, depositId };
-
-    const [user] = await tx
-      .select({ id: t.users.id, name: t.users.fullName, displayId: t.users.displayId })
-      .from(t.users)
-      .where(eq(t.users.id, owner.userId))
-      .limit(1);
-    // The address row points at a user id that no longer resolves — leave the
-    // deposit unassigned for an operator rather than crediting nobody's wallet.
-    if (!user) return { outcome, depositId };
-
-    await ensureWallet(tx, user.id);
-    const ledgerTxId = await applyLedgerEntry(tx, {
-      userId: user.id,
-      type: "deposit",
-      amount: transfer.amount,
-      description: "Deposit received",
-      reference: transfer.txHash,
-      network: "trc20",
-      confirmations: {
-        current: transfer.confirmationsRequired,
-        required: transfer.confirmationsRequired,
-      },
-      occurredAt: now,
-      buckets: { totalDeposited: transfer.amount },
-    });
-
-    const credited = await tx
-      .update(t.deposits)
-      .set({
-        userId: user.id,
-        assignedAt: now,
-        assignedBy: "deposit-address-pool",
-        status: "credited",
-        creditedAt: now,
-        updatedAt: now,
-      })
-      // Re-asserted so a deposit an operator credited manually between this
-      // transaction starting and reaching here is refused, not double-paid.
-      .where(and(eq(t.deposits.id, depositId), eq(t.deposits.status, "confirmed")))
-      .returning({ id: t.deposits.id });
-
-    if (credited.length === 0) {
-      throw new DepositError("That deposit was credited by someone else just now.");
+    if (eligibleForAutoCredit) {
+      await attributeConfirmedDeposit(tx, now, audit, depositId, transfer);
     }
 
-    audit({
-      action: "deposit_credited",
-      target: {
-        type: "deposit",
-        id: depositId,
-        label: `${transfer.amount} USDT · ${transfer.txHash}`,
-      },
-      details:
-        `Automatically attributed to ${user.name} (${user.displayId}) via their ` +
-        `deposit address and credited ${transfer.amount} USDT. Ledger entry ${ledgerTxId}.`,
-    });
+    const claimOutcome = claim
+      ? await applyClaim(tx, now, depositId, transfer.txHash, claim)
+      : undefined;
 
-    return { outcome, depositId };
+    return { outcome, depositId, claim: claimOutcome };
   });
+}
+
+type WriteTx = Tx;
+type AuditFn = Parameters<Parameters<typeof mutate>[1]>[0]["audit"];
+
+/**
+ * Matches a newly confirmed, unattributed deposit to a request and credits
+ * it — or records why it could not be matched.
+ */
+async function attributeConfirmedDeposit(
+  tx: WriteTx,
+  now: Date,
+  audit: AuditFn,
+  depositId: string,
+  transfer: ObservedTransfer,
+): Promise<void> {
+  const match = await findMatchingRequest(tx, {
+    to: transfer.to,
+    amount: transfer.amount,
+    network: transfer.network,
+    blockTimestamp: transfer.blockTimestamp,
+  });
+
+  if (match.kind === "none") {
+    await tx
+      .update(t.deposits)
+      .set({ unmatchedReason: match.reason, updatedAt: now })
+      .where(and(eq(t.deposits.id, depositId), isNull(t.deposits.userId)));
+    return;
+  }
+
+  const [user] = await tx
+    .select({ id: t.users.id, name: t.users.fullName, displayId: t.users.displayId })
+    .from(t.users)
+    .where(eq(t.users.id, match.request.userId))
+    .limit(1);
+  // The request's account no longer resolves — leave it for an operator rather
+  // than crediting nobody's wallet.
+  if (!user) {
+    await tx
+      .update(t.deposits)
+      .set({ unmatchedReason: "no_matching_request", updatedAt: now })
+      .where(eq(t.deposits.id, depositId));
+    return;
+  }
+
+  await ensureWallet(tx, user.id);
+  const ledgerTxId = await applyLedgerEntry(tx, {
+    userId: user.id,
+    type: "deposit",
+    amount: transfer.amount,
+    description: "Deposit received",
+    reference: transfer.txHash,
+    network: "trc20",
+    confirmations: {
+      current: transfer.confirmationsRequired,
+      required: transfer.confirmationsRequired,
+    },
+    occurredAt: now,
+    buckets: { totalDeposited: transfer.amount },
+  });
+
+  const credited = await tx
+    .update(t.deposits)
+    .set({
+      userId: user.id,
+      assignedAt: now,
+      assignedBy: "deposit-request",
+      status: "credited",
+      creditedAt: now,
+      unmatchedReason: null,
+      updatedAt: now,
+    })
+    // Re-asserted so a deposit an operator credited manually between this
+    // transaction starting and reaching here is refused, not double-paid.
+    .where(and(eq(t.deposits.id, depositId), eq(t.deposits.status, "confirmed")))
+    .returning({ id: t.deposits.id });
+  if (credited.length === 0) {
+    throw new DepositError("That deposit was credited by someone else just now.");
+  }
+
+  const closed = await tx
+    .update(t.depositRequests)
+    .set({
+      status: "credited",
+      depositId,
+      verifiedAmountUsdt: numericValue(transfer.amount),
+      verifiedAt: now,
+      reviewReason: null,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(t.depositRequests.id, match.request.id),
+        inArray(t.depositRequests.status, [...MATCHABLE_REQUEST_STATUSES]),
+      ),
+    )
+    .returning({ id: t.depositRequests.id });
+  // The request was closed concurrently; the whole credit rolls back with this.
+  if (closed.length === 0) {
+    throw new DepositError("That deposit request changed while it was being credited.");
+  }
+
+  audit({
+    action: "deposit_credited",
+    target: {
+      type: "deposit",
+      id: depositId,
+      label: `${transfer.amount} USDT · ${transfer.txHash}`,
+    },
+    details:
+      `Matched to deposit request ${match.request.id} for ${user.name} (${user.displayId}) ` +
+      `by exact amount, recipient and time window, and credited ${transfer.amount} USDT. ` +
+      `Ledger entry ${ledgerTxId}.`,
+  });
+}
+
+/**
+ * Records, on the claimant's OWN request, what attribution decided about the
+ * transfer they submitted. Changes nothing about the deposit or any balance.
+ */
+async function applyClaim(
+  tx: WriteTx,
+  now: Date,
+  depositId: string,
+  txHash: string,
+  claim: DepositClaim,
+): Promise<ClaimOutcome> {
+  const [deposit] = await tx
+    .select({
+      status: t.deposits.status,
+      userId: t.deposits.userId,
+      unmatchedReason: t.deposits.unmatchedReason,
+    })
+    .from(t.deposits)
+    .where(eq(t.deposits.id, depositId))
+    .limit(1);
+  const [request] = await tx
+    .select({ id: t.depositRequests.id, depositId: t.depositRequests.depositId })
+    .from(t.depositRequests)
+    .where(
+      and(
+        eq(t.depositRequests.id, claim.requestId),
+        eq(t.depositRequests.userId, claim.userId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+
+  if (!deposit || !request) return "not_yours";
+  if (request.depositId === depositId) return "credited";
+  // Somebody else's matched transfer, or credited by an operator to another
+  // account: the claimant's request is left exactly as it was.
+  if (deposit.status === "credited" || deposit.userId !== null) return "not_yours";
+
+  const reason = deposit.unmatchedReason as UnmatchedReason | null;
+  await tx
+    .update(t.depositRequests)
+    .set({
+      status: "needs_review",
+      submittedTxHash: txHash,
+      submittedAt: now,
+      reviewReason: reason
+        ? UNMATCHED_REASON_LABELS[reason]
+        : "The transfer could not be matched automatically.",
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(t.depositRequests.id, request.id),
+        inArray(t.depositRequests.status, [...MATCHABLE_REQUEST_STATUSES]),
+      ),
+    );
+  return "needs_review";
 }
 
 /**
@@ -326,6 +448,7 @@ export async function assignDepositToUser(
         assignedBy: actor.name,
         status: "credited",
         creditedAt: now,
+        unmatchedReason: null,
         updatedAt: now,
       })
       // Re-asserting the status here is what makes the whole thing safe under
@@ -338,6 +461,48 @@ export async function assignDepositToUser(
       throw new DepositError("That deposit was credited by someone else just now.");
     }
 
+    /*
+     * Close the loop on the customer side. The account's own request that
+     * claimed this hash (if any) becomes `credited` and is bound to the
+     * deposit; every other account's claim on the same hash is `rejected`, so
+     * nobody is left looking at "under review" for money that went elsewhere.
+     */
+    const claims = await tx
+      .select({ id: t.depositRequests.id, userId: t.depositRequests.userId })
+      .from(t.depositRequests)
+      .where(
+        and(
+          eq(t.depositRequests.submittedTxHash, deposit.txHash),
+          inArray(t.depositRequests.status, [...MATCHABLE_REQUEST_STATUSES]),
+        ),
+      )
+      .for("update");
+    const own = claims.find((claim) => claim.userId === user.id);
+    if (own) {
+      await tx
+        .update(t.depositRequests)
+        .set({
+          status: "credited",
+          depositId: deposit.id,
+          verifiedAmountUsdt: numericValue(amount),
+          verifiedAt: now,
+          reviewReason: null,
+          updatedAt: now,
+        })
+        .where(eq(t.depositRequests.id, own.id));
+    }
+    const others = claims.filter((claim) => claim.userId !== user.id).map((claim) => claim.id);
+    if (others.length > 0) {
+      await tx
+        .update(t.depositRequests)
+        .set({
+          status: "rejected",
+          reviewReason: "Reviewed: this transaction was attributed to a different account.",
+          updatedAt: now,
+        })
+        .where(inArray(t.depositRequests.id, others));
+    }
+
     audit({
       action: "deposit_credited",
       target: {
@@ -347,7 +512,9 @@ export async function assignDepositToUser(
       },
       details: withReason(
         `Assigned to ${user.name} (${user.displayId}) and credited ${amount} USDT. ` +
-          `Ledger entry ${ledgerTxId}.`,
+          `Ledger entry ${ledgerTxId}.` +
+          (own ? ` Satisfies their deposit request ${own.id}.` : "") +
+          (others.length > 0 ? ` Closed ${others.length} other claim(s) on this hash.` : ""),
         request.note,
       ),
     });
@@ -657,20 +824,12 @@ export async function getRecentChainDeposits(limit = 5) {
  *
  * SCOPED BY IDENTITY, NEVER BY RESEMBLANCE
  * ----------------------------------------
- * Two clauses, and both are the same fact stated at two moments in a deposit's
- * life:
- *
- * - `user_id` — set once the deposit was credited, either automatically
- *   through the address pool or by an operator.
- * - the recipient address being one currently assigned to this account in
- *   `deposit_addresses` — which is what shows a transfer that has been seen
- *   but is still waiting for its block to solidify, before anything has been
- *   attributed or credited.
- *
- * The second clause is the *same* lookup `recordObservedDeposit` uses to
- * decide ownership, read in the other direction; it is not a guess. Nothing
- * here matches on amount, on timing, or on who happens to be looking — the
- * things §18.4 refuses — and nothing here credits anything. It is a read.
+ * Only deposits attributed to this account — credited through its own deposit
+ * request, or assigned to it by an operator. A transfer still waiting for its
+ * block to solidify is shown on the deposit screen through the *request*
+ * (`deposit_requests`), not here: with one shared address, an unattributed
+ * transfer belongs to nobody yet, and showing it to whoever is looking would
+ * be exactly the guess §18.4 refuses.
  */
 export interface UserDepositActivity {
   id: string;
@@ -705,24 +864,7 @@ export async function listDepositActivityForUser(
         userId: t.deposits.userId,
       })
       .from(t.deposits)
-      .where(
-        or(
-          eq(t.deposits.userId, userId),
-          exists(
-            db
-              .select({ one: sql<number>`1` })
-              .from(t.depositAddresses)
-              .where(
-                and(
-                  eq(t.depositAddresses.userId, userId),
-                  eq(t.depositAddresses.status, "assigned"),
-                  eq(t.depositAddresses.chain, t.deposits.chain),
-                  eq(t.depositAddresses.address, t.deposits.walletAddress),
-                ),
-              ),
-          ),
-        ),
-      )
+      .where(eq(t.deposits.userId, userId))
       .orderBy(desc(t.deposits.createdAt))
       .limit(limit);
   });

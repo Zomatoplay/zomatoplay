@@ -1,5 +1,5 @@
 import { AdminTableSkeleton } from "@/components/admin/shared/admin-skeleton";
 
 export default function Loading() {
-  return <AdminTableSkeleton label="Loading deposit addresses" />;
+  return <AdminTableSkeleton label="Loading deposit configuration" />;
 }

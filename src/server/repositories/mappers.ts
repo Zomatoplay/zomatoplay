@@ -1,6 +1,10 @@
 import "server-only";
 
 import type { schema } from "@/db";
+import {
+  unmatchedDepositReasonLabels,
+  type UnmatchedDepositReason,
+} from "@/data/deposit-requests";
 import type {
   AppNotification,
   BankAccount,
@@ -96,8 +100,11 @@ export function toUserProfile(user: UserRow, steps: KycStepRow[]): UserProfile {
     id: user.id,
     displayId: user.displayId,
     fullName: user.fullName,
-    email: user.email,
+    // Null for an account created by phone sign-in; the domain keeps a string
+    // and renders an empty one as "not added".
+    email: user.email ?? "",
     phone: user.phone,
+    phoneVerified: user.phoneE164 !== null,
     avatarUrl: user.avatarUrl,
     country: user.country,
     memberSince: iso(user.registeredAt),
@@ -369,7 +376,9 @@ export function toAdminUser(user: UserRow, wallet: WalletRow | null): AdminUser 
     id: user.id,
     displayId: user.displayId,
     fullName: user.fullName,
-    email: user.email,
+    // Null for an account created by phone sign-in; the domain keeps a string
+    // and renders an empty one as "not added".
+    email: user.email ?? "",
     phone: user.phone,
     country: user.country,
     registeredAt: iso(user.registeredAt),
@@ -500,6 +509,11 @@ export function toAdminDeposit(
     status: deposit.status,
     verification: deposit.verification,
     failureReason: optional(deposit.failureReason),
+    unmatchedReason:
+      deposit.userId === null && deposit.unmatchedReason
+        ? (unmatchedDepositReasonLabels[deposit.unmatchedReason as UnmatchedDepositReason] ??
+          deposit.unmatchedReason)
+        : undefined,
   };
 }
 

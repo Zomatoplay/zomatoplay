@@ -54,9 +54,12 @@ import type { SecurityActivity } from "@/types";
  */
 export function SecuritySettings({
   activity,
+  signIn,
 }: {
   /** Recent account events, read server-side. */
   activity: SecurityActivity[];
+  /** How this session signed in, resolved server-side. */
+  signIn: { method: "phone" | "email"; maskedPhone: string | null };
 }) {
   const { profile, twoFactorEnabled, googleAuthEnabled } = usePrototypeStore();
   const router = useRouter();
@@ -147,12 +150,21 @@ export function SecuritySettings({
   return (
     <div className="space-y-5">
       <ListGroup title="Sign-in">
-        <ListRow
-          icon={KeyRound}
-          title="Change password"
-          description="Managed by your sign-in provider"
-          onClick={() => setPasswordOpen(true)}
-        />
+        {signIn.method === "phone" ? (
+          <ListRow
+            as="div"
+            icon={Smartphone}
+            title="Mobile number"
+            description={`${signIn.maskedPhone ?? "Your verified number"} — you sign in with a one-time code sent by SMS. There is no password.`}
+          />
+        ) : (
+          <ListRow
+            icon={KeyRound}
+            title="Change password"
+            description="Managed by your sign-in provider"
+            onClick={() => setPasswordOpen(true)}
+          />
+        )}
       </ListGroup>
 
       <ListGroup title="Two-factor authentication">

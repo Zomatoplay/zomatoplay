@@ -69,12 +69,24 @@ async function main() {
   console.log("  head block         :", head.toString());
   console.log("  solidified block   :", solid.toString(), `(${head - solid} behind)`);
 
+  // The environment's address. An operator-saved address (deposit_settings)
+  // may differ; this script reads configuration only and touches no database.
+  const address = config.depositAddress;
+  if (!address) {
+    console.log(
+      "\nTRON_PLATFORM_DEPOSIT_ADDRESS is unset, so there is no address to inspect.\n" +
+        "  The active address may be saved in the CRM (Deposits → Configuration);\n" +
+        "  set it here temporarily to inspect that address.",
+    );
+    return;
+  }
+
   const sinceHours = Number(process.argv[2] ?? 24);
   const since = Date.now() - sinceHours * 60 * 60 * 1000;
   console.log(`\nTRC-20 transfers to the deposit address, last ${sinceHours}h`);
 
   const { transfers } = await fetchTrc20Transfers(config, {
-    address: config.depositAddress,
+    address,
     contract: config.usdtContract,
     minTimestamp: since,
   });
@@ -90,7 +102,7 @@ async function main() {
   }
 
   for (const raw of transfers) {
-    const parsed = parseTransfer(raw, config, config.depositAddress);
+    const parsed = parseTransfer(raw, config, address);
     if (!parsed.ok) {
       console.log(
         `  ✗ ${raw.transaction_id ?? "(no id)"} — skipped: ` +

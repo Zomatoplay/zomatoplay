@@ -14,7 +14,7 @@ import { recordPipelineEvent, withTrace } from "../observability";
 import { newId } from "../write";
 import { getTronConfig, isTronConfigured, type TronConfig } from "./config";
 import { parseTransfer, REJECTION_LABELS, type RejectionReason } from "./parse";
-import { syncAndListWatchedAddresses } from "./pool";
+import { listWatchedAddresses } from "../services/deposit-settings.service";
 import {
   fetchSolidBlockNumber,
   fetchTransactionBlock,
@@ -25,9 +25,10 @@ import {
 /**
  * The deposit scanner.
  *
- * Polls TronGrid for TRC-20 transfers into every address in the deposit-address
- * pool (`@/server/tron/pool`), filters them against the configured contract and
- * recipient, and records the ones that pass once they are irreversible.
+ * Polls TronGrid for TRC-20 transfers into the configured deposit address — and
+ * every address that was ever relevant (`listWatchedAddresses`) — filters them
+ * against the configured contract and recipient, and records the ones that pass
+ * once they are irreversible.
  *
  * WHY POLLING
  * -----------
@@ -45,10 +46,10 @@ import {
  *   confirmation policy is on.
  * - Recording is idempotent at the database level, so an overlapping window,
  *   a retry, or two scanners running at once cannot double-credit.
- * - It resolves the recipient address to a user through `deposit_addresses`
- *   and credits automatically when that resolves; an unrecognised or
- *   unassigned recipient is recorded unattributed, exactly as before — the
- *   scanner still never *guesses* an owner. See `recordObservedDeposit`.
+ * - It attributes a transfer only by matching it to exactly one deposit
+ *   request (recipient, exact amount, time window) and credits that; anything
+ *   else is recorded unattributed with a reason, for an operator — the scanner
+ *   never *guesses* an owner. See `recordObservedDeposit`.
  */
 
 export interface ScanSummary {
@@ -108,12 +109,13 @@ async function runScan(options: { dryRun?: boolean }): Promise<ScanSummary> {
     errors: [],
   };
 
-  // The pool, not one address: `TRON_DEPOSIT_POOL_ADDRESSES` plus whatever the
-  // database already knows about — see `@/server/tron/pool`. A dry run never
-  // writes, including the pool sync, so it reads configuration only.
-  const addresses = options.dryRun
-    ? config.poolAddresses
-    : await syncAndListWatchedAddresses(config);
+  // The active deposit address and every address that was ever relevant —
+  // see `listWatchedAddresses`. Reading only; a dry run may read.
+  const addresses = isDatabaseConfigured()
+    ? await listWatchedAddresses(getDb(), config)
+    : config.depositAddress
+      ? [config.depositAddress]
+      : [];
 
   let solidBlock: bigint;
   try {
@@ -130,8 +132,8 @@ async function runScan(options: { dryRun?: boolean }): Promise<ScanSummary> {
   }
 
   // Each address keeps its own cursor and fails independently — one address
-  // rate-limited or temporarily unreachable must not stop the rest of the pool
-  // from being scanned, exactly as one bad investment must not stop the
+  // rate-limited or temporarily unreachable must not stop the rest from being
+  // scanned, exactly as one bad investment must not stop the
   // settlement engine crediting the others.
   for (const address of addresses) {
     try {
@@ -152,7 +154,7 @@ async function runScan(options: { dryRun?: boolean }): Promise<ScanSummary> {
     message:
       summary.errors.length > 0
         ? "Scan pass completed with errors"
-        : `Scanned ${summary.scanned} transfer${summary.scanned === 1 ? "" : "s"} across ${addresses.length} address(es)`,
+        : `Scanned ${summary.scanned} transfer${summary.scanned === 1 ? "" : "s"} across ${addresses.length} watched address(es)`,
     errorMessage: summary.errors.length > 0 ? summary.errors.join("; ") : null,
     metadata: {
       scanned: summary.scanned,
@@ -160,7 +162,7 @@ async function runScan(options: { dryRun?: boolean }): Promise<ScanSummary> {
       updated: summary.updated,
       unchanged: summary.unchanged,
       pendingConfirmation: summary.pending,
-      poolSize: addresses.length,
+      watchedAddresses: addresses.length,
       dryRun: Boolean(options.dryRun),
       solidBlock: summary.solidBlock ?? "unknown",
     },

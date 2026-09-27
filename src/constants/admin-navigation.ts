@@ -78,8 +78,8 @@ export const ADMIN_NAV: AdminNavItem[] = [
     group: "Operations",
   },
   {
-    href: "/admin/deposits/addresses",
-    label: "Deposit addresses",
+    href: "/admin/deposits/configuration",
+    label: "Deposit configuration",
     icon: KeyRound,
     permission: "deposits",
     group: "Operations",
@@ -170,7 +170,7 @@ export function isAdminNavItemActive(item: AdminNavItem, pathname: string) {
   /*
    * The most specific entry wins, and only it.
    *
-   * `/admin/deposits/addresses` is a prefix match for `/admin/deposits` as
+   * `/admin/deposits/configuration` is a prefix match for `/admin/deposits` as
    * well as for itself, so a plain `startsWith` lights two sidebar entries at
    * once — and `aria-current="page"` on two links tells a screen-reader user
    * they are in two places. Only the longest matching destination is current.

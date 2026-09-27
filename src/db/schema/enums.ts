@@ -49,6 +49,8 @@ export const kycDocumentTypeEnum = pgEnum("kyc_document_type", [
   "passport",
   "national_id",
   "driving_licence",
+  "aadhaar",
+  "pan",
 ]);
 
 export const userStatusEnum = pgEnum("user_status", [
@@ -172,6 +174,24 @@ export const depositAssetEnum = pgEnum("deposit_asset", ["usdt"]);
  *   it automatically. `retired` — administratively withdrawn from rotation
  *   (never reused), but still watched — see `deposit_addresses` for why.
  */
+/**
+ * Where a customer's deposit request stands. See `deposit_requests`.
+ *
+ * `awaiting_payment` and `verifying` are the two *open* states — the only ones
+ * that reserve the request's exact amount (see the partial unique index on the
+ * table). `expired` is written lazily, by the next request creation, so an
+ * abandoned request stops holding its amount without a scheduler.
+ */
+export const depositRequestStatusEnum = pgEnum("deposit_request_status", [
+  "awaiting_payment",
+  "verifying",
+  "credited",
+  "needs_review",
+  "expired",
+  "rejected",
+  "cancelled",
+]);
+
 export const depositAddressStatusEnum = pgEnum("deposit_address_status", [
   "available",
   "assigned",
@@ -411,6 +431,7 @@ export const auditActionEnum = pgEnum("audit_action", [
   "deposit_address_added",
   "deposit_address_released",
   "deposit_address_retired",
+  "deposit_address_configured",
   "withdrawal_approved",
   "withdrawal_rejected",
   "withdrawal_marked_paid",

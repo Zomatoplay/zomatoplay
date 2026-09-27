@@ -51,6 +51,8 @@ const DOCUMENT_TYPE_LABELS: Record<KycDocumentType, string> = {
   passport: "Passport",
   national_id: "National ID",
   driving_licence: "Driving licence",
+  aadhaar: "Aadhaar",
+  pan: "PAN card",
 };
 
 /**

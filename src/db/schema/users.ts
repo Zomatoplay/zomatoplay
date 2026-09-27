@@ -54,11 +54,53 @@ export const users = pgTable(
      */
     authUserId: uuid("auth_user_id"),
 
+    /**
+     * The Firebase Authentication uid this account signs in with — the
+     * customer credential since phone sign-in replaced email (CLAUDE.md §19).
+     *
+     * Same contract as `auth_user_id`: the only link from a Firebase principal
+     * to an application account, resolved server-side from a verified session
+     * cookie, never from anything the browser sends. Unique, so one Firebase
+     * user cannot reach two accounts; nullable, because every account that
+     * predates phone sign-in has none until its owner links a number.
+     *
+     * Never assumed equal to `id`. A Firebase uid is Firebase's identifier;
+     * making it the account key would hand account identity to a third party
+     * and make a Firebase project migration a data migration.
+     */
+    firebaseUid: text("firebase_uid"),
+
     /** Public-facing member id — the one support asks for on a call. */
     displayId: text("display_id").notNull(),
     fullName: text("full_name").notNull(),
-    email: text("email").notNull(),
+    /**
+     * Nullable since phone sign-in: an account created by mobile OTP has no
+     * email, and inventing a placeholder address would be a record that lies.
+     * Postgres treats NULLs as distinct, so the unique index still holds for
+     * every account that has one.
+     */
+    email: text("email"),
+    /**
+     * The number as the customer typed it on the profile form. Display only,
+     * and NEVER an identity: it was never verified, so it is never used to
+     * link or find an account. `phone_e164` is the verified one.
+     */
     phone: text("phone").notNull(),
+    /**
+     * The mobile number Firebase verified by OTP, normalised to E.164
+     * (`+91XXXXXXXXXX`) by `@/lib/phone`. Set only from a verified token's
+     * `phone_number` claim. Unique — one verified number, one account.
+     */
+    phoneE164: text("phone_e164"),
+    phoneVerifiedAt: ts("phone_verified_at"),
+    /**
+     * Customer sessions carry the value this had when they were issued, and
+     * the account read that resolves every request compares the two. Sign-out
+     * increments it, which ends every phone session for the account on every
+     * device — server-side revocation at no extra round trip. Not a credential:
+     * a counter is worthless without the signing secret.
+     */
+    sessionEpoch: integer("session_epoch").notNull().default(0),
     country: text("country").notNull().default("India"),
     avatarUrl: text("avatar_url"),
     registeredAt: ts("registered_at").notNull(),
@@ -90,6 +132,8 @@ export const users = pgTable(
   },
   (table) => [
     uniqueIndex("users_auth_user_id_key").on(table.authUserId),
+    uniqueIndex("users_firebase_uid_key").on(table.firebaseUid),
+    uniqueIndex("users_phone_e164_key").on(table.phoneE164),
     uniqueIndex("users_email_key").on(table.email),
     uniqueIndex("users_display_id_key").on(table.displayId),
     uniqueIndex("users_referral_code_key").on(table.referralCode),

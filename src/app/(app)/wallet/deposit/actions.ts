@@ -1,126 +1,225 @@
 "use server";
 
+import { after } from "next/server";
+
 import { revalidate } from "@/server/revalidate";
 
-import { decimal, MoneyError } from "@/db/money";
 import { generateQrSvg } from "@/lib/qr";
 import { getAuthenticatedAccount } from "@/server/auth/account";
+import { toSafeFailure } from "@/server/errors";
+import { takeToken } from "@/server/rate-limit";
 import { getWalletBalance } from "@/server/services/account.service";
 import {
-  getTronConfig,
-  isTronConfigured,
-  TRON_NETWORK_LABELS,
-  type TronNetwork,
-} from "@/server/tron/config";
-import {
-  getOrCreateDepositAddress,
-  DepositAddressServiceError,
-} from "@/server/services/deposit-address.service";
+  cancelDepositRequest,
+  createDepositRequest,
+  getOwnDepositRequest,
+  submitDepositTransactionHash,
+  type DepositRequestView,
+  type HashSubmissionOutcome,
+} from "@/server/services/deposit-requests.service";
 import {
   acknowledgeDeposit,
-  listDepositActivityForUser,
   listUnacknowledgedDeposits,
-  recordDepositIntent,
   type NewDepositConfirmation,
 } from "@/server/services/deposits.service";
+import { isTronConfigured, TRON_NETWORK_LABELS } from "@/server/tron/config";
 import { triggerDepositScan } from "@/server/tron/scan-trigger";
 import { traceAction } from "@/server/trace-action";
 import type { Actor } from "@/server/write";
 
 /**
- * Resolving the caller's real TRC-20 USDT deposit address.
+ * The deposit screen's server half: deposit requests and transaction hashes.
  *
- * The only identity this trusts is the session: `getAuthenticatedAccount()`
- * resolves it server-side, and the resulting `userId` is what
- * `getOrCreateDepositAddress` allocates against. Nothing here accepts a
- * `userId`, a network or an asset from the client — the network is fixed to
- * whatever this environment is actually configured for, and the asset is
- * always USDT, because those are the only two things the pool understands
- * today. See `src/server/services/deposit-address.service.ts`.
+ * WHAT THE BROWSER DECIDES: NOTHING THAT MOVES MONEY
+ * --------------------------------------------------
+ * The account always comes from the session (`getAuthenticatedAccount`). The
+ * browser may send an amount it *wants* to deposit, a request id, and a hash.
+ * It never sends — and no action here accepts — a user id, a receiving
+ * address, a network, a verified amount or a status. The address is the
+ * server's configured one; the verified amount and the credit come from the
+ * chain, through the same matcher the scanner uses.
  */
-export interface DepositAddressResult {
+export interface DepositActionResult {
   ok: boolean;
   message?: string;
-  address?: string;
-  /** Which TRON network this environment is actually pointed at. */
-  network?: TronNetwork;
-  networkLabel?: string;
-  /**
-   * Whether funds sent here are real.
-   *
-   * The screen shows a different warning for each, and getting it backwards is
-   * the costliest thing this payload could do — so it is derived from the
-   * configured network on the server rather than inferred in the browser.
-   */
-  isTestnet?: boolean;
-  /**
-   * The deposit address as a QR, rendered server-side.
-   *
-   * The payload is the bare address and nothing else — see below.
-   */
+  request?: DepositRequestView;
+  /** The deposit address as a QR, rendered server-side. Bare address only. */
   qrSvg?: string;
 }
 
-export async function getMyDepositAddressAction(): Promise<DepositAddressResult> {
+function actorFor(account: { userId: string; fullName: string; email: string }): Actor {
+  return {
+    kind: "user",
+    id: account.userId,
+    name: account.fullName || account.email || account.userId,
+    role: "agent",
+  };
+}
+
+/**
+ * Starts a deposit: a `DEP-XXXXXXXX` request with an exact amount to send.
+ *
+ * `amount` is what the person wants to deposit — a request, not a claim. The
+ * exact amount to send is chosen by the server (see `createDepositRequest`).
+ */
+export async function createDepositRequestAction(input: {
+  amount: string;
+}): Promise<DepositActionResult> {
+  const account = await getAuthenticatedAccount();
+  if (!account) return { ok: false, message: "Not signed in." };
+  if (!takeToken(`deposit-create:${account.userId}`, 10, 10 * 60 * 1000).allowed) {
+    return { ok: false, message: "Too many attempts. Please wait a few minutes and try again." };
+  }
+
+  return traceAction(
+    { name: "deposit.request.create", actorType: "user", pipeline: "deposit" },
+    async () => {
+      try {
+        const request = await createDepositRequest(
+          { userId: account.userId, amount: String(input.amount ?? "") },
+          actorFor(account),
+        );
+        // The QR carries the bare address and nothing else: TRON wallets
+        // disagree about amount-bearing URIs, and a wallet that does not
+        // understand one refuses to scan at all.
+        const qrSvg = await generateQrSvg(request.receivingAddress);
+        revalidate("/wallet/deposit");
+        return { ok: true, request, qrSvg };
+      } catch (error) {
+        return {
+          ok: false,
+          message: toSafeFailure(error, "Could not start a deposit. Try again.").message,
+        };
+      }
+    },
+  );
+}
+
+/** The QR for an existing request, for a screen reopened on it. */
+export async function getDepositRequestAction(input: {
+  requestId: string;
+}): Promise<DepositActionResult> {
+  const account = await getAuthenticatedAccount();
+  if (!account) return { ok: false, message: "Not signed in." };
+  const request = await getOwnDepositRequest(account.userId, String(input.requestId ?? ""));
+  if (!request) return { ok: false, message: "That deposit request was not found." };
+  return { ok: true, request, qrSvg: await generateQrSvg(request.receivingAddress) };
+}
+
+/**
+ * Leaving the deposit screen: cancels the caller's request if — and only if —
+ * nothing has been submitted or matched against it. The request id is the only
+ * input and the service scopes it to the session's account in its `WHERE`.
+ */
+export async function cancelDepositRequestAction(input: {
+  requestId: string;
+}): Promise<DepositActionResult> {
+  const account = await getAuthenticatedAccount();
+  if (!account) return { ok: false, message: "Not signed in." };
+  if (!takeToken(`deposit-cancel:${account.userId}`, 20, 10 * 60 * 1000).allowed) {
+    return { ok: false, message: "Too many attempts. Please wait a few minutes and try again." };
+  }
+
+  return traceAction(
+    { name: "deposit.request.cancel", actorType: "user", pipeline: "deposit" },
+    async () => {
+      try {
+        const result = await cancelDepositRequest(
+          {
+            userId: account.userId,
+            requestId: String(input.requestId ?? ""),
+            reason: "left_page",
+          },
+          actorFor(account),
+        );
+        revalidate("/wallet/deposit");
+        if (result.outcome === "has_evidence") {
+          return {
+            ok: false,
+            message:
+              "A transaction was already submitted for this request, so it stays open until it is verified.",
+            request: result.request ?? undefined,
+          };
+        }
+        return { ok: true, request: result.request ?? undefined };
+      } catch (error) {
+        return {
+          ok: false,
+          message: toSafeFailure(error, "Could not cancel the deposit request.").message,
+        };
+      }
+    },
+  );
+}
+
+/** Customer-facing wording for each verification outcome. */
+const OUTCOME_MESSAGES: Record<HashSubmissionOutcome, string> = {
+  credited: "Payment verified on the blockchain and credited to your balance.",
+  already_processed:
+    "This deposit has already been processed. It was credited to your balance once and will not be credited again.",
+  verifying:
+    "Transaction found. It is waiting for final confirmation on the TRON network — usually about a minute. This screen will update.",
+  needs_review:
+    "Transaction found, but it does not match this request exactly (for example, a different amount). Our team will review it — no action is needed.",
+  not_found:
+    "We could not find a USDT (TRC-20) transfer with this hash to the Nanotron deposit address after this request was created. Check the hash, or try again in a minute if you have just sent it.",
+  already_used:
+    "Transaction already processed. This transaction has already been used for a deposit and cannot be credited again.",
+  not_yours: "This transaction does not match your deposit request.",
+};
+
+/** Per account: enough for genuine retries, not enough to probe the chain via us. */
+const VERIFY_LIMIT = { attempts: 12, windowMs: 10 * 60 * 1000 };
+
+export interface HashSubmissionActionResult extends DepositActionResult {
+  outcome?: HashSubmissionOutcome;
+}
+
+/**
+ * "Verify Payment". Idempotent and replay-safe: a transfer is credited once no
+ * matter how many times, or by how many people, its hash is submitted.
+ */
+export async function submitDepositHashAction(input: {
+  requestId: string;
+  txHash: string;
+}): Promise<HashSubmissionActionResult> {
   const account = await getAuthenticatedAccount();
   if (!account) return { ok: false, message: "Not signed in." };
 
-  if (!isTronConfigured()) {
-    return {
-      ok: false,
-      message: "Deposits are not configured for this environment yet.",
-    };
+  const { allowed } = takeToken(
+    `deposit-verify:${account.userId}`,
+    VERIFY_LIMIT.attempts,
+    VERIFY_LIMIT.windowMs,
+  );
+  if (!allowed) {
+    return { ok: false, message: "Too many attempts. Please wait a few minutes and try again." };
   }
 
-  // Whatever this environment is configured for, mainnet included. The network
-  // is never a parameter: a browser cannot ask for an address on a chain the
-  // server is not scanning, which would be an address nothing could ever
-  // credit.
-  const config = getTronConfig();
-
-  const actor: Actor = {
-    kind: "user",
-    id: account.userId,
-    name: account.fullName || account.email,
-    role: "agent",
-  };
-
   return traceAction(
-    { name: "deposit.address.get", actorType: "user", pipeline: "deposit" },
+    { name: "deposit.request.verify", actorType: "user", pipeline: "deposit" },
     async () => {
       try {
-        const target = await getOrCreateDepositAddress(
-          account.userId,
-          config.network,
-          actor,
-        );
-        /*
-         * The QR carries the address, and nothing else.
-         *
-         * A `tron:`-style URI with an amount or a token parameter is the
-         * tempting alternative and is worse here: TRON wallets disagree about
-         * whether they understand one, and a wallet that does not simply
-         * refuses to scan — which reads to the person holding the phone as a
-         * broken deposit screen. A bare base58 address is what every TRON
-         * wallet accepts, and it is exactly the string `CopyField` shows
-         * underneath, so the two can never disagree.
-         */
-        const qrSvg = await generateQrSvg(target.address);
+        const result = await submitDepositTransactionHash({
+          userId: account.userId,
+          requestId: String(input.requestId ?? ""),
+          txHash: String(input.txHash ?? ""),
+        });
+        if (result.outcome === "credited" || result.outcome === "needs_review") {
+          revalidate("/wallet/deposit", "/wallet", "/wallet/transactions", "/");
+        }
         return {
-          ok: true,
-          address: target.address,
-          network: config.network,
-          networkLabel: TRON_NETWORK_LABELS[config.network],
-          isTestnet: config.network !== "mainnet",
-          qrSvg,
+          ok:
+            result.outcome !== "not_found" &&
+            result.outcome !== "already_used" &&
+            result.outcome !== "not_yours",
+          outcome: result.outcome,
+          message: OUTCOME_MESSAGES[result.outcome],
+          request: result.request,
         };
       } catch (error) {
         return {
           ok: false,
-          message:
-            error instanceof DepositAddressServiceError
-              ? error.message
-              : "Could not get a deposit address right now. Try again shortly.",
+          message: toSafeFailure(error, "Could not verify the payment. Try again.").message,
         };
       }
     },
@@ -128,223 +227,87 @@ export async function getMyDepositAddressAction(): Promise<DepositAddressResult>
 }
 
 /**
- * Development-only: records a *pending* deposit the operator can look at.
+ * The deposit screen's poll, while a request is open.
  *
- * WHAT THIS IS NOT
- * ----------------
- * It is not a deposit. It does not credit a wallet, it does not touch the
- * ledger, and it does not claim a blockchain transaction happened. It writes a
- * row with `status = 'pending'` and `verification = 'unverified'` so the rest
- * of the pipeline — operator review, the deposits queue — can be exercised
- * without waiting on a testnet transfer.
- *
- * The control that calls this replaced one that added money to the balance in
- * the browser. Only the scanner credits anything, and only from a solidified
- * on-chain transfer it verified itself.
- *
- * Refuses outside development. A production build has no path to this.
+ * Two cadences, as before (§18.5): every tick re-reads the request and any
+ * credited-but-unacknowledged deposits (cheap, indexed); the slow tick —
+ * `requestScan` — additionally advances the chain: a request with a submitted
+ * hash still waiting for finality re-checks that one transaction, and one
+ * without a hash asks the scanner for a pass (single-flight, 4-second floor,
+ * server-side regardless of who asks). Nothing the browser sends selects an
+ * account, an address or an amount.
  */
-export interface DepositIntentResult {
-  ok: boolean;
-  message: string;
-}
-
-export async function requestTestDeposit(input: {
-  amount: string;
-}): Promise<DepositIntentResult> {
-  if (process.env.NODE_ENV === "production") {
-    return {
-      ok: false,
-      message: "Test deposits are disabled outside development.",
-    };
-  }
-
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
-
-  let amount;
-  try {
-    amount = decimal(input.amount);
-  } catch (error) {
-    return {
-      ok: false,
-      message: error instanceof MoneyError ? error.message : "Invalid amount.",
-    };
-  }
-
-  try {
-    await recordDepositIntent({ userId: account.userId, amount });
-    revalidate("/wallet/deposit", "/wallet");
-    return {
-      ok: true,
-      message: "Pending deposit created. It stays pending until reviewed.",
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      message:
-        error instanceof Error ? error.message : "Could not record the request.",
-    };
-  }
-}
-
-/**
- * The deposit screen's own check for new deposits.
- *
- * WHAT IT IS FOR
- * --------------
- * A person who has just sent test USDT should not have to press refresh, and
- * on this deployment they would have had to wait for the daily cron pass
- * (§18.5) or for somebody to type `npm run tron:scan`. While a deposit screen
- * is open, the screen asks for a pass itself, roughly every thirty seconds —
- * see `DepositWatcher`.
- *
- * **It is a testing/user-active-page mechanism and not the scheduler.** It runs
- * only while somebody is looking at the screen; a transfer that lands after the
- * tab is closed is still detected by `/api/cron/scan-deposits` and by nothing
- * else. See `triggerDepositScan` for the limits that make it safe to call from
- * a request, and CLAUDE.md §18.5 for why the real scheduler is a URL a cron
- * calls rather than a timer in the server process.
- *
- * WHAT THE BROWSER DECIDES: NOTHING
- * ---------------------------------
- * The only argument is `requestScan`, a boolean saying whether this tick is the
- * slow one that may walk the chain. The account still comes from the session,
- * the deposits still come back scoped to that account's id and its own assigned
- * deposit addresses, and the chain work still happens in the existing scanner
- * behind the existing TronGrid credentials. The browser cannot name a user, an
- * address, an amount or a transaction — and `requestScan: true` grants nothing
- * either, because `triggerDepositScan()` applies its own server-side floor and
- * single-flight regardless of who asked or how often.
- */
-export interface DepositActivityItem {
-  id: string;
-  amountUsdt: number;
-  status: (typeof import("@/db/schema").depositStatusEnum.enumValues)[number];
-  /** Shortened for display; the full hash is never needed in the browser. */
-  txHashShort: string;
-}
-
 export interface DepositCheckResult {
   ok: boolean;
   message?: string;
-  /**
-   * What the scan attempt actually did, so the screen never claims more than
-   * happened. `skipped` means no pass was attempted at all — no session, or no
-   * chain integration configured in this environment.
-   */
-  scan: "scanned" | "joined" | "throttled" | "failed" | "skipped";
-  deposits: DepositActivityItem[];
-  /**
-   * Credited deposits this account has not acknowledged — what the
-   * "USDT deposit confirmed" card renders.
-   *
-   * Returned on the *same* poll as the activity list rather than fetched by a
-   * second component with a timer of its own: two pollers on one screen is two
-   * round trips every five seconds for one question, and the deposit page is
-   * the screen this codebase has already had to make cheaper once (§H7).
-   */
+  request?: DepositRequestView;
   newDeposits: NewDepositView[];
-  /** The balance as it stands now, so the confirmation can cite it. */
   availableUsdt: number | null;
 }
 
-export async function checkForDepositsAction(
-  options: { requestScan?: boolean } = {},
-): Promise<DepositCheckResult> {
-  const { requestScan = false } = options;
+/** One chain lookup per account per this interval, whatever the client asks. */
+const CHAIN_CHECK_FLOOR_MS = 20_000;
 
+export async function checkDepositRequestAction(input: {
+  requestId: string;
+  requestScan?: boolean;
+}): Promise<DepositCheckResult> {
   const account = await getAuthenticatedAccount();
   if (!account) {
-    return {
-      ok: false,
-      message: "Not signed in.",
-      scan: "skipped",
-      deposits: [],
-      newDeposits: [],
-      availableUsdt: null,
-    };
+    return { ok: false, message: "Not signed in.", newDeposits: [], availableUsdt: null };
   }
 
   return traceAction(
     { name: "deposit.check", actorType: "user", pipeline: "deposit" },
     async () => {
-      // The scan is global and idempotent, and it is the *only* thing that
-      // reads the chain. A failure here is reported, never thrown: the state
-      // already in the database is still worth showing.
-      /*
-       * THE CHEAP READ AND THE EXPENSIVE SCAN ARE NOT THE SAME CADENCE.
-       *
-       * Measured 2026-09-13 from `pipeline_events`: a pass that actually walks
-       * the chain costs p50 **3,891 ms** — one solidified-block call (p50
-       * 1,250 ms), one TRC-20 transfer query per watched address (~412 ms
-       * each), a transaction-info call per candidate, and a cursor read and
-       * write per address. The screen polls every 5 s. Left as one call, the
-       * deposit page drove a chain scan roughly every 9 s, continuously, for
-       * as long as it was open.
-       *
-       * That cadence buys nothing, and the chain says so: TRON solidifies
-       * ~19 blocks behind — about **57 seconds** — and nothing is credited
-       * before its block solidifies (§18.3). Scanning every 9 s to find
-       * something that cannot be confirmed for a minute is TronGrid quota and
-       * connection contention spent for no earlier answer.
-       *
-       * So `requestScan` is what the *caller* asks for, and the watcher asks
-       * only on its slow tick. Every other tick skips the chain entirely and
-       * does the one thing that makes the UI feel live: read this account's
-       * deposits, which is a single indexed query. The background cron
-       * (§18.5) remains the thing responsible for detection when nobody is
-       * looking — this is still not the scheduler.
-       */
-      let scan: DepositCheckResult["scan"] = "skipped";
-      let discovered = false;
-      if (requestScan && isTronConfigured()) {
-        const result = await triggerDepositScan();
-        scan = result.outcome;
-        discovered =
-          (result.summary?.created ?? 0) + (result.summary?.updated ?? 0) > 0;
+      const requestId = String(input.requestId ?? "");
+      let request = await getOwnDepositRequest(account.userId, requestId);
+
+      // The chain work is floored per account on the server: `requestScan` is
+      // the client's cadence choice and grants nothing on its own.
+      const chainAllowed =
+        input.requestScan === true &&
+        takeToken(`deposit-check-chain:${account.userId}`, 1, CHAIN_CHECK_FLOOR_MS).allowed;
+
+      if (request && chainAllowed && isTronConfigured()) {
+        try {
+          if (request.status === "verifying" && request.submittedTxHash) {
+            request = (
+              await submitDepositTransactionHash({
+                userId: account.userId,
+                requestId,
+                txHash: request.submittedTxHash,
+              })
+            ).request;
+          } else if (request.status === "awaiting_payment") {
+            /*
+             * After the response, not before it. Next runs one client's
+             * server actions one at a time, so awaiting a whole scanner pass
+             * here made a "Verify Payment" press wait behind it — measured at
+             * over 40 seconds. The pass is single-flight and floored
+             * server-side; whatever it credits, the next tick reads.
+             */
+            after(async () => {
+              try {
+                await triggerDepositScan();
+              } catch {
+                // A failed pass is a delay; the scheduler and the next tick retry.
+              }
+            });
+          }
+        } catch {
+          // A failed chain check is a delay, not an answer: the state already
+          // recorded is still shown, and the next slow tick tries again.
+        }
       }
 
-      /*
-       * Deliberately no try/catch around this read.
-       *
-       * A failure is recorded by `traceAction` and surfaces to the screen,
-       * which says it could not reach the server and tries again on the next
-       * tick. Swallowing it would record nothing and make a database outage
-       * look like an account with no deposits — the one thing a screen about
-       * money must never do.
-       */
-      /*
-       * Two indexed reads in one wave, and a third only when it is needed.
-       *
-       * This runs every 5 s while the deposit screen is open, so its cost is
-       * the screen's cost. The balance is only *rendered* by the confirmation
-       * card, and there is usually no confirmation to show — so it is fetched
-       * after, and only then. On the ordinary tick that is two parallel
-       * queries (one round trip) rather than three.
-       */
-      const [deposits, newDeposits] = await Promise.all([
-        listDepositActivityForUser(account.userId),
-        listUnacknowledgedDeposits(account.userId),
-      ]);
-      const balance =
-        newDeposits.length > 0 ? await getWalletBalance(account.userId) : null;
-
-      // Only when the chain actually moved: the wallet balance and the
-      // transaction list live on other routes, and their cached copies are now
-      // wrong. Revalidating on every poll would throw away a warm cache every
-      // thirty seconds for nothing.
-      if (discovered) revalidate("/wallet/deposit", "/wallet");
+      const newDeposits = await listUnacknowledgedDeposits(account.userId);
+      const balance = newDeposits.length > 0 ? await getWalletBalance(account.userId) : null;
+      if (newDeposits.length > 0) revalidate("/wallet", "/wallet/transactions", "/");
 
       return {
         ok: true,
-        scan,
-        deposits: deposits.map((deposit) => ({
-          id: deposit.id,
-          amountUsdt: deposit.amountUsdt,
-          status: deposit.status,
-          txHashShort: shortenTxHash(deposit.txHash),
-        })),
+        request: request ?? undefined,
         newDeposits: newDeposits.map(toNewDepositView),
         availableUsdt: balance?.available ?? null,
       };

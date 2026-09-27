@@ -15,19 +15,23 @@ import { mutate, type Actor } from "@/server/write";
  */
 export async function saveProfile(input: {
   fullName: string;
-  phone: string;
+  /** Ignored for an account with a verified number — see below. */
+  phone?: string;
   country?: string;
 }): Promise<{ ok: boolean; message: string }> {
   const account = await getAuthenticatedAccount();
   if (!account) return { ok: false, message: "Not signed in." };
 
   const fullName = input.fullName.trim();
-  const phone = input.phone.trim();
+  // A verified number is never overwritten by a typed one: the profile form
+  // does not even offer the field to a phone-signed-in account.
+  const verified = account.phoneE164 !== null;
+  const phone = verified ? null : (input.phone ?? "").trim();
 
   if (fullName.length < 2) {
     return { ok: false, message: "Enter your full name." };
   }
-  if (phone.replace(/\D/g, "").length < 8) {
+  if (phone !== null && phone.replace(/\D/g, "").length < 8) {
     return { ok: false, message: "Enter a valid phone number." };
   }
 
@@ -43,9 +47,10 @@ export async function saveProfile(input: {
       .update(t.users)
       .set({
         fullName,
-        // Kept on the profile so phone authentication can be added later
-        // without a migration. Nothing authenticates against it today.
-        phone,
+        // Display only, and only for a legacy account without a verified
+        // number. Nothing authenticates against it — `phone_e164` is the
+        // verified one.
+        ...(phone !== null ? { phone } : {}),
         country: input.country?.trim() || "India",
         updatedAt: now,
       })
@@ -53,7 +58,7 @@ export async function saveProfile(input: {
 
     audit({
       action: "user_updated",
-      target: { type: "user", id: account.userId, label: account.email },
+      target: { type: "user", id: account.userId, label: account.email || account.displayId },
       details: "Completed profile after first sign-in.",
     });
   });

@@ -20,6 +20,30 @@ export type KycStatus =
 
 export type KycStepStatus = "complete" | "current" | "upcoming";
 
+/**
+ * A customer's deposit request, as the customer sees it. Mirrors the
+ * `deposit_request_status` enum; `expired` is also derived for display when an
+ * `awaiting_payment` request's window has passed.
+ */
+export type DepositRequestStatus =
+  | "awaiting_payment"
+  | "verifying"
+  | "credited"
+  | "needs_review"
+  | "expired"
+  | "rejected"
+  | "cancelled";
+
+/** Why a customer's deposit request was cancelled. Stored on the row. */
+export type DepositRequestCancellationReason = "amount_changed" | "left_page";
+
+/**
+ * Where an attached KYC file is uploaded — decided server-side per account.
+ * `s3` private AWS bucket; `supabase` the legacy bucket (email sessions only);
+ * `unavailable` no store is usable, so the flow offers no attach controls.
+ */
+export type KycUploadMode = "s3" | "supabase" | "unavailable";
+
 export interface KycStep {
   id: string;
   title: string;
@@ -34,6 +58,11 @@ export interface UserProfile {
   fullName: string;
   email: string;
   phone: string;
+  /**
+   * True once a number was verified by OTP (`users.phone_e164`). That number
+   * is the sign-in and is not editable in the profile form.
+   */
+  phoneVerified: boolean;
   avatarUrl: string | null;
   country: string;
   memberSince: string;

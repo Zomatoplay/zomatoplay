@@ -100,6 +100,10 @@ test("every table in the schema is seeded", async () => {
    * `deposit_address_assignments` follows `deposit_addresses` necessarily —
    * it records the intervals during which a real account held a real address,
    * and a fixture interval would be a claim about who owned a deposit.
+   * `deposit_requests` is a customer's own intention to pay a specific amount,
+   * and `deposit_settings` is an operator's choice of the address real money
+   * goes to — a seeded row would be, respectively, a deposit nobody started and
+   * a receiving address nobody chose.
    */
   const operational = new Set([
     "investment_earnings",
@@ -108,6 +112,8 @@ test("every table in the schema is seeded", async () => {
     "plan_rate_history",
     "deposit_addresses",
     "deposit_address_assignments",
+    "deposit_requests",
+    "deposit_settings",
   ]);
 
   assert.deepEqual(

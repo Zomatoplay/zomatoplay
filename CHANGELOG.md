@@ -4,6 +4,138 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-09-28 (Hardening: sessions without a Firebase key, deposit request lifecycle, support)
+
+Two additive migrations: `0020_deposit_request_cancellation` (enum value
+`cancelled`, two nullable columns, a partial unique index) and
+`0021_customer_session_epoch` (`users.session_epoch integer not null default
+0`). Applied to the configured development database; the before/after
+snapshot (users, sum of balances, deposits, transactions, investments, KYC
+documents, referrals) was identical. Full findings: `docs/FULL_SYSTEM_AUDIT.md`.
+
+### Phone sign-in no longer needs a Firebase service-account key
+- The server verifies the Firebase ID token with the **public project id only**
+  and issues its own HMAC-signed httpOnly session
+  (`server/auth/customer-session-token.ts`, `CUSTOMER_SESSION_SECRET`).
+  `createSessionCookie`, `verifySessionCookie`, `revokeRefreshTokens` and the
+  `FIREBASE_CLIENT_EMAIL` / `FIREBASE_PRIVATE_KEY` /
+  `GOOGLE_APPLICATION_CREDENTIALS` variables are gone.
+- **Sign-out is now real server-side revocation**: it advances
+  `users.session_epoch`, checked on the same read that loads the account, so a
+  copied cookie stops working on its next request. The CRM's "log out all
+  devices" does the same and says so.
+- Security settings show the verified mobile number instead of offering
+  "Change password" to a phone-signed-in customer; the profile form locks a
+  verified number (the server ignores a phone edit for such an account) and
+  hides an empty email.
+
+### Deposit requests
+- **Change amount** before paying: a new `DEP-` id and exact amount; the old
+  request is cancelled in the same transaction. One `awaiting_payment` request
+  per customer, enforced by `deposit_requests_one_awaiting_per_user_key`.
+- **Leaving the deposit screen** through an in-app link asks first and cancels
+  the request on confirmation. A request with a submitted hash or a matched
+  transfer cannot be cancelled. A cancelled request stays matchable and its
+  amount reserved until its window closes, so a customer who paid and then
+  left is still credited.
+- A resubmitted hash reports **"This deposit has already been processed"** or
+  **"Transaction already processed"**, and credits nothing.
+- **Contact Support on Telegram** on unresolved outcomes, and **Settings →
+  Support → Contact support**, from one source (`lib/support.ts`,
+  `NEXT_PUBLIC_SUPPORT_TELEGRAM`); unset shows a fallback, never a broken link.
+- Optional **payment screenshot** field: local preview only, never uploaded or
+  stored, labelled as such.
+- Removed `requestTestDeposit`, a development-only action left with no caller.
+
+### Verification
+See `docs/FULL_SYSTEM_AUDIT.md` §17 for the exact commands and results.
+
+## 2026-09-27 (Phone sign-in, S3 KYC storage, single-address deposits, PWA)
+
+Four changes, one migration (`0019_firebase_s3_deposit_requests`, additive:
+two tables, four nullable columns, one defaulted column, enum values, and
+`users.email` made nullable). No balance, ledger row, deposit or account was
+modified. Runbook: `docs/rollout-phone-s3-deposits-pwa.md`.
+
+### Customer sign-in → Firebase phone OTP (CLAUDE.md §19.7)
+
+- `/login` is mobile number → OTP (Firebase `signInWithPhoneNumber`, invisible
+  reCAPTCHA, in-memory persistence). The ID token is exchanged once, server-side,
+  for an httpOnly `nanotron-session` cookie (`firebase-admin`
+  `createSessionCookie`) after verifying provider = phone and `auth_time` < 5 min.
+- Identity mapping: `users.firebase_uid` (unique), `users.phone_e164` (unique,
+  from the verified token only), `users.phone_verified_at`. Rules are pure and
+  tested (`phone-identity.ts`): never link by the unverified `users.phone`, never
+  merge, refuse conflicts.
+- Existing customers: legacy email sign-in moved to `/login/email`; the gate sends
+  an unlinked email session to `/link-phone`. With phone sign-in live, email
+  sign-in creates no accounts.
+- Operators unchanged (Supabase Auth). Without Firebase credentials the app says
+  phone sign-in is unavailable and email keeps working.
+
+### KYC documents → private S3, prepared and off (CLAUDE.md §16.1c)
+
+- `s3-kyc-store.ts`: opaque keys `kyc/{userId}/{kind}/{uuid}`, presigned PUT
+  signing exact type and length, `HeadObject` verification, 120 s presigned GET
+  after the permission check, instance-role credentials. Enabled only by
+  `KYC_STORAGE_DRIVER=s3` + bucket + region — no default bucket.
+- `kyc_documents.storage_backend` keeps old Supabase-stored documents openable.
+  Aadhaar and PAN added as document types.
+
+### Deposits → one configured address + deposit requests (CLAUDE.md §18.4, §18.8, §18.9)
+
+- **Removed:** the per-user address pool — allocation, sweep, quarantine,
+  release/retire actions, `/admin/deposits/addresses`, the release cron. Its two
+  tables are **kept** as history and stay on the scanner's watch list.
+- **Added:** `deposit_requests` (`DEP-XXXXXXXX`, an exact amount unique among
+  open requests, a time window) and `deposit_settings` (the one address,
+  operator-set, audited; falls back to `TRON_PLATFORM_DEPOSIT_ADDRESS`, so the
+  customer-facing address did not change).
+- Attribution = recipient + exact amount + block time in window, exactly one
+  request. The scanner and the customer's **Verify Payment** share it; a
+  submitted hash is only a search key, so submitting someone else's hash gains
+  nothing. Everything else is unattributed with a named reason and shown under
+  CRM → Deposits → **Unmatched**, with customer claims as evidence.
+- New screen: amount → exact amount, address + QR, request id, transaction hash,
+  server-reported status. No screenshot upload (nowhere to keep one yet).
+
+### PWA (CLAUDE.md §25)
+
+Manifest, generated icons, `public/sw.js` (hashed static assets + offline page
+only; never a page or data), install prompt with Chromium native prompt and
+iPhone/iPad instructions, 14-day dismissal cooldown.
+
+### Deployment
+
+`deploy/ec2/nanotron.cron` (scan every 5 min) and an Nginx example replace
+Vercel Cron for EC2; `vercel.json` loses the release job.
+
+### Verification
+
+- `npm run typecheck`, `npm run lint`: clean. `npm run build`: succeeds.
+- `npm test` without `DATABASE_URL`: 182 tests, 180 pass before two fixes to
+  tests whose premise this change removed (seed coverage for the two new
+  operational tables; an empty env deposit address is now allowed) — both rerun
+  green.
+- `npm test` with the development database: 325 / 333. Of the 8: two fixed
+  after the run started (enum count 43 → 44, seed coverage); four were
+  `ECONNRESET` / connection failures in money-lifecycle and
+  deposit-confirmation and passed on rerun; **two fail identically in the
+  previous run log (`.perf/test-rerun.log`) and are not caused by this change**
+  — "holds exactly the seeded number of accounts" (an exact row count, which
+  §16.7 advises against) and "the historical backfill left no seeded deposit
+  unannounced".
+- New: `deposit-request.integration.test.ts` 8/8 against the live database
+  (exact match, replay, 5-way race, front-running, mismatch → review → operator
+  assign, window, ambiguity, DB refusal of duplicate open amounts).
+- Browser (headless Chrome against `next start`, 360 px and 1280 px): `/login`
+  with and without Firebase configured, `/offline.html`. Not browser-tested: a
+  real OTP (no Firebase project), a real S3 upload (no bucket), the signed-in
+  deposit screen (creating a request would reserve an amount against the real
+  mainnet address), PWA install on devices.
+
+---
+
 ## 2026-09-19 (Cron schedules made Vercel Hobby-compatible — temporary)
 
 A deploy was being **rejected at build time**, not failing at runtime:

@@ -1,0 +1,26 @@
+# Nanotron scheduled jobs on EC2 — replaces vercel.json's crons.
+#
+# Install as the application user:   crontab deploy/ec2/nanotron.cron
+# (review first; `crontab -l` shows what is installed).
+#
+# Each line calls the app's own CRON_SECRET-authorised route on localhost, so
+# the secret never crosses the network. /etc/nanotron/cron.env must contain
+#   CRON_SECRET=<the same value as the app's environment>
+# owned by the app user, mode 0600. It is read by the shell, not committed.
+#
+# Times are UTC (the server's cron should run in UTC). Staggered so no two jobs
+# share a minute and contend for the database pool (CLAUDE.md §16.1a).
+#
+# The deposit scan runs every 5 minutes here — EC2 has no Vercel Hobby
+# once-a-day limit. The lookback can return to 24h (TRON_LOOKBACK_MS) once this
+# is installed; see CLAUDE.md §18.5.
+
+SHELL=/bin/bash
+APP=http://127.0.0.1:3000
+
+# Deposit scanner — detects transfers and credits matched deposit requests.
+*/5 * * * *  . /etc/nanotron/cron.env && curl -fsS -m 55 -H "Authorization: Bearer $CRON_SECRET" "$APP/api/cron/scan-deposits" >/dev/null
+# Investment settlement (earnings, maturity).
+7 * * * *    . /etc/nanotron/cron.env && curl -fsS -m 55 -H "Authorization: Bearer $CRON_SECRET" "$APP/api/cron/settle-investments" >/dev/null
+# Referral commission release at 00:00 IST (18:30 UTC) — see CLAUDE.md §10d.
+30 18 * * *  . /etc/nanotron/cron.env && curl -fsS -m 55 -H "Authorization: Bearer $CRON_SECRET" "$APP/api/cron/release-commissions" >/dev/null

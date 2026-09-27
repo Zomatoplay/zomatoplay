@@ -2,6 +2,7 @@
 
 import { ensureAccountForCurrentPrincipal, isAccountLockedOut } from "@/server/auth/account";
 import { signOut } from "@/server/auth/session";
+import { clearCustomerSessionCookie } from "@/server/auth/customer-session";
 import { recordSignIn } from "@/server/auth/sign-in-record";
 import { isInfrastructureFailure, toSafeFailure } from "@/server/errors";
 import {
@@ -48,6 +49,10 @@ export async function completeSignIn(input: {
 
 async function resolveSignIn(input: { next?: string }): Promise<SignInResult> {
   try {
+    // A phone session outranks an email one (`getCustomerPrincipal`). Signing in
+    // by email is an explicit choice of account, so any phone session left in
+    // this browser — possibly somebody else's — is ended first.
+    await clearCustomerSessionCookie();
     const account = await ensureAccountForCurrentPrincipal();
 
     // A blocked account holds a valid credential and no access. Ending the

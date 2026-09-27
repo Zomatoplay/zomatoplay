@@ -165,6 +165,7 @@ export const config = {
      * Everything except static assets and image optimisation, which never
      * carry a session and would only add latency.
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // The PWA's static files (worker, manifest, offline page, icons) too.
+    "/((?!_next/static|_next/image|favicon.ico|sw\\.js|manifest\\.webmanifest|offline\\.html|pwa-icon/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

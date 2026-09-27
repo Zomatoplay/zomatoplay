@@ -32,7 +32,8 @@ export function ProfileHeader() {
             {profile.fullName}
           </h2>
           <p className="truncate text-sm text-muted-foreground">
-            {profile.email}
+            {/* A phone-only account has no email; show its number instead. */}
+            {profile.email || profile.phone}
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge kind="kyc" status={kycStatus} />

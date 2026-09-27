@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
 import type { Transaction } from "@/types";
@@ -143,10 +143,13 @@ export async function pageAdminDeposits(
   const where = and(
     query.status === "all"
       ? undefined
-      : eq(
-          schema.deposits.status,
-          query.status as (typeof schema.deposits.status.enumValues)[number],
-        ),
+      : query.status === "unmatched"
+        ? // The operator queue: on-chain, final, and nobody's yet.
+          and(eq(schema.deposits.status, "confirmed"), isNull(schema.deposits.userId))
+        : eq(
+            schema.deposits.status,
+            query.status as (typeof schema.deposits.status.enumValues)[number],
+          ),
     depositSearchCondition(query.search),
   );
 
@@ -155,26 +158,64 @@ export async function pageAdminDeposits(
       .select({
         deposit: schema.deposits,
         user: schema.users,
+        requestId: schema.depositRequests.id,
         total: pageTotal,
       })
       .from(schema.deposits)
       .leftJoin(schema.users, eq(schema.users.id, schema.deposits.userId))
+      .leftJoin(
+        schema.depositRequests,
+        eq(schema.depositRequests.depositId, schema.deposits.id),
+      )
       .where(where)
       .orderBy(DEPOSIT_SORTS[query.sort as keyof typeof DEPOSIT_SORTS]())
       .limit(query.pageSize)
       .offset((page - 1) * query.pageSize);
 
-    return {
-      rows: rows.map(({ deposit, user }) =>
-        toAdminDeposit(
-          deposit,
-          user
-            ? { userName: user.fullName, userDisplayId: user.displayId }
-            : null,
-        ),
+    const mapped = rows.map(({ deposit, user, requestId }) => ({
+      ...toAdminDeposit(
+        deposit,
+        user ? { userName: user.fullName, userDisplayId: user.displayId } : null,
       ),
-      total: Number(rows[0]?.total ?? 0),
-    };
+      depositRequestId: requestId ?? undefined,
+    }));
+
+    /*
+     * Customer claims, for the unattributed rows on THIS page only — a second
+     * round trip, paid only when the page holds something an operator must
+     * decide. Evidence, never proof: a hash is public.
+     */
+    const unattributed = mapped.filter((row) => row.userId === null).map((row) => row.txHash);
+    if (unattributed.length > 0) {
+      const claims = await db
+        .select({
+          txHash: schema.depositRequests.submittedTxHash,
+          requestId: schema.depositRequests.id,
+          userId: schema.depositRequests.userId,
+          userName: schema.users.fullName,
+          userDisplayId: schema.users.displayId,
+          expected: schema.depositRequests.expectedAmountUsdt,
+          createdAt: schema.depositRequests.createdAt,
+        })
+        .from(schema.depositRequests)
+        .innerJoin(schema.users, eq(schema.users.id, schema.depositRequests.userId))
+        .where(inArray(schema.depositRequests.submittedTxHash, unattributed));
+      for (const row of mapped) {
+        const own = claims.filter((claim) => claim.txHash === row.txHash);
+        if (own.length > 0) {
+          row.claims = own.map((claim) => ({
+            requestId: claim.requestId,
+            userId: claim.userId,
+            userName: claim.userName,
+            userDisplayId: claim.userDisplayId,
+            expectedAmountUsdt: claim.expected,
+            requestCreatedAt: claim.createdAt.toISOString(),
+          }));
+        }
+      }
+    }
+
+    return { rows: mapped, total: Number(rows[0]?.total ?? 0) };
   });
 }
 
@@ -183,13 +224,20 @@ export async function countAdminDepositsByStatus(
   query: AdminListQuery,
 ): Promise<Record<string, number>> {
   const rows = await db
-    .select({ status: schema.deposits.status, count: sql<number>`count(*)::int` })
+    .select({
+      status: schema.deposits.status,
+      count: sql<number>`count(*)::int`,
+      // The `unmatched` chip, from the same scan: no second round trip.
+      unmatched: sql<number>`count(*) filter (where ${schema.deposits.userId} is null and ${schema.deposits.status} = 'confirmed')::int`,
+    })
     .from(schema.deposits)
     .leftJoin(schema.users, eq(schema.users.id, schema.deposits.userId))
     .where(depositSearchCondition(query.search))
     .groupBy(schema.deposits.status);
 
-  return tallyByStatus(rows);
+  const tally = tallyByStatus(rows);
+  tally.unmatched = rows.reduce((sum, row) => sum + Number(row.unmatched ?? 0), 0);
+  return tally;
 }
 
 function withdrawalSearchCondition(search: string) {

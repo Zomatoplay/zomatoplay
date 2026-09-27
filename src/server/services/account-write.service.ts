@@ -328,15 +328,30 @@ export async function addWalletAddress(
  * avoiding: an operator would believe an account had been secured when it had
  * not.
  *
+ * PHONE SESSIONS ARE DIFFERENT, AND REALLY END
+ * --------------------------------------------
+ * "All devices" also advances `users.session_epoch`, which invalidates every
+ * phone-OTP session the account holds on its next request (CLAUDE.md §19.7).
+ * A single device row cannot be targeted that way — sessions are not stored
+ * per device — so revoking one row stays descriptive.
+ *
  * INTEGRATION POINT: a server-side admin client (service-role, held by a
  * separate privileged service, never by this one) calls
- * `auth.admin.signOut(userId, scope)` here.
+ * `auth.admin.signOut(userId, scope)` here for legacy email sessions.
  */
 export async function revokeDeviceSessions(
   request: { userId: string; sessionId?: string; reason?: string },
   actor: Actor,
-): Promise<{ revoked: number }> {
+): Promise<{ revoked: number; phoneSessionsEnded: boolean }> {
   return mutate(actor, async ({ tx, now, audit }) => {
+    const phoneSessionsEnded = !request.sessionId;
+    if (phoneSessionsEnded) {
+      await tx
+        .update(t.users)
+        .set({ sessionEpoch: sql`${t.users.sessionEpoch} + 1` })
+        .where(eq(t.users.id, request.userId));
+    }
+
     const scope = request.sessionId
       ? and(
           eq(t.userDeviceSessions.userId, request.userId),
@@ -370,13 +385,14 @@ export async function revokeDeviceSessions(
       action: request.sessionId ? "device_logged_out" : "all_devices_logged_out",
       target: { type: "user", id: request.userId, label: request.userId },
       details: withReason(
-        `Marked ${revoked.length} device session${revoked.length === 1 ? "" : "s"} revoked. ` +
-          "The credential itself is not invalidated — see revokeDeviceSessions.",
+        (phoneSessionsEnded ? "Ended every mobile-number sign-in session. " : "") +
+          `Marked ${revoked.length} device session${revoked.length === 1 ? "" : "s"} revoked. ` +
+          "A legacy email sign-in is not invalidated — see revokeDeviceSessions.",
         request.reason,
       ),
     });
 
-    return { revoked: revoked.length };
+    return { revoked: revoked.length, phoneSessionsEnded };
   });
 }
 

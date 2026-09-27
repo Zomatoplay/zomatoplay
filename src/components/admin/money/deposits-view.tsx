@@ -65,6 +65,7 @@ const SPEC = ADMIN_LIST_SPECS.deposits;
 
 const STATUS_LABELS: Record<string, string> = {
   all: "All",
+  unmatched: "Unmatched",
   pending: "Pending",
   detected: "Detected",
   confirming: "Confirming",
@@ -225,12 +226,7 @@ function TxLink({ deposit }: { deposit: AdminDeposit }) {
         ) : (
           // Not a placeholder for a missing name — the deposit genuinely
           // belongs to nobody until an operator attributes it.
-          <span className="flex flex-col">
-            <span className="text-sm font-medium text-warning">Unassigned</span>
-            <span className="text-xs text-muted-foreground">
-              Needs attribution
-            </span>
-          </span>
+          <UnmatchedSummary deposit={deposit} />
         ),
     },
     {
@@ -369,14 +365,13 @@ function TxLink({ deposit }: { deposit: AdminDeposit }) {
       className="space-y-4"
       actions={
         /*
-          The pool behind this queue. An operator looking at an unattributed
-          deposit and asking "whose address is that?" has one route to the
-          answer, rather than having to find it in the sidebar.
+          The receiving address behind this queue, one click away for an
+          operator checking where a transfer was sent.
         */
         <Button asChild variant="outline" size="sm">
-          <Link href="/admin/deposits/addresses">
+          <Link href="/admin/deposits/configuration">
             <Wallet className="size-4" />
-            Deposit addresses
+            Deposit configuration
           </Link>
         </Button>
       }
@@ -469,6 +464,20 @@ function TxLink({ deposit }: { deposit: AdminDeposit }) {
               <DataCardRow label="Transaction">
                 <MonoValue>{truncateMiddle(deposit.txHash, 10, 6)}</MonoValue>
               </DataCardRow>
+              {deposit.userId === null ? (
+                <>
+                  <DataCardRow label="Received at">
+                    <MonoValue>{truncateMiddle(deposit.walletAddress, 6, 6)}</MonoValue>
+                  </DataCardRow>
+                  <div className="text-xs">
+                    <UnmatchedSummary deposit={deposit} />
+                  </div>
+                </>
+              ) : deposit.depositRequestId ? (
+                <DataCardRow label="Request">
+                  <MonoValue>{deposit.depositRequestId}</MonoValue>
+                </DataCardRow>
+              ) : null}
               {canCredit(deposit) ? (
                 <div className="flex gap-2">
                   <Button
@@ -594,5 +603,38 @@ function TxLink({ deposit }: { deposit: AdminDeposit }) {
         }}
       />
     </AdminSection>
+  );
+}
+
+/**
+ * Why nobody owns this transfer yet, and who has claimed it.
+ *
+ * A claim is shown as evidence, never as an answer: anybody can copy a hash
+ * from a public explorer. The expected amount on each claimant's request is
+ * what an operator compares with the amount the chain shows.
+ */
+function UnmatchedSummary({ deposit }: { deposit: AdminDeposit }) {
+  return (
+    <span className="flex flex-col gap-1">
+      <span className="text-sm font-medium text-warning">Unassigned</span>
+      <span className="text-xs leading-relaxed text-muted-foreground">
+        {deposit.unmatchedReason ?? "Needs attribution"}
+      </span>
+      {deposit.claims && deposit.claims.length > 0 ? (
+        <span className="text-xs leading-relaxed text-muted-foreground">
+          {deposit.claims.length === 1 ? "Claimed by " : `Claimed by ${deposit.claims.length}: `}
+          {deposit.claims.map((claim, index) => (
+            <span key={claim.requestId}>
+              {index > 0 ? "; " : ""}
+              <Link href={`/admin/users/${claim.userId}`} className="text-brand">
+                {claim.userName}
+              </Link>{" "}
+              ({claim.requestId}, expected{" "}
+              {formatUsdt(claim.expectedAmountUsdt, { withSymbol: false })} USDT)
+            </span>
+          ))}
+        </span>
+      ) : null}
+    </span>
   );
 }

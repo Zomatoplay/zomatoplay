@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 
 import { cache } from "react";
 import { cookies } from "next/headers";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { getDb, isDatabaseConfigured } from "@/db";
 import { resilientRead } from "@/server/database";
@@ -13,12 +13,22 @@ import * as t from "@/db/schema";
 import { ensureWallet } from "@/server/repositories/wallet.repository";
 import { mutate, newId, SYSTEM_ACTOR } from "@/server/write";
 
-import { getAuthPrincipal, type AuthPrincipal } from "./session";
+import {
+  formatIndianMobile,
+  isNormalizedIndianMobile,
+  maskIndianMobile,
+} from "@/lib/phone";
+
+import { getCustomerPrincipal } from "./customer-session";
+import { isPhoneSignInLive } from "./phone-sign-in";
+import { decidePhoneSignIn, decidePhoneLink, PHONE_REFUSAL_MESSAGES } from "./phone-identity";
+import { getAuthPrincipal } from "./session";
 
 /**
  * Resolving a credential to an application account.
  *
- *   auth.users.id  →  public.users.auth_user_id  →  application user
+ *   Firebase uid   →  public.users.firebase_uid  →  application user   (customers)
+ *   auth.users.id  →  public.users.auth_user_id  →  application user   (legacy email)
  *
  * This is the *only* path from a request to an identity. No route, action or
  * service takes a user id from the browser and trusts it: a `userId` argument
@@ -28,13 +38,23 @@ import { getAuthPrincipal, type AuthPrincipal } from "./session";
 
 export interface AuthenticatedAccount {
   userId: string;
-  authUserId: string;
+  /** Supabase principal — legacy email sign-in only. */
+  authUserId: string | null;
+  /** Firebase principal — phone sign-in. */
+  firebaseUid: string | null;
+  /** How THIS request is signed in. */
+  signInMethod: "phone" | "email";
+  /** Empty for an account created by phone sign-in. */
   email: string;
+  /** The verified number (E.164), when one has been linked. */
+  phoneE164: string | null;
   displayId: string;
   fullName: string;
   status: (typeof t.userStatusEnum.enumValues)[number];
   /** False until the account has a name and a phone number on file. */
   profileComplete: boolean;
+  /** `users.session_epoch` — what a new phone session is issued against. */
+  sessionEpoch: number;
 }
 
 /**
@@ -58,6 +78,10 @@ export function isAccountLockedOut(
  *
  * Request-scoped only. A later request re-verifies and re-reads, so an account
  * blocked between two requests is blocked on the second one.
+ *
+ * The principal comes from `getCustomerPrincipal`: a Firebase phone session
+ * resolves through `users.firebase_uid`, a legacy email session through
+ * `users.auth_user_id`. Nothing else can name the account.
  */
 export async function getAuthenticatedAccount(): Promise<AuthenticatedAccount | null> {
   /*
@@ -69,14 +93,23 @@ export async function getAuthenticatedAccount(): Promise<AuthenticatedAccount | 
    * trace and lands under a fresh correlation id. Resolving the principal here,
    * before the cached account lookup, keeps both steps in one trace.
    */
-  const principal = await getAuthPrincipal();
+  const principal = await getCustomerPrincipal();
   if (!principal || !isDatabaseConfigured()) return null;
 
   const account = await trackQuery(
     "auth.resolveAccount",
-    () => loadAccountFor(principal.authUserId),
+    () =>
+      principal.kind === "firebase"
+        ? loadAccountForFirebase(principal.firebaseUid)
+        : loadAccountFor(principal.authUserId),
     { table: "users", pipeline: "auth" },
   );
+
+  // A phone session issued before the account's last sign-out (or before an
+  // operator ended its sessions) is no session at all.
+  if (account && principal.kind === "firebase" && account.sessionEpoch !== principal.sessionEpoch) {
+    return null;
+  }
 
   if (account) {
     // Lets every event in this trace carry the account, including the ones
@@ -91,17 +124,20 @@ const loadAccountFor = cache(
   async function loadAccountFor(
     authUserId: string,
   ): Promise<AuthenticatedAccount | null> {
-    return findAccountForPrincipal({
-      authUserId,
-      email: null,
-      emailConfirmedAt: null,
-      fullName: null,
-    });
+    return findAccount({ by: "auth", id: authUserId });
   },
 );
 
-async function findAccountForPrincipal(
-  principal: AuthPrincipal,
+const loadAccountForFirebase = cache(
+  async function loadAccountForFirebase(
+    firebaseUid: string,
+  ): Promise<AuthenticatedAccount | null> {
+    return findAccount({ by: "firebase", id: firebaseUid });
+  },
+);
+
+async function findAccount(
+  key: { by: "auth" | "firebase"; id: string },
 ): Promise<AuthenticatedAccount | null> {
   /*
    * The single hottest query in the application: every authenticated request
@@ -122,33 +158,59 @@ async function findAccountForPrincipal(
         // hottest read in the application.
         .select({
           id: t.users.id,
+          authUserId: t.users.authUserId,
+          firebaseUid: t.users.firebaseUid,
           email: t.users.email,
+          phoneE164: t.users.phoneE164,
           displayId: t.users.displayId,
           fullName: t.users.fullName,
           phone: t.users.phone,
           status: t.users.status,
+          sessionEpoch: t.users.sessionEpoch,
         })
         .from(t.users)
-        .where(eq(t.users.authUserId, principal.authUserId))
+        .where(
+          key.by === "firebase"
+            ? eq(t.users.firebaseUid, key.id)
+            : eq(t.users.authUserId, key.id),
+        )
         .limit(1));
 
   if (!row) return null;
 
+  const hasPhone = row.phone.trim().length > 0 || row.phoneE164 !== null;
   return {
     userId: row.id,
-    authUserId: principal.authUserId,
-    email: row.email,
+    authUserId: row.authUserId,
+    firebaseUid: row.firebaseUid,
+    signInMethod: key.by === "firebase" ? "phone" : "email",
+    email: row.email ?? "",
+    phoneE164: row.phoneE164,
     displayId: row.displayId,
     fullName: row.fullName,
     status: row.status,
-    profileComplete: row.fullName.trim().length > 0 && row.phone.trim().length > 0,
+    profileComplete: row.fullName.trim().length > 0 && hasPhone,
+    sessionEpoch: row.sessionEpoch,
   };
 }
 
 /**
- * Finds or creates the application account for the signed-in principal.
+ * Ends every phone session this account holds, on every device: the next
+ * request presenting one finds the epoch moved and resolves to nobody. The
+ * sign-out button, and the lever for "my phone was stolen".
+ */
+export async function endCustomerSessions(userId: string): Promise<void> {
+  if (!isDatabaseConfigured()) return;
+  await getDb()
+    .update(t.users)
+    .set({ sessionEpoch: sql`${t.users.sessionEpoch} + 1` })
+    .where(eq(t.users.id, userId));
+}
+
+/**
+ * Finds or creates the application account for a LEGACY email sign-in.
  *
- * Called once, immediately after a successful OTP verification.
+ * Called once, immediately after a successful Supabase sign-in.
  *
  * LINKING AN EXISTING RECORD BY EMAIL
  * -----------------------------------
@@ -157,6 +219,13 @@ async function findAccountForPrincipal(
  * just proved the person controls that mailbox — the OTP went to it and came
  * back. Without that proof this would be an account-takeover primitive, so the
  * ordering matters: verify first, link second, never the other way round.
+ *
+ * NO NEW ACCOUNTS ONCE PHONE SIGN-IN IS LIVE
+ * ------------------------------------------
+ * Email sign-in exists now so existing customers can reach their account and
+ * link a mobile number. With Firebase configured, an email that matches no
+ * account is refused rather than creating one: new customers register by phone,
+ * and an email-only account created now would be one more account to migrate.
  */
 export async function ensureAccountForCurrentPrincipal(): Promise<AuthenticatedAccount> {
   const principal = await getAuthPrincipal();
@@ -170,10 +239,11 @@ export async function ensureAccountForCurrentPrincipal(): Promise<AuthenticatedA
     throw new AuthError("No database is configured, so no account can be created.");
   }
 
-  const existing = await findAccountForPrincipal(principal);
+  const existing = await findAccount({ by: "auth", id: principal.authUserId });
   if (existing) return existing;
 
   const email = principal.email.toLowerCase();
+  const phoneSignInLive = isPhoneSignInLive();
 
   await mutate(SYSTEM_ACTOR, async ({ tx, now, audit }) => {
     const [byEmail] = await tx
@@ -203,114 +273,288 @@ export async function ensureAccountForCurrentPrincipal(): Promise<AuthenticatedA
       return;
     }
 
-    const referrer = await resolveReferrer(tx, email);
-
-    const userId = newId("usr", now);
-    await tx.insert(t.users).values({
-      id: userId,
-      authUserId: principal.authUserId,
-      displayId: await nextDisplayId(tx),
-      // Set here or never: see `resolveReferrer`.
-      referredByCode: referrer?.code ?? null,
-      // From sign-up, where the person typed it. Blank when they arrived by
-      // one-time code, which collects no name — the profile step asks then.
-      // Never derived from the email address: a made-up name on an account
-      // that later files a KYC document is worse than an empty field.
-      fullName: principal.fullName ?? "",
-      email,
-      phone: "",
-      registeredAt: now,
-      lastActiveAt: now,
-      kycStatus: "not_started",
-      referralCode: referralCodeFor(userId),
-      walletAddress: "",
-      createdAt: now,
-      updatedAt: now,
-    });
-    await ensureWallet(tx, userId);
-
-    if (referrer) {
-      /*
-       * The relationship, and the referrer's counters, in the same transaction
-       * as the account. A referral row whose user does not exist — or an
-       * account whose referral row failed to write — is the kind of split that
-       * makes a commission ledger impossible to reconcile later.
-       *
-       * No money moves. Commission calculation is not implemented; see
-       * FUTURE_TASKS.md. What is recorded here is who introduced whom.
-       */
-      await tx.insert(t.referrals).values({
-        id: newId("ref", now),
-        referrerUserId: referrer.id,
-        referredUserId: userId,
-        name: principal.fullName ?? email.split("@")[0],
-        maskedEmail: maskEmail(email),
-        joinedAt: now,
-        status: "registered",
-        tier: 1,
-      });
-
-      await tx
-        .update(t.users)
-        .set({ referralCount: sql`${t.users.referralCount} + 1`, updatedAt: now })
-        .where(eq(t.users.id, referrer.id));
-
-      await tx
-        .insert(t.referralAccounts)
-        .values({ userId: referrer.id, directReferrals: 1, joinedAt: now })
-        .onConflictDoUpdate({
-          target: t.referralAccounts.userId,
-          set: { directReferrals: sql`${t.referralAccounts.directReferrals} + 1` },
-        });
-
-      /*
-       * The second tier, counted at the moment it comes into existence.
-       *
-       * `total_referrals` on the referral screen is direct + indirect, and
-       * `indirect_referrals` had no writer at all — so a VIP 2 referrer whose
-       * own referral brought somebody in saw a total that silently understated
-       * their team. Counted here rather than when that person invests, because
-       * the relationship exists from signup; what invests later is the volume,
-       * not the headcount.
-       *
-       * One level only. The VIP table defines two commission tiers and there is
-       * no third, so there is no chain to walk and no cycle to guard against.
-       */
-      const [grandparent] = await tx
-        .select({ referrerUserId: t.referrals.referrerUserId })
-        .from(t.referrals)
-        .where(eq(t.referrals.referredUserId, referrer.id))
-        .limit(1);
-
-      if (grandparent) {
-        await tx
-          .insert(t.referralAccounts)
-          .values({
-            userId: grandparent.referrerUserId,
-            indirectReferrals: 1,
-            joinedAt: now,
-          })
-          .onConflictDoUpdate({
-            target: t.referralAccounts.userId,
-            set: {
-              indirectReferrals: sql`${t.referralAccounts.indirectReferrals} + 1`,
-            },
-          });
-      }
+    if (phoneSignInLive) {
+      throw new AuthError(
+        "New accounts are created with a mobile number. Sign in with your mobile number instead.",
+      );
     }
 
-    audit({
-      action: "user_updated",
-      target: { type: "user", id: userId, label: email },
-      details: referrer
-        ? `Created an application account for a new verified sign-in, referred by ${referrer.code}.`
-        : "Created an application account for a new verified sign-in.",
+    await createAccount(tx, now, audit, {
+      authUserId: principal.authUserId,
+      email,
+      fullName: principal.fullName,
+      label: email,
     });
   });
 
-  const created = await findAccountForPrincipal(principal);
+  const created = await findAccount({ by: "auth", id: principal.authUserId });
   if (!created) throw new AuthError("The account could not be created.");
   return created;
+}
+
+/**
+ * Finds or creates the account for a verified phone sign-in.
+ *
+ * `firebaseUid` and `phoneE164` come from an ID token the server has just
+ * verified (`verifyPhoneIdToken`) — never from the request body. The decision
+ * itself is `decidePhoneSignIn`; this only carries it out, under a row lock on
+ * whatever the number already matches so two concurrent first sign-ins cannot
+ * both create an account (the unique indexes are the backstop).
+ */
+export async function ensureAccountForFirebasePrincipal(principal: {
+  firebaseUid: string;
+  phoneE164: string;
+}): Promise<AuthenticatedAccount> {
+  if (!isDatabaseConfigured()) {
+    throw new AuthError("No database is configured, so no account can be created.");
+  }
+  if (!isNormalizedIndianMobile(principal.phoneE164)) {
+    throw new AuthError("Only Indian mobile numbers (+91) can sign in.");
+  }
+
+  const existing = await findAccount({ by: "firebase", id: principal.firebaseUid });
+  if (existing) return existing;
+
+  await mutate(SYSTEM_ACTOR, async ({ tx, now, audit }) => {
+    const [byUid] = await tx
+      .select({ id: t.users.id })
+      .from(t.users)
+      .where(eq(t.users.firebaseUid, principal.firebaseUid))
+      .limit(1)
+      .for("update");
+    const [byPhone] = await tx
+      .select({ id: t.users.id, firebaseUid: t.users.firebaseUid })
+      .from(t.users)
+      .where(eq(t.users.phoneE164, principal.phoneE164))
+      .limit(1)
+      .for("update");
+
+    const decision = decidePhoneSignIn({
+      firebaseUid: principal.firebaseUid,
+      byUid: byUid ?? null,
+      byPhone: byPhone ?? null,
+    });
+
+    if (decision.action === "refuse") {
+      throw new AuthError(PHONE_REFUSAL_MESSAGES[decision.reason]);
+    }
+    if (decision.action === "use") return;
+
+    await createAccount(tx, now, audit, {
+      firebaseUid: principal.firebaseUid,
+      phoneE164: principal.phoneE164,
+      fullName: null,
+      label: maskIndianMobile(principal.phoneE164),
+    });
+  });
+
+  const created = await findAccount({ by: "firebase", id: principal.firebaseUid });
+  if (!created) throw new AuthError("The account could not be created.");
+  return created;
+}
+
+/**
+ * Attaches a freshly verified phone number to the account the caller is
+ * ALREADY signed in to by email — the migration path for existing customers.
+ *
+ * The account id is the caller's own, resolved from their legacy session by
+ * the action; the uid and number come from a verified Firebase token. The
+ * decision is `decidePhoneLink`, re-read under `FOR UPDATE` so the checks and
+ * the write see the same rows.
+ */
+export async function linkPhoneToAccount(request: {
+  userId: string;
+  firebaseUid: string;
+  phoneE164: string;
+}): Promise<{ linked: boolean; account: AuthenticatedAccount }> {
+  if (!isNormalizedIndianMobile(request.phoneE164)) {
+    throw new AuthError("Only Indian mobile numbers (+91) can be linked.");
+  }
+
+  const { linked } = await mutate(SYSTEM_ACTOR, async ({ tx, now, audit }) => {
+    const [account] = await tx
+      .select({ id: t.users.id, firebaseUid: t.users.firebaseUid })
+      .from(t.users)
+      .where(eq(t.users.id, request.userId))
+      .limit(1)
+      .for("update");
+    if (!account) throw new AuthError("That account no longer exists.");
+
+    const [byUid] = await tx
+      .select({ id: t.users.id })
+      .from(t.users)
+      .where(eq(t.users.firebaseUid, request.firebaseUid))
+      .limit(1);
+    const [byPhone] = await tx
+      .select({ id: t.users.id, firebaseUid: t.users.firebaseUid })
+      .from(t.users)
+      .where(eq(t.users.phoneE164, request.phoneE164))
+      .limit(1);
+
+    const decision = decidePhoneLink({
+      account,
+      firebaseUid: request.firebaseUid,
+      byUid: byUid ?? null,
+      byPhone: byPhone ?? null,
+    });
+
+    if (decision.action === "refuse") {
+      throw new AuthError(PHONE_REFUSAL_MESSAGES[decision.reason]);
+    }
+    if (decision.action === "already_linked") return { linked: false };
+
+    await tx
+      .update(t.users)
+      .set({
+        firebaseUid: request.firebaseUid,
+        phoneE164: request.phoneE164,
+        phoneVerifiedAt: now,
+        // The display number becomes the verified one; the typed one was
+        // never evidence of anything.
+        phone: formatIndianMobile(request.phoneE164),
+        updatedAt: now,
+      })
+      .where(and(eq(t.users.id, account.id), isNull(t.users.firebaseUid)));
+
+    audit({
+      action: "user_updated",
+      target: { type: "user", id: account.id, label: maskIndianMobile(request.phoneE164) },
+      details:
+        "Linked a verified mobile number (Firebase phone OTP) to this account " +
+        "from the customer's existing email session.",
+    });
+    return { linked: true };
+  });
+
+  const account = await findAccount({ by: "firebase", id: request.firebaseUid });
+  if (!account || account.userId !== request.userId) {
+    throw new AuthError("The mobile number could not be linked.");
+  }
+  return { linked, account };
+}
+
+type WriteTx = Parameters<Parameters<typeof mutate>[1]>[0]["tx"];
+type WriteAudit = Parameters<Parameters<typeof mutate>[1]>[0]["audit"];
+
+/**
+ * One new account, its wallet, and its referral attribution — for either
+ * credential. Called inside the caller's transaction.
+ */
+async function createAccount(
+  tx: WriteTx,
+  now: Date,
+  audit: WriteAudit,
+  identity: {
+    authUserId?: string;
+    firebaseUid?: string;
+    phoneE164?: string;
+    email?: string;
+    fullName: string | null;
+    /** How the audit log names the new account: an email or a masked number. */
+    label: string;
+  },
+): Promise<void> {
+  const referrer = await resolveReferrer(tx, {
+    email: identity.email ?? null,
+    phoneE164: identity.phoneE164 ?? null,
+  });
+
+  const userId = newId("usr", now);
+  await tx.insert(t.users).values({
+    id: userId,
+    authUserId: identity.authUserId ?? null,
+    firebaseUid: identity.firebaseUid ?? null,
+    phoneE164: identity.phoneE164 ?? null,
+    phoneVerifiedAt: identity.phoneE164 ? now : null,
+    displayId: await nextDisplayId(tx),
+    // Set here or never: see `resolveReferrer`.
+    referredByCode: referrer?.code ?? null,
+    // From sign-up, where the person typed it. Blank when they arrived by
+    // one-time code, which collects no name — the profile step asks then.
+    // Never derived from the email address: a made-up name on an account
+    // that later files a KYC document is worse than an empty field.
+    fullName: identity.fullName ?? "",
+    email: identity.email ?? null,
+    phone: identity.phoneE164 ? formatIndianMobile(identity.phoneE164) : "",
+    registeredAt: now,
+    lastActiveAt: now,
+    kycStatus: "not_started",
+    referralCode: referralCodeFor(userId),
+    walletAddress: "",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await ensureWallet(tx, userId);
+
+  if (referrer) {
+    /*
+     * The relationship, and the referrer's counters, in the same transaction
+     * as the account. A referral row whose user does not exist — or an
+     * account whose referral row failed to write — is the kind of split that
+     * makes a commission ledger impossible to reconcile later.
+     */
+    await tx.insert(t.referrals).values({
+      id: newId("ref", now),
+      referrerUserId: referrer.id,
+      referredUserId: userId,
+      name: identity.fullName ?? (identity.email ? identity.email.split("@")[0] : "New member"),
+      maskedEmail: identity.email
+        ? maskEmail(identity.email)
+        : identity.phoneE164
+          ? maskIndianMobile(identity.phoneE164)
+          : "•••",
+      joinedAt: now,
+      status: "registered",
+      tier: 1,
+    });
+
+    await tx
+      .update(t.users)
+      .set({ referralCount: sql`${t.users.referralCount} + 1`, updatedAt: now })
+      .where(eq(t.users.id, referrer.id));
+
+    await tx
+      .insert(t.referralAccounts)
+      .values({ userId: referrer.id, directReferrals: 1, joinedAt: now })
+      .onConflictDoUpdate({
+        target: t.referralAccounts.userId,
+        set: { directReferrals: sql`${t.referralAccounts.directReferrals} + 1` },
+      });
+
+    /*
+     * The second tier, counted at the moment it comes into existence. One
+     * level only: the VIP table defines two commission tiers and no third.
+     */
+    const [grandparent] = await tx
+      .select({ referrerUserId: t.referrals.referrerUserId })
+      .from(t.referrals)
+      .where(eq(t.referrals.referredUserId, referrer.id))
+      .limit(1);
+
+    if (grandparent) {
+      await tx
+        .insert(t.referralAccounts)
+        .values({
+          userId: grandparent.referrerUserId,
+          indirectReferrals: 1,
+          joinedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: t.referralAccounts.userId,
+          set: {
+            indirectReferrals: sql`${t.referralAccounts.indirectReferrals} + 1`,
+          },
+        });
+    }
+  }
+
+  audit({
+    action: "user_updated",
+    target: { type: "user", id: userId, label: identity.label },
+    details: referrer
+      ? `Created an application account for a new verified sign-in, referred by ${referrer.code}.`
+      : "Created an application account for a new verified sign-in.",
+  });
 }
 
 const REFERRAL_COOKIE = "nanotron-ref";
@@ -339,8 +583,8 @@ const REFERRAL_COOKIE = "nanotron-ref";
  * not the new user's fault.
  */
 async function resolveReferrer(
-  tx: Parameters<Parameters<typeof mutate>[1]>[0]["tx"],
-  email: string,
+  tx: WriteTx,
+  self: { email: string | null; phoneE164: string | null },
 ): Promise<{ id: string; code: string } | null> {
   let code: string | undefined;
   try {
@@ -352,18 +596,23 @@ async function resolveReferrer(
   if (!code || !/^[A-Za-z0-9]{4,32}$/.test(code)) return null;
 
   const [referrer] = await tx
-    .select({ id: t.users.id, code: t.users.referralCode, email: t.users.email })
+    .select({
+      id: t.users.id,
+      code: t.users.referralCode,
+      email: t.users.email,
+      phoneE164: t.users.phoneE164,
+    })
     .from(t.users)
-    .where(
-      and(
-        eq(t.users.referralCode, code),
-        // Self-referral: the code's owner is the person signing up.
-        ne(t.users.email, email),
-      ),
-    )
+    .where(eq(t.users.referralCode, code))
     .limit(1);
+  if (!referrer) return null;
 
-  return referrer ? { id: referrer.id, code: referrer.code } : null;
+  // Self-referral: the code's owner is the person signing up, recognised by
+  // either verified identity (the new row has no id yet to compare against).
+  if (self.email && referrer.email === self.email) return null;
+  if (self.phoneE164 && referrer.phoneE164 === self.phoneE164) return null;
+
+  return { id: referrer.id, code: referrer.code };
 }
 
 /**
@@ -402,7 +651,7 @@ async function resolveReferrer(
  */
 const DISPLAY_ID_CANDIDATES = 5;
 
-async function nextDisplayId(tx: Parameters<Parameters<typeof mutate>[1]>[0]["tx"]) {
+async function nextDisplayId(tx: WriteTx) {
   const candidates = Array.from({ length: DISPLAY_ID_CANDIDATES }, () =>
     generateMemberId(),
   );

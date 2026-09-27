@@ -49,6 +49,8 @@ export interface KycUploadedDocument {
   /** As Storage recorded it, not as the browser claimed. */
   byteSize: number;
   mimeType: string;
+  /** Which store `path` is a key in. */
+  storageBackend: "s3" | "supabase";
 }
 
 export interface KycSubmissionRequest {
@@ -127,6 +129,7 @@ export async function submitKyc(
         type: request.documentType,
         fileName: request.document.fileName.slice(0, 120),
         storagePath: request.document.path,
+        storageBackend: request.document.storageBackend,
         contentType: request.document.mimeType,
         byteSize: request.document.byteSize,
         uploadedAt: now,
@@ -143,6 +146,7 @@ export async function submitKyc(
         type: request.documentType,
         fileName: request.selfie.fileName.slice(0, 120),
         storagePath: request.selfie.path,
+        storageBackend: request.selfie.storageBackend,
         contentType: request.selfie.mimeType,
         byteSize: request.selfie.byteSize,
         uploadedAt: now,

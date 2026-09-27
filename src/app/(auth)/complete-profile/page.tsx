@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { CompleteProfileForm } from "@/components/auth/complete-profile-form";
 import { getAuthenticatedAccount } from "@/server/auth/account";
+import { maskIndianMobile } from "@/lib/phone";
 
 export const metadata: Metadata = { title: "Complete your profile" };
 
@@ -13,7 +14,10 @@ export default async function CompleteProfilePage() {
 
   return (
     <CompleteProfileForm
-      email={account.email}
+      signedInAs={
+        account.phoneE164 ? maskIndianMobile(account.phoneE164) : account.email
+      }
+      phoneVerified={account.phoneE164 !== null}
       initialFullName={account.fullName}
     />
   );

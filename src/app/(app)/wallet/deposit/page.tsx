@@ -1,10 +1,15 @@
 import type { Metadata } from "next";
+import { AlertTriangle } from "lucide-react";
 
 import { PageContainer } from "@/components/navigation/app-shell";
 import { PageHeader } from "@/components/shared/page-header";
-import { deferred } from "@/components/shared/section-boundary";
-import { DepositNetworkSelect } from "@/components/wallet/deposit-network-select";
-import { getMyDepositAddressAction } from "@/app/(app)/wallet/deposit/actions";
+import { Card } from "@/components/ui/card";
+import { DepositFlow } from "@/components/wallet/deposit-flow";
+import { generateQrSvg } from "@/lib/qr";
+import { requireCurrentUserIdForPage } from "@/server/current-user";
+import { getDepositNetworks } from "@/server/services/catalogue.service";
+import { listOwnDepositRequests } from "@/server/services/deposit-requests.service";
+import { getActiveDepositAddress } from "@/server/services/deposit-settings.service";
 import { getPublicDepositNetwork } from "@/server/services/tron.service";
 
 export const metadata: Metadata = {
@@ -13,48 +18,56 @@ export const metadata: Metadata = {
 };
 
 /**
- * Add funds.
+ * Add funds: one configured address, a deposit request, and a transaction hash.
  *
- * THE SHELL DOES NOT WAIT FOR THE DATABASE, AND THAT IS THE WHOLE CHANGE
- * ----------------------------------------------------------------------
- * This page used to `await getMyDepositAddressAction()` before returning any
- * HTML, so tapping "Add funds" showed the route's loading skeleton for the
- * whole lookup: one round trip when the account already has an address, four
- * on a first-ever allocation (pool sync, BEGIN, lookup, COMMIT — measured at
- * p50 1,087 ms), and longer still when the pool has to be swept first.
- *
- * None of that is needed to render the first thing a person sees. The network
- * choice, the "USDT (TRC-20) only, never TRX" warning and the Continue button
- * are constants, and the warning is precisely what should be read *before* an
- * address appears. So the read is started here — in the page's own wave, so it
- * is not delayed by a component further down the tree (CLAUDE.md §16.1a item
- * 6) — and handed down unawaited. Only the panel that shows the address
- * suspends.
- *
- * `getPublicDepositNetwork()` is deliberately separate and awaited: it reads
- * environment variables and validates an address locally, costs no round trip,
- * and answers the one question the first stage cannot get wrong — whether the
- * funds about to be sent are real.
+ * Everything this page shows is resolved server-side: the address from the
+ * operator's configuration (never from the browser, never hard-coded), the
+ * account from the session, and the caller's own most recent request — still
+ * open, or recently resolved, so a person who comes back mid-deposit lands on
+ * it rather than on a blank form. Three reads in one wave (CLAUDE.md §16.1a).
  */
 export default async function DepositPage() {
-  // Resolved server-side, from the session — never from anything the client
-  // supplies. See `getMyDepositAddressAction` for why.
-  //
-  // `deferred` marks the rejection handled so an early failure cannot surface
-  // as an unhandled rejection before React consumes it; the promise itself is
-  // unchanged and the component still sees whatever it settles to.
-  const deposit = deferred(getMyDepositAddressAction());
+  const userId = await requireCurrentUserIdForPage();
   const network = getPublicDepositNetwork();
+
+  const [active, requests, networks] = await Promise.all([
+    getActiveDepositAddress(),
+    listOwnDepositRequests(userId, 3),
+    getDepositNetworks(),
+  ]);
+
+  const current =
+    requests.find((request) =>
+      ["awaiting_payment", "verifying", "needs_review"].includes(request.status),
+    ) ?? null;
+  const qrSvg = current ? await generateQrSvg(current.receivingAddress) : null;
+  const minimumDeposit = networks.find((entry) => entry.id === "trc20")?.minDeposit ?? 10;
 
   return (
     <>
       <PageHeader title="Add funds" backHref="/wallet" />
       <PageContainer className="space-y-5">
-        <DepositNetworkSelect
-          deposit={deposit}
-          isTestnet={network.isTestnet}
-          networkLabel={network.label}
-        />
+        {active || current ? (
+          <DepositFlow
+            chainLabel={`TRON ${network.label}`}
+            isTestnet={network.isTestnet}
+            minimumDeposit={minimumDeposit}
+            initialRequest={current}
+            initialQrSvg={qrSvg}
+          />
+        ) : (
+          <Card className="p-5">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+              <div className="min-w-0 space-y-1">
+                <h2 className="text-sm font-semibold">Deposits are not available right now</h2>
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  No deposit address is configured. Please try again later or contact support.
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
       </PageContainer>
     </>
   );

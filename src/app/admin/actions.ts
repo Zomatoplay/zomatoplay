@@ -39,11 +39,7 @@ import {
   ignoreDeposit,
   reopenDeposit,
 } from "@/server/services/deposits.service";
-import {
-  addDepositAddress,
-  releaseDepositAddress,
-  retireDepositAddress,
-} from "@/server/services/deposit-address.service";
+import { setDepositAddress } from "@/server/services/deposit-settings.service";
 import {
   previewPlanRate,
   savePlanRateTiers,
@@ -56,7 +52,8 @@ import {
   rejectWithdrawal,
 } from "@/server/services/withdrawals-write.service";
 import { releaseCommission } from "@/server/services/referrals-write.service";
-import { signKycDocument, KycStorageError } from "@/server/storage/kyc-storage";
+import { KycStorageError } from "@/server/storage/kyc-storage";
+import { signStoredKycDocument } from "@/server/storage/kyc-document-store";
 import { mutate, newId, withReason } from "@/server/write";
 import type {
   AdminPermissionSet,
@@ -268,7 +265,10 @@ export async function signKycDocumentAction(input: {
     await requirePermission("kyc", "view");
 
     const [document] = await getDb()
-      .select({ path: t.kycDocuments.storagePath })
+      .select({
+        path: t.kycDocuments.storagePath,
+        backend: t.kycDocuments.storageBackend,
+      })
       .from(t.kycDocuments)
       .where(eq(t.kycDocuments.id, input.documentId))
       .limit(1);
@@ -285,7 +285,8 @@ export async function signKycDocumentAction(input: {
       };
     }
 
-    const url = await signKycDocument(document.path, 120);
+    // S3 or the legacy bucket, by what the row says — the key alone cannot.
+    const url = await signStoredKycDocument(document.path, document.backend, 120);
     return { ok: true, message: "Opening the document.", url };
   } catch (error) {
     return failed(
@@ -440,76 +441,44 @@ export async function reopenDepositAction(input: {
 }
 
 /**
- * Releases a deposit-address pool assignment back to `available`.
+ * Sets the ONE deposit address customers are shown.
  *
- * The only way an address is ever un-assigned — see the doc comment on
- * `deposit_addresses`. Refused by the service when any deposit against that
- * address has not reached a terminal state, so this cannot be used to hand a
- * still-active address to someone else.
+ * `manage` over `deposits`, asserted from the session. The address is
+ * validated server-side (base58 checksum; never the token contract) and the
+ * change is audited with the old and new value in the same transaction — see
+ * `setDepositAddress`. It never generates an address: nothing here holds a
+ * private key, seed or xpub (CLAUDE.md §18.8). The operator produces the
+ * address with their own wallet tooling and pastes it.
+ *
+ * A reason is required: redirecting where every customer sends money is the
+ * most consequential single edit this console can make.
  */
-export async function releaseDepositAddressAction(input: {
-  addressId: string;
+export async function setDepositAddressAction(input: {
+  address: string;
   reason: string;
 }): Promise<AdminActionResult> {
   try {
     const operator = await requirePermission("deposits");
-    const reason = requireReason(input.reason, "release a deposit address");
-    const released = await trackPipeline(
+    const reason = requireReason(input.reason, "change the deposit address");
+    const result = await trackPipeline(
       {
         pipeline: "deposit",
-        operation: "deposit.address.release.manual",
-        message: "Operator released a deposit address",
+        operation: "deposit.address.configure",
+        message: "Operator changed the deposit address",
         actor: operator.actor,
-        subject: { type: "deposit_address", id: input.addressId },
+        subject: { type: "settings", id: "deposit-address" },
       },
-      () =>
-        releaseDepositAddress({ addressId: input.addressId, reason }, operator.actor),
+      () => setDepositAddress({ address: String(input.address ?? ""), note: reason }, operator.actor),
     );
-    /*
-     * `/admin/deposits/addresses` is the screen the operator is standing on,
-     * and it was **not** in this list — so a release that worked left the row
-     * showing "assigned" until a hard reload, which reads as "the button does
-     * nothing". That is a large part of the reported "manual release is not
-     * releasing".
-     */
-    revalidate("/admin/deposits/addresses", "/admin/deposits", "/admin");
-    /*
-     * The address is named rather than a bare "done". `releaseDepositAddress`
-     * returns the row it actually updated — and throws if the `UPDATE` matched
-     * nothing — so this message can only be produced by a state change that
-     * really happened.
-     */
-    return { ok: true, message: `${released.address} released back to the pool.` };
+    revalidate("/admin/deposits/configuration", "/admin/deposits", "/admin/audit-logs", "/wallet/deposit");
+    return {
+      ok: true,
+      message: result.changed
+        ? "Deposit address saved. New deposit requests use it from now on."
+        : "That is already the deposit address; nothing was changed.",
+    };
   } catch (error) {
-    return failed(error, "The address was not released.");
-  }
-}
-
-/**
- * Retires a deposit address: out of rotation permanently, never claimable
- * again, never deleted.
- *
- * The operation for replacing a receiving address. Releasing one instead looks
- * right and is not: release returns it to `available`, and the pool is claimed
- * in `createdAt` order, so the address being replaced is older than its
- * replacement and gets handed straight back to the person who was supposed to
- * stop using it.
- *
- * Same permission and same refusals as release — `manage` over `deposits`, and
- * the service refuses any address with deposit activity still in flight.
- */
-export async function retireDepositAddressAction(input: {
-  addressId: string;
-  reason: string;
-}): Promise<AdminActionResult> {
-  try {
-    const operator = await requirePermission("deposits");
-    const reason = requireReason(input.reason, "retire a deposit address");
-    await retireDepositAddress({ addressId: input.addressId, reason }, operator.actor);
-    revalidate("/admin/deposits/addresses", "/admin/deposits", "/admin");
-    return { ok: true, message: "Address retired from rotation." };
-  } catch (error) {
-    return failed(error, "The address was not retired.");
+    return failed(error, "The deposit address was not changed.");
   }
 }
 
@@ -684,20 +653,24 @@ export async function revokeUserSessionAction(input: {
 }): Promise<AdminActionResult> {
   try {
     const operator = await requirePermission("security");
-    const { revoked } = await revokeDeviceSessions(
+    const { revoked, phoneSessionsEnded } = await revokeDeviceSessions(
       { userId: input.userId, sessionId: input.sessionId, reason: input.reason },
       operator.actor,
     );
     refreshUsers();
     return {
       ok: true,
-      // Deliberately precise. Marking a device session revoked does not
-      // invalidate the Supabase refresh token behind it — that needs a
-      // service-role credential this application does not hold — and an
-      // operator who believes an account has been secured when it has not is
-      // worse off than one who knows exactly what happened.
-      message:
-        revoked === 0
+      // Deliberately precise. "All devices" really ends every phone-OTP
+      // session (the account's session epoch moves). Marking one device row
+      // revoked does not, and neither invalidates a legacy Supabase email
+      // session — that needs a service-role credential this application does
+      // not hold. An operator who believes an account has been secured when
+      // it has not is worse off than one who knows exactly what happened.
+      message: phoneSessionsEnded
+        ? `Signed the account out of every mobile-number session on every device` +
+          (revoked > 0 ? ` and marked ${revoked} device record${revoked === 1 ? "" : "s"} revoked` : "") +
+          ". A legacy email sign-in, if any, is not invalidated."
+        : revoked === 0
           ? "No active sessions to revoke."
           : `Marked ${revoked} session${revoked === 1 ? "" : "s"} revoked. The credential itself is not invalidated.`,
     };
@@ -731,6 +704,15 @@ export async function sendUserPasswordResetAction(input: {
       .where(eq(t.users.id, input.userId))
       .limit(1);
     if (!user) throw new Error("That account no longer exists.");
+    if (!user.email) {
+      throw Object.assign(
+        new Error(
+          "This account signs in with a mobile number and has no password or email to reset.",
+        ),
+        { name: "AdminValidationError" },
+      );
+    }
+    const email = user.email;
 
     // Deliberately not the request-scoped client: this acts on the *user's*
     // email, not on the operator's own session.
@@ -746,7 +728,7 @@ export async function sendUserPasswordResetAction(input: {
       },
       () =>
         sendPasswordRecovery(requireSupabaseConfig(), {
-          email: user.email,
+          email,
           redirectTo,
         }),
     );
@@ -1620,52 +1602,5 @@ export async function previewPlanTierAction(input: {
       message:
         error instanceof Error ? error.message : "Could not price that amount.",
     };
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-/* Deposit addresses                                                           */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Adds an operator-provided receiving address to the pool.
- *
- * WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT
- * ---------------------------------------------
- * It writes one row to `deposit_addresses`. It is **not** an environment
- * editor: `TRON_NETWORK`, the grid URL, the API key and `CRON_SECRET` are
- * deployment configuration and no UI in this application reads or writes them.
- * The address *pool* is the runtime-editable part, it has always been database-
- * backed, and this is the missing write for it.
- *
- * It also never generates an address. Nothing in this codebase holds a private
- * key, a seed or an xpub, and an address it generated would be one it could
- * sign for — CLAUDE.md §18.8 for why that line is where it is. The operator
- * produces the address with their own wallet tooling and pastes it here; only
- * the address string ever arrives.
- *
- * The checksum is verified before the row exists. A mistyped address usually
- * still looks like one — 34 characters starting with T — and a pool entry that
- * can never receive anything is a customer sending real USDT into nothing.
- */
-export async function addDepositAddressAction(input: {
-  address: string;
-  note?: string;
-}): Promise<AdminActionResult> {
-  try {
-    const operator = await requirePermission("deposits");
-    const result = await addDepositAddress(
-      { address: input.address.trim(), note: input.note },
-      operator.actor,
-    );
-    revalidate("/admin/deposits", "/admin/deposits/addresses", "/admin");
-    return {
-      ok: true,
-      message: result.created
-        ? "Address added to the pool. The scanner watches it from its next pass."
-        : "That address is already in the pool; nothing was changed.",
-    };
-  } catch (error) {
-    return failed(error, "The address was not added.");
   }
 }

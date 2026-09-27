@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
   index,
@@ -7,11 +8,15 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
+import type { DepositRequestCancellationReason } from "@/types";
+
 import { inr, rate, ts, usdt } from "./columns";
 import {
   chainEnum,
   chainNetworkEnum,
   currencyEnum,
+  depositAssetEnum,
+  depositRequestStatusEnum,
   depositNetworkEnum,
   depositStatusEnum,
   depositVerificationEnum,
@@ -167,6 +172,13 @@ export const deposits = pgTable(
       .default("unverified"),
     /** Why verification failed, or why an operator ignored it. */
     failureReason: text("failure_reason"),
+    /**
+     * Why a confirmed transfer could not be matched to a deposit request, and
+     * so waits for an operator: `no_matching_request`, `ambiguous_match`,
+     * `outside_request_window`, `legacy_address`, `no_block_time`. Null once
+     * attributed, and null on rows from before deposit requests existed.
+     */
+    unmatchedReason: text("unmatched_reason"),
 
     /** Set when the scanner first saw it. */
     detectedAt: ts("detected_at"),
@@ -234,6 +246,151 @@ export const deposits = pgTable(
       table.userId,
       table.status,
       table.acknowledgedAt,
+    ),
+  ],
+);
+
+/**
+ * A customer's intention to deposit, created before any money moves.
+ *
+ * WHY THIS TABLE EXISTS
+ * ---------------------
+ * Nanotron receives every deposit at ONE configured address
+ * (`deposit_settings`). A transfer to a shared address says nothing about who
+ * sent it, and the obvious fix — let the customer paste their transaction hash —
+ * is not a fix on its own: the chain is public, so anybody can watch the
+ * address, see a stranger's transfer land and submit that hash first
+ * (CLAUDE.md §18.4).
+ *
+ * What binds a transfer to a person here is the **exact amount inside a time
+ * window**. Creating a request quotes an `expected_amount_usdt` — the amount
+ * asked for plus a random fraction of a cent-scale offset — that no other open
+ * request holds. A transfer is attributed to a request only when its on-chain
+ * amount equals that figure and its block time falls inside the request's
+ * window. Anything else waits for an operator. The transaction hash the
+ * customer submits is a *pointer* that lets the server look the transfer up
+ * sooner; it is never the thing that decides whose it is.
+ *
+ * `id` is the customer-facing reference, `DEP-XXXXXXXX`. It is Nanotron's, and
+ * it is deliberately a different shape from a transaction hash (64 hex
+ * characters) so the two cannot be confused on screen or in support.
+ */
+export const depositRequests = pgTable(
+  "deposit_requests",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+
+    chain: chainEnum("chain").notNull().default("tron"),
+    chainNetwork: chainNetworkEnum("chain_network").notNull(),
+    asset: depositAssetEnum("asset").notNull().default("usdt"),
+    /**
+     * The configured deposit address at the moment the request was created.
+     * Copied, not joined: an operator changing the address must not change
+     * where an already-quoted request told somebody to send money.
+     */
+    receivingAddress: text("receiving_address").notNull(),
+
+    /** What the customer asked to deposit. */
+    requestedAmountUsdt: usdt("requested_amount_usdt").notNull(),
+    /** The exact amount they were told to send — the binding. */
+    expectedAmountUsdt: usdt("expected_amount_usdt").notNull(),
+
+    status: depositRequestStatusEnum("status").notNull().default("awaiting_payment"),
+
+    /**
+     * The hash the customer submitted. A claim, not a binding: it may be
+     * wrong, somebody else's, or not yet indexed. Not unique — two people
+     * claiming one transfer is exactly the dispute an operator must see.
+     */
+    submittedTxHash: text("submitted_tx_hash"),
+    submittedAt: ts("submitted_at"),
+
+    /** The chain deposit this request was satisfied by. The binding. */
+    depositId: text("deposit_id").references(() => deposits.id, {
+      onDelete: "set null",
+    }),
+    /** From the chain, never from the browser. */
+    verifiedAmountUsdt: usdt("verified_amount_usdt"),
+    verifiedAt: ts("verified_at"),
+    /** Why it needs a person — shown to the operator, summarised to the customer. */
+    reviewReason: text("review_reason"),
+
+    /**
+     * Set when the customer changed the amount or left the deposit screen.
+     * Cancelling is a state, never a deletion: the row, and anything already
+     * submitted against it, stays. See `cancelDepositRequest`.
+     */
+    cancelledAt: ts("cancelled_at"),
+    cancellationReason: text("cancellation_reason").$type<DepositRequestCancellationReason>(),
+
+    createdAt: ts("created_at").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("deposit_requests_user_idx").on(table.userId, table.createdAt),
+    index("deposit_requests_status_idx").on(table.status),
+    index("deposit_requests_submitted_tx_idx").on(table.submittedTxHash),
+    /* One transfer satisfies at most one request, enforced by Postgres. */
+    uniqueIndex("deposit_requests_deposit_key")
+      .on(table.depositId)
+      .where(sql`${table.depositId} is not null`),
+    /*
+     * The exact amount is unique among OPEN requests at one address — the
+     * property attribution rests on. The service also picks amounts that
+     * avoid every unexpired window; this is the backstop a race cannot pass.
+     */
+    uniqueIndex("deposit_requests_open_amount_key")
+      .on(table.chainNetwork, table.receivingAddress, table.expectedAmountUsdt)
+      .where(sql`${table.status} in ('awaiting_payment', 'verifying')`),
+    /*
+     * At most one request per customer is waiting for payment. Changing the
+     * amount cancels the old one in the same transaction as creating the new
+     * one; this is what makes "two live requests" impossible rather than
+     * merely unlikely.
+     */
+    uniqueIndex("deposit_requests_one_awaiting_per_user_key")
+      .on(table.userId)
+      .where(sql`${table.status} = 'awaiting_payment'`),
+    /* The matcher's lookup: this address, this amount. */
+    index("deposit_requests_match_idx").on(
+      table.receivingAddress,
+      table.expectedAmountUsdt,
+    ),
+  ],
+);
+
+/**
+ * The one address Nanotron receives deposits at, per chain and network.
+ *
+ * Replaces the per-user deposit-address pool (`deposit_addresses`, kept for
+ * its history). Written only by an operator holding `manage` over `deposits`,
+ * through `setDepositAddress`, with an audit entry naming the old and new
+ * address in the same transaction. Absent a row, the deployment's
+ * `TRON_PLATFORM_DEPOSIT_ADDRESS` is used — so introducing this table changes
+ * nothing about where money is sent until somebody deliberately saves one.
+ */
+export const depositSettings = pgTable(
+  "deposit_settings",
+  {
+    id: text("id").primaryKey(),
+    chain: chainEnum("chain").notNull().default("tron"),
+    chainNetwork: chainNetworkEnum("chain_network").notNull(),
+    asset: depositAssetEnum("asset").notNull().default("usdt"),
+    receivingAddress: text("receiving_address").notNull(),
+    updatedAt: ts("updated_at").notNull(),
+    /** The operator's agent id and name, copied as `audit_logs` copies them. */
+    updatedById: text("updated_by_id"),
+    updatedByName: text("updated_by_name"),
+  },
+  (table) => [
+    uniqueIndex("deposit_settings_target_key").on(
+      table.chain,
+      table.chainNetwork,
+      table.asset,
     ),
   ],
 );

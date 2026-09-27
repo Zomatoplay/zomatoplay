@@ -266,12 +266,14 @@ describe("verification lifecycle", { skip }, () => {
                 path: `${userId}/document-${Date.now()}.jpg`,
                 byteSize: 128_000,
                 mimeType: "image/jpeg",
+                storageBackend: "supabase" as const,
               },
               selfie: {
                 fileName: "selfie.jpg",
                 path: `${userId}/selfie-${Date.now()}.jpg`,
                 byteSize: 64_000,
                 mimeType: "image/jpeg",
+                storageBackend: "supabase" as const,
               },
             }
           : {}),

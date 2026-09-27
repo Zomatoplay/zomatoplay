@@ -14,6 +14,7 @@ import {
   LifeBuoy,
   Network,
   ScrollText,
+  Send,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
@@ -27,7 +28,8 @@ import { ListGroup, ListRow } from "@/components/shared/list-row";
 import { KycStatusRow } from "@/components/settings/kyc-status-row";
 import { AccountActions } from "@/components/settings/logout-button";
 import { ProfileHeader } from "@/components/settings/profile-header";
-import { APP_NAME } from "@/constants/app";
+import { APP_NAME, SUPPORT_EMAIL } from "@/constants/app";
+import { telegramSupportUrl } from "@/lib/support";
 
 export const metadata: Metadata = {
   title: "Settings",
@@ -67,8 +69,8 @@ export default function SettingsPage() {
             <ListRow
               href="/settings/security"
               icon={KeyRound}
-              title="Password & authentication"
-              description="Change password, 2FA and authenticator app"
+              title="Sign-in & authentication"
+              description="Sign-in method, 2FA and authenticator app"
             />
             <ListRow
               href="/settings/security#activity"
@@ -136,6 +138,7 @@ export default function SettingsPage() {
           </ListGroup>
 
           <ListGroup title="Support">
+            <ContactSupportRow />
             <ListRow
               href="/settings/support"
               icon={LifeBuoy}
@@ -177,6 +180,35 @@ export default function SettingsPage() {
           </p>
       </PageContainer>
     </>
+  );
+}
+
+/**
+ * Support → Contact Support → Telegram, from the one configured handle
+ * (`@/lib/support`). Unconfigured, the row says so instead of linking
+ * somewhere that does not exist.
+ */
+function ContactSupportRow() {
+  const url = telegramSupportUrl();
+  if (!url) {
+    return (
+      <ListRow
+        as="div"
+        icon={Send}
+        title="Contact support"
+        description={`Telegram support is not available yet. Email ${SUPPORT_EMAIL}.`}
+      />
+    );
+  }
+  return (
+    <ListRow
+      href={url}
+      external
+      icon={Send}
+      title="Contact support"
+      description="Chat with us on Telegram"
+      meta={<span className="text-sm text-muted-foreground">Telegram</span>}
+    />
   );
 }
 

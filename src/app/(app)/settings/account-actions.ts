@@ -59,7 +59,10 @@ async function actorForSession(): Promise<
 /* -------------------------------------------------------------------------- */
 
 /**
- * Name and phone only.
+ * Name and phone only — and not the phone once it has been verified by OTP:
+ * that number is the account's sign-in, and a form edit is not evidence of
+ * owning a different one. The server ignores it rather than trusting the
+ * form to hide the field.
  *
  * The email address is **not** editable here, and that is a decision rather
  * than an omission. Supabase Auth owns the email: it is the sign-in identifier
@@ -81,15 +84,20 @@ export async function updateProfileAction(input: {
 
       const fullName = input.fullName.trim();
       const phone = input.phone.trim();
+      const account = await getAuthenticatedAccount();
+      const phoneLocked = Boolean(account?.phoneE164);
 
       if (fullName.length < 2) return { ok: false, message: "Enter your full name." };
-      if (phone.replace(/\D/g, "").length < 8) {
+      if (!phoneLocked && phone.replace(/\D/g, "").length < 8) {
         return { ok: false, message: "Enter a valid phone number." };
       }
 
       try {
         await updateUserProfile(
-          { userId: session.userId, changes: { fullName, phone } },
+          {
+            userId: session.userId,
+            changes: phoneLocked ? { fullName } : { fullName, phone },
+          },
           session.actor,
         );
         revalidate("/settings", "/settings/profile", "/");

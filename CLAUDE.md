@@ -42,24 +42,26 @@ or a USDT trading interface. If a request implies any of these, stop and clarify
 
 ## 2. Current project scope
 
-- **Supabase Auth** — email and password, one-time code as an alternative. No
-  demo account, no automatic sign-in (§19). **Operators authenticate too** (§20);
-  `/admin` is closed without an operator session.
+- **Customers sign in with Firebase phone OTP** (§19.7); the old Supabase email
+  sign-in remains only so existing customers can link a verified number. No demo
+  account, no automatic sign-in (§19). **Operators authenticate with Supabase
+  Auth** (§20); `/admin` is closed without an operator session.
 - **Reads and writes both go to PostgreSQL, in both applications.** The client
   stores are read caches. Every mutation is a server action → service → one
   transaction → audit entry → revalidation.
-- **Deposits are detected on TRON** by a server-side scanner (§18). A transfer to
-  an assigned address is credited automatically; a transfer to the shared legacy
-  address is attributed by an operator (§18.4).
+- **Deposits go to ONE configured address and are bound by deposit requests**
+  (§18.4): a transfer matching exactly one request's exact amount and time window
+  is credited automatically, by the scanner or by a customer's submitted
+  transaction hash; everything else waits for an operator.
 - **Every mutation is traceable** via `pipeline_events` (§22).
 - **The application still runs with no database.** With `DATABASE_URL` unset,
   catalogue and platform reads return the seed modules in `@/data`. User-scoped
   reads and every write refuse instead — deliberate (§16.3).
 
 **Intentionally not implemented:** outbound blockchain of any kind (§18.1); real
-withdrawals or a payment gateway (§17.4); server-side session revocation (§19.6);
-HD-derived per-user deposit addresses (§18.8); an automated KYC provider (§23);
-notification delivery beyond in-app; phone/SMS codes.
+withdrawals or a payment gateway (§17.4); server-side session revocation for
+operators (§19.6); per-user deposit addresses (removed, §18.8); an automated KYC
+provider (§23); notification delivery beyond in-app.
 
 Search for `INTEGRATION POINT` — each marks a seam where a real service replaces
 mock behaviour.
@@ -80,6 +82,8 @@ mock behaviour.
 | Animation | `motion` — only where it genuinely helps |
 | Fonts | `next/font` (Geist Sans + Geist Mono) |
 | QR codes | `qrcode`, **server-side only** |
+| Customer auth | `firebase` (browser, phone OTP only) + `firebase-admin` (server, session cookies) |
+| KYC storage | `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`, **server-side only** |
 | Database | PostgreSQL 17 (Supabase, session pooler) |
 | ORM | Drizzle ORM, driver `postgres` (postgres.js) |
 | Migrations | `drizzle-kit` — generated SQL, checked in under `drizzle/` |
@@ -556,11 +560,13 @@ Done: the database (§16), auth (§19, §20), writes (§17), the investment engi
 (§10a), referral accrual/scheduling/release (§10, §10d), KYC document capture and
 storage (§16.1c).
 
+0. **Manual console setup** for Firebase, S3 and EC2 cron —
+   `docs/rollout-phone-s3-deposits-pwa.md`.
 1. **KYC provider** — swap manual review for a provider SDK; drive `kycStatus`
    from their webhook. `liveness_check_passed` stays `false` until something can
    actually set it (§23).
-2. **Deposit service** — a pool big enough for real usage (§18.8), a tighter
-   scheduler (§18.5), removal of the demo simulation control.
+2. **Deposit service** — install the EC2 scheduler (§18.5); decide whether the
+   legacy pool tables can ever be archived (§18.8).
 3. **Withdrawal / payout rails** — real INR payouts and status transitions.
 4. **Rates API** — replace `getUsdtInrRate()`.
 5. **Reporting** — the CRM dashboard's aggregates and chart series (§16.5).
@@ -616,8 +622,8 @@ exchange prohibition applies here too.**
 | `/admin/users` | Searchable directory, 13 columns, row actions |
 | `/admin/users/[id]` | Full profile across 10 tabs |
 | `/admin/kyc` | Review queue → case detail with documents, notes, decisions |
-| `/admin/deposits` | Deposit ledger; credit / mark-failed / assign |
-| `/admin/deposits/addresses` | Deposit-address pool (§18.9) |
+| `/admin/deposits` | Deposit ledger + the **Unmatched** queue; credit / mark-failed / assign |
+| `/admin/deposits/configuration` | The single deposit address, its history (§18.9) |
 | `/admin/withdrawals` | Payout queue with full fee arithmetic |
 | `/admin/investments` | Every allocation, filterable by plan and status |
 | `/admin/plans` | Plan catalogue; create / edit / disable |
@@ -949,7 +955,29 @@ in Postgres.
 
 ### 16.1c KYC document storage
 
-A **private** Supabase Storage bucket, `kyc-documents`, `file_size_limit` 10 MB,
+**Two stores, one decision point** — `kycUploadModeFor()` in
+`server/storage/kyc-document-store.ts`, and every row says which it is in
+(`kyc_documents.storage_backend`):
+
+- **`s3` — private AWS S3, the target on EC2.** Off unless
+  `KYC_STORAGE_DRIVER=s3` *and* `KYC_S3_BUCKET` and a region are set; **there is
+  no default bucket**. Keys are `kyc/{userId}/{document|selfie}/{uuid}` — no
+  filename, no document number. The browser PUTs straight to S3 with a
+  **5-minute presigned URL that signs the exact content type and byte length**,
+  so S3 refuses a different file; on submission the server refuses any key
+  outside the caller's own prefix *before* asking S3 (`isOwnKycKey`), then
+  `HeadObject`s it and stores what S3 recorded. Reviewers get a 120-second
+  presigned GET after `requirePermission("kyc", "view")`, from the row id.
+  Credentials come from the SDK's default chain — **the EC2 instance role**; no
+  key is read by this code. No ACL is ever set: the bucket stays private under
+  Block Public Access. Runbook: `docs/rollout-phone-s3-deposits-pwa.md` §2.
+- **`supabase` — the original bucket, legacy.** Described below. It authorises
+  by the uploader's *Supabase* session, so only an email-signed-in customer can
+  use it; a phone-signed-in customer with S3 unset sees no upload controls
+  (`unavailable`) and submits declared details only (§23). Rows written before
+  S3 stay `supabase` and remain openable while that project exists.
+
+The original Supabase store: a **private** Supabase Storage bucket, `kyc-documents`, `file_size_limit` 10 MB,
 with an `allowed_mime_types` allow-list. Keys are
 `{auth_user_id}/{kind}-{timestamp}-{random}.{ext}`; the leading folder is what
 every policy keys on. The bytes are never in Postgres —
@@ -1139,7 +1167,16 @@ property the test owns — never a fact about the physical table.**
 | `server/auth-and-kyc.integration.test.ts` | yes | auth boundary, operator gate, KYC lifecycle |
 | `server/writes.integration.test.ts` | yes | ledger, idempotency, overdrafts, audit |
 | `server/money-lifecycle.integration.test.ts` | yes | allocation → maturity, the earnings engine |
-| `server/deposit-address.integration.test.ts` | yes | pool allocation, attribution, idempotency under concurrency |
+| `server/deposit-request.test.ts` | no | request ids, exact-amount selection, hash normalisation |
+| `server/deposit-request.integration.test.ts` | yes | exact-match crediting, once under replay and race, front-running, unmatched review |
+| `server/deposit-request-lifecycle.integration.test.ts` | yes | change amount, leave/cancel, paid-after-cancel, one waiting request, "already processed" |
+| `server/phone-auth.integration.test.ts` | yes | new vs existing phone accounts, never merge, linking keeps the account, session epoch |
+| `server/auth/customer-session-token.test.ts` | no | the signed session cookie: expiry, forgery, garbage |
+| `lib/support.test.ts` | no | the Telegram support handle: only a `t.me` username ever becomes a link |
+| `server/auth/phone-identity.test.ts` | no | who a verified phone number may reach — never merge, never by unverified phone |
+| `lib/phone.test.ts` | no | Indian mobile normalisation |
+| `server/storage/s3-kyc-store.test.ts` | no | S3 off by default, opaque keys, forged keys refused, signed size/type |
+| `lib/pwa-install.test.ts` | no | install-prompt policy, iPad-as-Mac detection |
 | `server/referrals.integration.test.ts` | yes | commission accrual, tiers, and that it credits nobody |
 | `server/plan-tiers.integration.test.ts` | yes | tier resolution, the snapshot, no retroactive repricing |
 | `server/deposit-confirmation.integration.test.ts` | yes | deposit announcement; owner-scoped one-way acknowledgement |
@@ -1351,14 +1388,16 @@ Read-only. Mainnet, Shasta and Nile. `@/server/tron/`.
 
   Nothing else in the pipeline is network-aware. Address validation is base58check
   and prefix-identical across TRON's networks; the scanner scopes its cursor
-  (`chain_scan_state`) and its pool (`deposit_addresses`) by `network`, so mainnet
-  and testnet rows never mix.
+  (`chain_scan_state`), its requests (`deposit_requests.chain_network`) and its
+  configured address (`deposit_settings`) by `network`, so mainnet and testnet
+  rows never mix.
 - **Nothing is ever signed or sent.** No private key, no seed phrase, no
   broadcasting. `tronweb` is deliberately not a dependency: base58check validation
   is forty lines, and a library that *can* sign is one that can be made to.
 - **The TronGrid API key is server-only** — read in a `server-only` module, sent as
   a header, never `NEXT_PUBLIC_`, never logged. What reaches the browser is
-  `PublicDepositTarget`, a hand-written projection with no field to put a key in.
+  `DepositRequestView` and `getPublicDepositNetwork()`, hand-written projections
+  with no field to put a key in.
 - **Failures are failures.** Every error path throws. An empty list is
   indistinguishable from "no deposits arrived", and a scanner reading a rate-limit
   response as "nothing new" would advance its cursor past transfers it never saw.
@@ -1367,12 +1406,13 @@ Read-only. Mainnet, Shasta and Nile. `@/server/tron/`.
 
 ```
 TronGrid  →  parse/filter  →  confirmation check  →  deposits row
-                                                          │
-                                        recipient in deposit_addresses?
+(scanner, or a customer's hash)                           │
+                              exactly one deposit request with this address,
+                              exact amount and a window containing the block time?
                                           │                     │
                                          yes                    no
                                           │                     │
-                              credited automatically      unassigned, in
+                              credited automatically      unattributed + reason,
                               (ledger + balance + audit)  the operator queue
 ```
 
@@ -1393,29 +1433,56 @@ height from `/walletsolidity/getnowblock`, TRON's irreversibility marker.
 Unconfirmed transfers are counted and left for the next pass; the poll window
 overlaps by a minute so nothing falls between passes.
 
-### 18.4 Deposit attribution
+### 18.4 Deposit attribution — one address, deposit requests, exact amounts
 
-**A blockchain transaction does not identify which user paid — unless the recipient
-address itself already does.**
+**A blockchain transaction does not identify who paid, and a shared address
+cannot either.** Every deposit goes to ONE configured address (§18.9). What binds
+a transfer to a person is a **deposit request**:
 
-- A transfer to a **pool address** resolves to whoever held it **at the transfer's
-  own block timestamp** (`findOwnerOfAddressAt`) and is credited automatically in
-  the same transaction that records it. The block timestamp rather than the
-  scanner's clock, so a late pass cannot change who a deposit belongs to.
-- A transfer to the **legacy shared address**, or to a pool address that was never
-  assigned, cannot say who paid. `deposits.user_id` stays **nullable** for exactly
-  this case, and an operator attributes it in `/admin/deposits`. **The CRM offers
-  no "best match" suggestion, on purpose:** a plausible guess is the thing most
-  likely to be accepted without checking, and crediting the wrong account is a
-  loss, not a display bug.
+- Starting a deposit creates `deposit_requests` row `DEP-XXXXXXXX` (Crockford
+  base32 — unmistakable for a 64-hex hash) quoting an **exact amount to send**:
+  the amount asked for plus a random 0.01–0.99 USDT, **unique among open
+  requests at that address** (advisory lock + the partial unique index
+  `deposit_requests_open_amount_key`), valid for `DEPOSIT_REQUEST_TTL_MINUTES`.
+- `findMatchingRequest` (`services/deposit-matching.ts`) attributes a confirmed
+  transfer only when recipient = the request's quoted address, amount = its exact
+  expected amount, and block time ∈ [created − 60 s, expires] — and **exactly one**
+  request satisfies that. Every input is a chain fact.
+- The scanner and a customer's **Verify Payment** go through the same
+  `recordObservedDeposit` → matcher, so a customer who never submits a hash is
+  still credited. A submitted hash is a *search key*: `findTransferByHash` reads
+  the scanner's own TronGrid listing and `parseTransfer`, and finality is §18.3.
 
-**A tx-hash claim flow is the obvious shortcut and is not safe on its own.** The
-chain is public, so anyone can watch the address, see a stranger's transfer land
-and submit that hash first. Verifying the hash proves the *transfer* happened; it
-proves nothing about *who is asking*. Two things make a claim safe: per-user
-addresses (§18.8), or binding the sender address to the account first (a signed
-message or a verification transfer) — which costs a whole address-ownership flow
-and refuses anybody who paid from an exchange, i.e. most people.
+**Why the tx-hash claim is safe here, when §18.4 used to say it was not.** The
+chain is public, so anyone can submit a stranger's hash. **Who submits a hash is
+not an input to attribution** — the transfer goes to the request its amount and
+time match, and the claim is only recorded on the claimant's own request
+(`applyClaim`: `credited` / `needs_review` / `not_yours`). There is a test named
+for exactly this ("somebody else submitting your hash cannot take your
+transfer"); **do not make it pass by deleting it.**
+
+**One request waiting for payment per customer, and cancelling is a state.**
+Changing the amount cancels the waiting request inside the transaction that
+creates the new one (`deposit_requests_one_awaiting_per_user_key` is the
+backstop); leaving the screen through an in-app link asks, then
+`cancelDepositRequest`. Both refuse a request with a submitted hash or a
+matched deposit. **`cancelled` stays in `MATCHABLE_REQUEST_STATUSES` and its
+amount stays reserved until its window closes** — a customer who paid and
+then left is still credited, and no later request can be quoted that figure.
+Do not "free the amount early" to shorten the reserved set.
+
+**Anything that is not one exact match is left unattributed with a named
+`deposits.unmatched_reason`** (`no_matching_request`, `outside_request_window`,
+`ambiguous_match`, `legacy_address`, `no_block_time`) and appears in
+`/admin/deposits` → *Unmatched*, with every customer's claim on its hash shown as
+evidence (never proof). An operator resolves it with the existing audited
+`assignDepositToUser`, which also closes the customer's request. **The CRM still
+offers no "best match" suggestion** — a plausible guess is the thing most likely
+to be accepted without checking.
+
+**Never loosen the exact-amount rule** (a tolerance, rounding, or "closest
+request") to reduce the review queue: an exchange deducting a fee produces an
+amount nobody quoted, and review is the correct outcome.
 
 ### 18.4a Telling the customer their deposit arrived
 
@@ -1469,12 +1536,15 @@ concurrent scanners.
 > `*/15 * * * *` is **rejected at deploy time** — it surfaces as a failed
 > deployment, not as a job that silently does not run.
 >
-> `vercel.json` schedules **four** jobs, all `CRON_SECRET`-authorised plain URLs:
-> the deposit scan, investment settlement, the referral release (18:30 UTC = 00:00
-> IST, §10d) and the deposit-address release. Nothing about them is
+> `vercel.json` schedules **three** jobs, all `CRON_SECRET`-authorised plain URLs:
+> the deposit scan, investment settlement and the referral release (18:30 UTC =
+> 00:00 IST, §10d). The deposit-address release job is gone with the pool
+> (§18.8). **On EC2 the scheduler is `deploy/ec2/nanotron.cron`** (scan every 5
+> minutes, calling the app on 127.0.0.1); the Hobby limits below apply only if
+> the app is still on Vercel. Nothing about them is
 > Vercel-specific — point an external scheduler at the same URLs to restore higher
 > frequencies. Because Hobby precision is ±59 minutes, **stagger the four rather
-> than stacking them**: four concurrent 60-second functions contend for a
+> than stacking them**: concurrent 60-second functions contend for a
 > 5-connection pool against a 15-connection project ceiling (§16.1a).
 >
 > **`TRON_LOOKBACK_MS` defaults to exactly 24h, which equals a daily cadence.** For
@@ -1482,17 +1552,18 @@ concurrent scanners.
 > can leave a transfer outside the window permanently. On a daily schedule, raise
 > it — 72h is a reasonable floor.
 
-**The deposit screen triggers a pass too, and it is not the scheduler.** While
-`/wallet/deposit` is open with a real address, `DepositWatcher` calls
-`checkForDepositsAction` **every five seconds**, which asks `triggerDepositScan()`
-for a pass and reads the caller's own deposits back. A **temporary,
-user-active-page mechanism** — a transfer arriving after the tab closes is found by
-the cron pass and by nothing else. Two in-process limits keep it from being a
-second scanner: single-flight, so concurrent callers join the pass already running,
-and a **4-second floor** between passes. **The floor and the client cadence move
-together** — a floor at or above the cadence means most ticks return `throttled`
-and a "5-second" watcher silently becomes a 20-second one. **Do not grow this into
-the scheduler.**
+**The deposit screen triggers a pass too, and it is not the scheduler.** While a
+request is open, `DepositFlow` calls `checkDepositRequestAction` **every five
+seconds** to re-read the request and any newly credited deposits (cheap,
+indexed). About **once a minute** it also asks for chain work — floored
+server-side at one per account per 20 s whatever the client sends: a request
+with a submitted hash re-checks that one transaction; one without asks
+`triggerDepositScan()` for a pass (single-flight, 15-second global floor). A
+**temporary, user-active-page mechanism** — a transfer arriving after the tab
+closes is found by the cron pass and by nothing else. **Do not grow this into
+the scheduler.** The pass is started with `after()`, not awaited: Next runs one
+client's server actions one at a time, and an awaited pass made a *Verify
+Payment* press queue behind it (measured at over 40 s).
 
 **A deposit older than the first-ever scan is invisible until you widen the
 window.** With no cursor, a pass looks back `TRON_LOOKBACK_MS`. The cursor only
@@ -1508,17 +1579,16 @@ lookback covers it.
 | `TRON_GRID_URL` | Must be https. Also `TRONGRID_API_URL` / `TRON_GRID_API_URL`. Defaults per network. |
 | `TRON_GRID_API_KEY` | Optional; without it, a much lower rate limit. Server-only. |
 | `TRON_USDT_CONTRACT` | The only contract counting as a deposit. Mainnet USDT is `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`. |
-| `TRON_PLATFORM_DEPOSIT_ADDRESS` | The legacy receiving address — always pool member zero (§18.8). |
-| `TRON_DEPOSIT_POOL_ADDRESSES` | Optional. Comma-separated additional pool addresses. |
+| `TRON_PLATFORM_DEPOSIT_ADDRESS` | The deployment's **default** receiving address, used until an operator saves one (§18.9). Also `TRON_DEPOSIT_ADDRESS`. |
+| `DEPOSIT_REQUEST_TTL_MINUTES` | How long a request reserves its exact amount (15–1440). Default 60. |
 | `TRON_CONFIRMATION_REQUIRED` | Wait for solidification. Default on. **Refused on mainnet when off** (§18.1). |
 | `TRON_POLL_INTERVAL_MS` | Scanner interval. Default 30000. |
 | `TRON_LOOKBACK_MS` | First-run window. Default 24h — see the cron note in §18.5. |
-| `DEPOSIT_ADDRESS_IDLE_RELEASE_MS` | Address with no deposit stays assigned. Default 10 min. |
-| `DEPOSIT_ADDRESS_SETTLED_RELEASE_MS` | Release delay after the last settled deposit. Default 1h. |
-| `DEPOSIT_ADDRESS_QUARANTINE_MS` | Released address withheld from a *different* account. Default 24h. **Lowering this trades safety for capacity; add addresses instead.** |
-| `CRON_SECRET` | Authorises every `/api/cron/*` route. Unset means all four refuse. |
+| `CRON_SECRET` | Authorises every `/api/cron/*` route. Unset means all refuse. |
 
-Leaving the contract and address unset disables the integration.
+Leaving `TRON_USDT_CONTRACT` unset disables the integration. With the contract
+set but no address saved and none in the environment, customers are told
+deposits are unavailable.
 
 ### 18.7 End-to-end workflow
 
@@ -1528,7 +1598,7 @@ on mainnet** except the funds are real.
 ```bash
 npm run tron:inspect          # read the chain, last 24h (platform address only)
 npm run tron:inspect -- 336   # …looking back two weeks
-npm run tron:scan             # one pass, scans the whole pool (§18.8)
+npm run tron:scan             # one pass over every watched address (§18.8)
 npm run tron:scan -- --watch  # poll continuously
 npm run tron:scan -- --dry    # read and report, write nothing
 ```
@@ -1539,9 +1609,10 @@ makes it a `confirmed`, **unassigned** deposit → `/admin/deposits` → **Assig
 the balance rises, a ledger entry cites the tx hash, the audit log records who
 assigned it.
 
-Through a real user's own pool address this credits automatically with no operator
-step: sign in, **Add funds → USDT (TRC-20)**, send, and watch — the deposit screen
-runs a pass itself every five seconds while open (§18.5).
+Through a deposit request this credits automatically with no operator step: sign
+in, **Add funds**, enter an amount, send **exactly** the quoted amount, then paste
+the transaction hash (or just wait — the screen asks for a pass every minute
+while open, and the cron finds it regardless).
 
 **Check the lookback before concluding anything.** `tron:inspect` defaults to 24
 hours and passes it as `min_timestamp`, so an older transfer is simply not in the
@@ -1553,96 +1624,53 @@ was chased on the strength of that: eleven days old, on-chain, and already in th
 instrumented, so it writes `pipeline_events` and opens the runtime pool. It closes
 it explicitly on exit.
 
-### 18.8 The deposit-address pool
+### 18.8 The retired per-user address pool (history only)
 
-`deposit_addresses` maps one blockchain address to at most one user at a time —
-what makes §18.4's automatic branch possible.
+Nanotron used to hand each customer an address from a pool
+(`deposit_addresses`, `deposit_address_assignments`, a sweep, a quarantine, a
+release cron). **It was removed on 2026-09-27 in favour of one address + deposit
+requests (§18.4).** No code allocates, assigns, releases or retires an address
+any more.
 
-**It is a pool, not one address per signup.** `getOrCreateDepositAddress` hands a
-user their existing assignment, or claims one `available` row and assigns it —
-never the other way around. Sized by `TRON_DEPOSIT_POOL_ADDRESSES`;
-`TRON_PLATFORM_DEPOSIT_ADDRESS` is always pool member zero, so this works with the
-one address every deployment already has and grows by adding addresses to the env
-var, not by writing code.
+**The two tables are kept, deliberately.** They are the record of which customer
+was shown which address when, and historical deposits were attributed through
+them — evidence, not configuration. Nothing writes them. **Do not drop them**
+without first deciding how those attributions stay answerable.
 
-**An address IS released automatically, and what makes that safe is not a timer.**
-Three mechanisms, all needed together:
+Their addresses stay on the scanner's watch list (`listWatchedAddresses`: the
+active address, the environment's, every address a request was quoted, every
+address with a scan cursor, and every legacy pool row), because a stray transfer
+to an address that stopped being advertised is still money. It is recorded
+unattributed with reason `legacy_address` — never auto-credited to the former
+holder.
 
-1. **`deposit_address_assignments`** — an append-only record of who held which
-   address between when and when, so attribution can no longer be moved by
-   releasing an address.
-2. **A transfer in a gap credits nobody.** If no interval covers the instant, the
-   deposit is recorded unattributed and an operator assigns it.
-3. **`quarantine_until`** — a released address is withheld from any *other* account
-   for `DEPOSIT_ADDRESS_QUARANTINE_MS`. The previous holder may take it straight
-   back, which carries no attribution risk and is the common case; `last_user_id`
-   makes that preference possible.
+**Why there is no address derivation — unchanged.** BIP-44 derivation needs an
+xpub generated by the operator with offline tooling; the mnemonic, seed, xprv and
+any private key must never reach this application, the browser, the database,
+logs, API responses **or the coding assistant building the feature**. Every
+address here is one an operator produced and pasted. Sweeping funds would still
+need a signing key that is never this application's.
 
-`sweepDepositAddresses()` releases an address with **no deposit at all** after
-`IDLE_RELEASE_MS`, or — once every deposit against it is terminal — after
-`SETTLED_RELEASE_MS` from the *last* deposit. The windows live in
-`deposit-address-policy.ts` and nowhere else.
+### 18.9 Deposit configuration in the CRM
 
-**The pre-existing refusal is untouched and is checked first.** A `pending`,
-`confirming` or unattributed `confirmed` deposit blocks release at **any age**, for
-the sweep and an operator alike, through one shared function. **There is a test
-named for that ordering.**
+`/admin/deposits/configuration`: network, asset, the **active address** and its
+source — `deposit_settings` (saved here) or `TRON_PLATFORM_DEPOSIT_ADDRESS`
+(the default until something is saved, which is why deploying this changed no
+customer-facing address) — last updated/by, and the audit history.
 
-**An operator's authority is not subject to the clock.** The windows govern the
-*sweep*; `releaseDepositAddress` refuses only on unresolved deposits, so an
-operator may release a fresh assignment.
-
-**Three triggers, because one scheduler is not guaranteed.**
-`/api/cron/release-deposit-addresses` is primary; the tail of
-`/api/cron/scan-deposits` sweeps too; and `getOrCreateDepositAddress` sweeps **on
-pool exhaustion**, making the pool self-healing at the moment capacity is needed
-even with no scheduler at all. A missed run is a delay and never a loss.
-
-**Concurrency.** Two requests for the same user's first-ever address are serialised
-by a transaction-scoped `pg_advisory_xact_lock` — the one race a database
-constraint alone does not close, because both requests correctly observe "no
-assignment exists yet". Claiming *which* row is `SELECT … FOR UPDATE SKIP LOCKED`.
-
-**Why there is no real address derivation here — a key-custody decision, not an
-oversight.** BIP-44 derivation requires an account-level extended *public* key (an
-xpub) generated by the operator with their own trusted, offline tooling; the
-mnemonic, seed, xprv and any private key must never reach this application, the
-browser, the database, logs, API responses **or the coding assistant building the
-feature**. Fabricating an xpub inside a coding session would be exactly the
-insecure-key-material problem that constraint exists to prevent.
-
-So every pool address is **configured**: the operator generates it with their own
-wallet tooling, and only the address string ever reaches this codebase.
-`derivation_index` exists for the day an xpub does; it is `null` on every row
-today.
-
-**Sweeping funds off pool addresses would still need** (out of scope for the same
-reason): a signing key — never this application's — with narrow, auditable
-authority; a TRX/energy/bandwidth funding policy, since every sweep is itself a
-transaction; a minimum-sweep threshold, so a $2 deposit does not spend $3
-consolidating itself; and a decision on whether a provider handles it.
-
-### 18.9 Managing the pool from the CRM
-
-`/admin/deposits/addresses`. `deposits` permission, `manage` for every mutation,
-each through the existing service and audited inside its own transaction.
-
-- **Add** — validates the base58 **checksum** server-side before a row exists: a
-  mistyped address still looks like an address, and one in this table is somewhere
-  a customer sends real USDT. The network is not a parameter — it is whatever
-  `TRON_NETWORK` this deployment scans. A duplicate is reported as already
-  present, not as an error.
-- **Release / retire** — including the refusal when any deposit against the address
-  is unresolved. The screen shows that count so an operator sees *why* a control is
-  unavailable.
-- **Scanner coverage is automatic**: `listWatchedAddresses` selects every row for
-  the chain and network regardless of status.
+- Changing it is `setDepositAddressAction` → `requirePermission("deposits")`
+  (`manage`) → `setDepositAddress`, which **validates the base58 checksum
+  server-side** and refuses the token contract, then upserts and writes a
+  `deposit_address_configured` audit entry naming the old and new address in the
+  same transaction. A reason is required.
+- A request copies the address onto its own row at creation, so a change never
+  redirects a request already quoted; the scanner keeps watching the old one.
+- **The client never supplies the address.** The deposit screen reads it
+  server-side (`getActiveDepositAddress`); it is not in any bundle.
 
 **Two things this screen must never become.** Not an environment editor —
 `TRON_NETWORK`, the grid URL, the API key and `CRON_SECRET` are deployment
-configuration and no screen reads or writes them. And it never *generates* an
-address: nothing here holds a private key, seed or xpub (§18.8), so a generated
-address would be one nobody could ever sweep.
+configuration. And it never *generates* an address (§18.8).
 
 ---
 
@@ -1764,6 +1792,61 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY    # public by design, RLS-scoped
 row-level security, so a copy in the browser is a copy of the database. Privileged
 work runs server-side over `DATABASE_URL`, a separate credential.
 
+### 19.7 Customer phone sign-in (Firebase)
+
+§19.1–19.6 describe the Supabase path, which is now **operators plus legacy
+email customers**. Customers sign in at `/login` with a mobile number and an SMS
+code:
+
+```
+ browser: Firebase signInWithPhoneNumber (invisible reCAPTCHA) → confirm(code)
+          → ID token (in memory only: inMemoryPersistence)
+ server:  completePhoneSignInAction(idToken)
+          verifyPhoneIdToken: signature, project (public id only — no key),
+                              sign_in_provider = phone, auth_time < 5 min
+          → normalise phone (+91 only) → ensureAccountForFirebasePrincipal
+          → issueCustomerSession: HMAC-signed httpOnly `nanotron-session`
+            {firebase uid, users.session_epoch, exp ≤ 14 days}
+ browser: signOut() of the in-memory Firebase user; the cookie is the session
+```
+
+- **No Firebase service-account key exists in this deployment.** Verifying an
+  ID token needs only the project id; minting Firebase session cookies would
+  need a key that can impersonate any user, so the server issues its own
+  session instead, signed with `CUSTOMER_SESSION_SECRET`
+  (`customer-session-token.ts`, tested). **Do not reintroduce
+  `createSessionCookie` / a service account to "simplify" this.**
+- **`getCustomerPrincipal()`** (`server/auth/customer-session.ts`) is the one
+  customer identity question: a valid session cookie first (verified locally,
+  no network), else the legacy Supabase session. `getAuthenticatedAccount()`
+  resolves through `users.firebase_uid` or `users.auth_user_id` accordingly,
+  and **refuses a phone session whose epoch is not the account's current
+  `session_epoch`** — on the same read, so revocation costs no round trip.
+- **The mapping rules are `server/auth/phone-identity.ts`, pure and tested.** A
+  uid reaches only the account it was linked to; **nothing is ever linked by the
+  unverified `users.phone`**; a verified number or uid already on another account
+  is *refused*, never merged. `users.phone_e164` (unique) is written only from a
+  verified token's `phone_number`; `users.firebase_uid` is unique; neither is the
+  account key.
+- **Existing customers** sign in once at `/login/email`; the app gate sends an
+  email session whose account has no `firebase_uid` to `/link-phone` (only while
+  phone sign-in is live), where `linkPhoneAction` attaches the verified number
+  to *that* account. With phone sign-in live, email sign-in creates no accounts.
+- **`isPhoneSignInLive()`** needs the web config, the project id and
+  `CUSTOMER_SESSION_SECRET`.
+  Without them `/login` says so and email sign-in keeps working — no half-flow.
+- Abuse: Firebase's per-number limits and reCAPTCHA; the Firebase console's SMS
+  region policy (India only); a per-address window on the two actions
+  (`server/rate-limit.ts`, process-local — FUTURE_TASKS for multi-instance);
+  a client resend cooldown and five-wrong-codes cap (courtesies). Messages are
+  fixed sentences ("Invalid or expired OTP.") — no Firebase error text, and no
+  difference between a new and an existing number before the code is verified.
+- **Sign-out** advances `users.session_epoch` and clears the cookie: every
+  phone session for the account ends on every device on its next request. The
+  CRM's *log out all devices* does the same (and says a legacy email session
+  is not invalidated). Rotating the secret signs every customer out.
+- Operators are unchanged (§20). Setup: `docs/rollout-phone-s3-deposits-pwa.md` §1.
+
 ---
 
 ## 20. Operator authentication
@@ -1815,7 +1898,7 @@ was the whole problem.
   invalidated. **Do not change that message without changing the behaviour.**
 - **Operator credential provisioning from the CRM** — linking a Supabase credential
   is a separate step (`npm run db:dev-accounts` in development).
-- Phone/SMS codes, and username sign-in.
+- Username sign-in. (Customers now sign in by phone — §19.7.)
 
 ---
 
@@ -1950,7 +2033,7 @@ for weeks. Every level goes through `redact()`.
 
 ## 23. What is deliberately still missing
 
-- **Server-side session revocation** (§19.6, §20.3).
+- **Server-side session revocation for operators and legacy email sessions** (§19.6, §20.3). Phone sessions are revocable (§19.7).
 - **Real withdrawals** — requests hold a balance and create a record an operator
   works; nothing pays out (§17.4).
 - **Outbound blockchain** — no signing, no key custody, no sending (§18.1).
@@ -1997,14 +2080,14 @@ for weeks. Every level goes through `redact()`.
   earning period, or on maturity, is a product decision and a change to where
   `release_at` is computed — not a change to the release job, which only ever asks
   whether the stamped date has passed.
-- **A deposit-address pool with more than one address in it.** The mechanism works
-  (§18.8); what is missing is *addresses* — `TRON_DEPOSIT_POOL_ADDRESSES` is unset,
-  so the pool holds only `TRON_PLATFORM_DEPOSIT_ADDRESS`. The sweep keeps a
-  one-address pool *usable* but cannot make one address serve two people at once,
-  and the 24h quarantine means a released address is not immediately available to
-  somebody else. **Growing the pool is configuration rather than code.**
+- **Deposit screenshot storage.** The deposit screen has an optional
+  screenshot field that previews on the device and is **never uploaded or
+  stored** — it says so on screen. The transaction hash is the proof; storing
+  evidence would reuse the S3 adapter (§16.1c) with its own prefix.
+- **Migrating Supabase-stored KYC objects to S3** (§16.1c) — the rows say where
+  each lives, so old documents stay openable meanwhile.
 - **Operator credential provisioning from the CRM** (§20.3).
-- **Phone/SMS codes; username sign-in.**
+- **Username sign-in.**
 - **The CRM dashboard's headline metrics and chart series**, still on
   `@/data/admin/metrics` (§16.5). Its recent-activity panels and every list screen
   read the database.
@@ -2032,3 +2115,29 @@ A reseed also clears `users`, so it **unlinks every `auth_user_id`**. Real Supab
 credentials survive (they live in `auth.users`, untouched) but their application
 accounts do not; the next sign-in creates a fresh, empty one, and
 `npm run db:dev-accounts` re-links the development operator.
+
+---
+
+## 25. The installable app (PWA)
+
+The customer app installs to a home screen; the CRM is not offered for install.
+
+- `app/manifest.ts` — standalone, start `/`, icons generated by
+  `lib/pwa-icon.tsx` from the sidebar's brand mark (`/pwa-icon/*`,
+  `app/apple-icon.tsx`). No binary icons are committed.
+- **`public/sw.js` caches hashed static assets and `/offline.html`, and nothing
+  else.** Navigations are network-only with the static offline page on a
+  network *failure*; server actions, RSC payloads, `/api/*`, the CRM, auth and
+  third parties are not intercepted at all. **Never add a page, an RSC payload or
+  an API response to it** — a cached page is a cached balance shown as current.
+  Registered in production builds only (`ServiceWorkerRegistration`); `/sw.js`
+  is served `no-cache` (`next.config.ts`) and excluded from the middleware.
+- `InstallPrompt` (in `AppShell`) — the policy is `lib/pwa-install.ts`, tested:
+  third session onward, 20 s in, never when standalone, "Not now" for 14 days,
+  three dismissals and never again. Chromium gets the native prompt; iPhone/iPad
+  get Share → Add to Home Screen → Add; other browsers get nothing. State is
+  per-device `localStorage`, every access guarded.
+- The session is an httpOnly cookie, so sign-in survives closing and reopening
+  the installed app. iOS gives a home-screen app its own cookie jar — signing in
+  once inside it is expected, not a bug.
+

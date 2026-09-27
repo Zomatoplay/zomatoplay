@@ -10,6 +10,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import type { AdminDepositStatus } from "@/types/admin";
 import type {
+  DepositRequestStatus,
   InvestmentStatus,
   KycStatus,
   PlanStatus,
@@ -71,6 +72,21 @@ const depositDescriptors: Record<AdminDepositStatus, Descriptor> = {
   ignored: { label: "Not credited", variant: "outline", icon: AlertCircle },
 };
 
+/**
+ * "Credited" only ever describes a request the server has credited after
+ * verifying the transfer on-chain — there is no "payment successful" state
+ * before that.
+ */
+const depositRequestDescriptors: Record<DepositRequestStatus, Descriptor> = {
+  awaiting_payment: { label: "Waiting for payment", variant: "warning", icon: Clock },
+  verifying: { label: "Waiting for verification", variant: "info", icon: Loader2 },
+  credited: { label: "Credited", variant: "positive", icon: CheckCircle2 },
+  needs_review: { label: "Under review", variant: "info", icon: AlertCircle },
+  expired: { label: "Expired", variant: "outline", icon: Clock },
+  rejected: { label: "Not credited", variant: "negative", icon: XCircle },
+  cancelled: { label: "Cancelled", variant: "outline", icon: XCircle },
+};
+
 const referralDescriptors: Record<ReferralStatus, Descriptor> = {
   active: { label: "Active", variant: "positive" },
   registered: { label: "Registered", variant: "info" },
@@ -83,7 +99,8 @@ export type StatusKind =
   | { kind: "plan"; status: PlanStatus }
   | { kind: "kyc"; status: KycStatus }
   | { kind: "referral"; status: ReferralStatus }
-  | { kind: "deposit"; status: AdminDepositStatus };
+  | { kind: "deposit"; status: AdminDepositStatus }
+  | { kind: "depositRequest"; status: DepositRequestStatus };
 
 function resolve(props: StatusKind): Descriptor {
   switch (props.kind) {
@@ -99,6 +116,8 @@ function resolve(props: StatusKind): Descriptor {
       return referralDescriptors[props.status];
     case "deposit":
       return depositDescriptors[props.status];
+    case "depositRequest":
+      return depositRequestDescriptors[props.status];
   }
 }
 

@@ -19,6 +19,7 @@ export const currentUser: UserProfile = {
   fullName: "Aarav Sharma",
   email: "aarav.sharma@example.com",
   phone: "+91 98••• ••210",
+  phoneVerified: false,
   avatarUrl: null,
   country: "India",
   memberSince: "2025-11-14T00:00:00.000Z",

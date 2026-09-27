@@ -377,7 +377,7 @@ export async function searchUsersForPicker(
     .orderBy(asc(schema.users.fullName))
     .limit(limit);
 
-  return rows;
+  return rows.map((row) => ({ ...row, email: row.email ?? "" }));
 }
 
 /**

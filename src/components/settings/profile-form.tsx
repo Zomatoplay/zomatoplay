@@ -89,36 +89,62 @@ export function ProfileForm() {
           </p>
         </div>
 
-        <div className="space-y-1.5">
-          <Label htmlFor="profile-email">Email</Label>
-          <div className="relative">
-            <Input
-              id="profile-email"
-              type="email"
-              value={profile.email}
-              readOnly
-              disabled
-              className="pr-11"
-            />
-            <Lock
-              className="absolute right-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden
-            />
+        {profile.email ? (
+          <div className="space-y-1.5">
+            <Label htmlFor="profile-email">Email</Label>
+            <div className="relative">
+              <Input
+                id="profile-email"
+                type="email"
+                value={profile.email}
+                readOnly
+                disabled
+                className="pr-11"
+              />
+              <Lock
+                className="absolute right-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {profile.phoneVerified
+                ? "Kept on file from your earlier email sign-in. It cannot be changed here."
+                : "Your email is your sign-in and cannot be changed here."}
+            </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Your email is your sign-in and cannot be changed here.
-          </p>
-        </div>
+        ) : null}
 
         <div className="space-y-1.5">
-          <Label htmlFor="profile-phone">Phone</Label>
-          <Input
-            id="profile-phone"
-            type="tel"
-            autoComplete="tel"
-            value={phone}
-            onChange={(event) => setPhone(event.target.value)}
-          />
+          <Label htmlFor="profile-phone">{profile.phoneVerified ? "Mobile number" : "Phone"}</Label>
+          {profile.phoneVerified ? (
+            <>
+              <div className="relative">
+                <Input
+                  id="profile-phone"
+                  type="tel"
+                  value={profile.phone}
+                  readOnly
+                  disabled
+                  className="pr-11 tabular"
+                />
+                <Lock
+                  className="absolute right-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                  aria-hidden
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Verified by OTP — this is how you sign in. Contact support to change it.
+              </p>
+            </>
+          ) : (
+            <Input
+              id="profile-phone"
+              type="tel"
+              autoComplete="tel"
+              value={phone}
+              onChange={(event) => setPhone(event.target.value)}
+            />
+          )}
         </div>
 
         <div className="space-y-1.5">

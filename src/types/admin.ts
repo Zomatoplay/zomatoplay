@@ -162,7 +162,12 @@ export type KycReviewStatus =
   | "rejected"
   | "resubmission_requested";
 
-export type KycDocumentType = "passport" | "national_id" | "driving_licence";
+export type KycDocumentType =
+  | "passport"
+  | "national_id"
+  | "driving_licence"
+  | "aadhaar"
+  | "pan";
 
 export interface KycDocument {
   id: string;
@@ -275,6 +280,29 @@ export interface AdminDeposit {
   status: AdminDepositStatus;
   verification: DepositVerification;
   failureReason?: string;
+  /**
+   * Why a confirmed transfer could not be matched to a deposit request —
+   * already a sentence for the operator. Absent once attributed.
+   */
+  unmatchedReason?: string;
+  /** The deposit request that was credited by this transfer, if any. */
+  depositRequestId?: string;
+  /**
+   * Customers who submitted this transaction hash against one of their own
+   * requests. A claim is evidence for the operator, never proof of ownership —
+   * anyone can copy a hash from a public explorer.
+   */
+  claims?: AdminDepositClaim[];
+}
+
+export interface AdminDepositClaim {
+  requestId: string;
+  userId: string;
+  userName: string;
+  userDisplayId: string;
+  /** What that request asked them to send, for comparison with the chain. */
+  expectedAmountUsdt: number;
+  requestCreatedAt: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -448,58 +476,30 @@ export interface AdminCommissionEntry {
   releasedAt: string | null;
 }
 
-/** Mirrors the `deposit_address_status` enum in the schema. */
-export type DepositAddressStatus = "available" | "assigned" | "retired";
-
 /**
- * The deposit-address pool, as an operator needs to see it.
+ * The single configured deposit address, as the CRM shows it.
  *
- * `unresolvedDeposits` is the number that decides whether an address can be
- * released or retired — the service refuses either while any deposit against
- * it is `pending`, `confirming` or an unassigned `confirmed`. Counted here so
- * the screen can say *why* a control is unavailable instead of only disabling
- * it, which is the difference between a UI an operator trusts and one they
- * file a ticket about.
+ * `source` says where the active value comes from: an operator's saved
+ * configuration, or — until one is saved — the deployment's
+ * `TRON_PLATFORM_DEPOSIT_ADDRESS`. Null `address` means deposits cannot be
+ * requested at all.
  */
-export interface AdminDepositAddress {
-  id: string;
-  address: string;
-  chain: string;
+export interface AdminDepositConfiguration {
   network: string;
-  asset: string;
-  status: DepositAddressStatus;
-  assignedUserId: string | null;
-  assignedUserName: string | null;
-  assignedUserDisplayId: string | null;
-  assignedAt: string | null;
-  releasedAt: string | null;
-  createdAt: string;
-  depositCount: number;
-  unresolvedDeposits: number;
-  totalCreditedUsdt: number;
-  /** ISO. Until this instant only the previous holder may claim the address. */
-  quarantineUntil: string | null;
-  /** Who held it last, once `assignedUserId` has been cleared by a release. */
-  lastUserName: string | null;
-  /**
-   * Whether an **operator** may release this address right now.
-   *
-   * This is the guard the write path actually enforces, and nothing else: an
-   * address with no unresolved deposit activity may be released by hand at any
-   * age. The idle and settle windows govern the *automatic* sweep, not an
-   * operator's authority — a clock is not a reason to refuse a person who has
-   * looked at the address and decided.
-   */
-  releasable: boolean;
-  /** Why an operator cannot release it. Null when they can. */
-  releaseBlockedBy: string | null;
-  /**
-   * Whether the scheduled sweep would release it on its next pass, and why
-   * not. Informational: it explains why an idle-looking address is still
-   * assigned, which is otherwise indistinguishable from a broken sweep.
-   */
-  autoReleaseEligible: boolean;
-  autoReleaseBlockedBy: string | null;
+  networkLabel: string;
+  asset: "USDT";
+  standard: "TRC-20";
+  address: string | null;
+  source: "configured" | "environment" | "none";
+  updatedAt: string | null;
+  updatedBy: string | null;
+  /** Recent changes, from the audit log. */
+  history: {
+    id: string;
+    at: string;
+    actor: string;
+    details: string;
+  }[];
 }
 
 /**
@@ -592,6 +592,7 @@ export type AuditAction =
   | "deposit_address_added"
   | "deposit_address_released"
   | "deposit_address_retired"
+  | "deposit_address_configured"
   | "withdrawal_approved"
   | "withdrawal_rejected"
   | "withdrawal_marked_paid"

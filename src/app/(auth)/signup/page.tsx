@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { SignUpForm } from "@/components/auth/sign-up-form";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { getAuthenticatedAccount } from "@/server/auth/account";
+import { isPhoneSignInLive } from "@/server/auth/phone-sign-in";
 
 export const metadata: Metadata = {
   title: "Create account",
@@ -16,6 +17,17 @@ export default async function SignUpPage({
   searchParams: Promise<{ next?: string; ref?: string }>;
 }) {
   const { next, ref } = await searchParams;
+
+  // New customers register by mobile number. The middleware has already
+  // captured any `ref` code into its cookie, and passing it along keeps the
+  // link intact either way.
+  if (isPhoneSignInLive()) {
+    const params = new URLSearchParams();
+    if (next) params.set("next", next);
+    if (ref) params.set("ref", ref);
+    const query = params.toString();
+    redirect(query ? `/login?${query}` : "/login");
+  }
 
   const account = await getAuthenticatedAccount();
   if (account) {

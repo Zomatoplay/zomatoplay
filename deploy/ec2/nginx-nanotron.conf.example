@@ -1,0 +1,39 @@
+# Nginx in front of the Next.js process on EC2 — an EXAMPLE to adapt, not a
+# drop-in. TLS (e.g. certbot) is assumed to be configured on this server block.
+#
+# Two things the application depends on:
+#  1. X-Real-IP / X-Forwarded-For are set here, and the Node process is reachable
+#     ONLY through Nginx (bind it to 127.0.0.1). The sign-in rate limiter trusts
+#     these headers (src/server/rate-limit.ts).
+#  2. /sw.js is never cached by Nginx: a stale service worker outlives the
+#     deploy that replaced it. The app already sends no-cache for it.
+
+server {
+    listen 443 ssl http2;
+    server_name example.com;           # your domain
+
+    client_max_body_size 2m;           # KYC files go browser → S3, never through here
+
+    location = /sw.js {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+    }
+
+    location /_next/static/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_read_timeout 70s;        # cron routes may run close to 60s
+    }
+}

@@ -12,7 +12,7 @@ import { scanDeposits, ScannerUnavailableError, type ScanSummary } from "./scann
  * and on the Hobby plan that fires once a day (§18.5). Watching a transfer
  * arrive therefore meant typing `npm run tron:scan` and reloading the page.
  * The deposit screen now asks for a pass itself while somebody is sitting on
- * it — see `checkForDepositsAction`.
+ * it — see `checkDepositRequestAction`.
  *
  * **This is a user-active-page mechanism for testing, not the scheduler.** It
  * only runs while a deposit screen is open, which is precisely when nobody
@@ -48,7 +48,7 @@ import { scanDeposits, ScannerUnavailableError, type ScanSummary } from "./scann
 /**
  * The server-side backstop, sized against the client's *scan* cadence.
  *
- * `DepositWatcher` polls the database every 5 s but asks for a chain scan only
+ * `DepositFlow` polls the database every 5 s but asks for a chain scan only
  * every 60 s (see its `SCAN_INTERVAL_MS`), because nothing can be credited
  * before its block solidifies — ~57 s on TRON. This floor therefore has room
  * to be meaningful: at 15 s one instance cannot exceed four passes a minute no

@@ -1,3 +1,4 @@
+import { InstallPrompt } from "@/components/navigation/install-prompt";
 import { BottomNavigation } from "@/components/navigation/bottom-navigation";
 import { DesktopSidebar } from "@/components/navigation/desktop-sidebar";
 import { cn } from "@/lib/utils";
@@ -17,6 +18,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <DesktopSidebar />
       <div className="lg:pl-64">{children}</div>
       <BottomNavigation />
+      {/* Customer app only — the CRM is not an installable product. */}
+      <InstallPrompt />
     </div>
   );
 }

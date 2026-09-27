@@ -3,10 +3,12 @@
 import { revalidate } from "@/server/revalidate";
 
 import { getAuthenticatedAccount } from "@/server/auth/account";
+import { KycStorageError } from "@/server/storage/kyc-storage";
 import {
-  describeOwnUpload,
-  KycStorageError,
-} from "@/server/storage/kyc-storage";
+  issueKycUploadTarget,
+  kycUploadModeFor,
+  verifyOwnKycUpload,
+} from "@/server/storage/kyc-document-store";
 import {
   currentCorrelationId,
   describeError,
@@ -71,7 +73,7 @@ export interface KycSubmissionInput {
   dateOfBirth: string;
   nationality?: string;
   address?: string;
-  documentType: "passport" | "national_id" | "driving_licence";
+  documentType: "passport" | "national_id" | "driving_licence" | "aadhaar" | "pan";
   /** The last four characters of the document number. Never the whole thing. */
   documentNumberLast4: string;
 
@@ -101,7 +103,7 @@ export interface KycSubmissionInput {
 }
 
 /** The document types the schema's enum accepts. Anything else is refused. */
-const DOCUMENT_TYPES = new Set(["passport", "national_id", "driving_licence"]);
+const DOCUMENT_TYPES = new Set(["passport", "national_id", "driving_licence", "aadhaar", "pan"]);
 
 /** 10 MB, the limit the flow shows the person. Re-checked because the client's check is a courtesy. */
 const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
@@ -218,10 +220,10 @@ async function resolveKycSubmission(
   try {
     const [documentObject, selfieObject] = await Promise.all([
       hasDocument
-        ? describeOwnUpload(account.authUserId, input.documentPath as string)
+        ? verifyOwnKycUpload(account, input.documentPath as string)
         : Promise.resolve(null),
       hasSelfie
-        ? describeOwnUpload(account.authUserId, input.selfiePath as string)
+        ? verifyOwnKycUpload(account, input.selfiePath as string)
         : Promise.resolve(null),
     ]);
 
@@ -231,6 +233,7 @@ async function resolveKycSubmission(
         path: documentObject.path,
         byteSize: documentObject.byteSize,
         mimeType: documentObject.contentType,
+        storageBackend: documentObject.backend,
       };
     }
     if (selfieObject) {
@@ -239,6 +242,7 @@ async function resolveKycSubmission(
         path: selfieObject.path,
         byteSize: selfieObject.byteSize,
         mimeType: selfieObject.contentType,
+        storageBackend: selfieObject.backend,
       };
     }
   } catch (error) {
@@ -375,4 +379,54 @@ export async function startKycAction(): Promise<KycActionResult> {
       return { ok: true, message: "Started." };
     },
   );
+}
+
+/**
+ * One presigned S3 upload slot, for one file the person has just chosen.
+ *
+ * The account comes from the session and the key is generated server-side
+ * (`kyc/{userId}/{kind}/{uuid}`), so the browser cannot aim an upload at
+ * another account's prefix. The type and exact size are signed into the URL;
+ * S3 refuses a body that differs. Nothing is recorded by this call — a slot
+ * that is never used leaves at most an orphan object the submission never
+ * claims.
+ */
+export interface KycUploadTargetResult {
+  ok: boolean;
+  message?: string;
+  key?: string;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+export async function createKycUploadTargetAction(input: {
+  kind: "document" | "selfie";
+  contentType: string;
+  byteSize: number;
+}): Promise<KycUploadTargetResult> {
+  const account = await getAuthenticatedAccount();
+  if (!account) return { ok: false, message: "Not signed in." };
+  if (input.kind !== "document" && input.kind !== "selfie") {
+    return { ok: false, message: "Unknown upload." };
+  }
+  if (kycUploadModeFor(account) !== "s3") {
+    return { ok: false, message: "Document upload is not available right now." };
+  }
+
+  try {
+    const target = await issueKycUploadTarget(account, {
+      kind: input.kind,
+      contentType: String(input.contentType),
+      byteSize: Number(input.byteSize),
+    });
+    return { ok: true, key: target.key, url: target.url, headers: target.headers };
+  } catch (error) {
+    return {
+      ok: false,
+      message:
+        error instanceof KycStorageError
+          ? error.message
+          : "Could not prepare the upload. Try again.",
+    };
+  }
 }

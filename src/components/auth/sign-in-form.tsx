@@ -44,11 +44,17 @@ export function SignInForm({
   configured,
   next,
   initialError,
+  phoneSignInLive = false,
 }: {
   configured: boolean;
   next: string;
   /** Surfaced by `/auth/callback` when an email link could not be used. */
   initialError?: string;
+  /**
+   * With phone sign-in live, this form exists only for customers who already
+   * have an email account — so it offers the phone route, not "create account".
+   */
+  phoneSignInLive?: boolean;
 }) {
   const router = useRouter();
   const [method, setMethod] = useState<Method>("password");
@@ -364,11 +370,19 @@ export function SignInForm({
           )}
         </Button>
 
-        <Button asChild variant="ghost" size="lg" className="w-full">
-          <Link href={`/signup?next=${encodeURIComponent(next)}`}>
-            Create account
-          </Link>
-        </Button>
+        {phoneSignInLive ? (
+          <Button asChild variant="ghost" size="lg" className="w-full">
+            <Link href={`/login?next=${encodeURIComponent(next)}`}>
+              Sign in with mobile number
+            </Link>
+          </Button>
+        ) : (
+          <Button asChild variant="ghost" size="lg" className="w-full">
+            <Link href={`/signup?next=${encodeURIComponent(next)}`}>
+              Create account
+            </Link>
+          </Button>
+        )}
       </div>
 
       <AuthFooterLink

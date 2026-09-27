@@ -83,6 +83,13 @@ export const kycDocuments = pgTable(
     fileName: text("file_name").notNull(),
     /** Object key in the private bucket. Null for pre-storage rows. */
     storagePath: text("storage_path"),
+    /**
+     * Which store `storage_path` is a key in: `supabase` (the original private
+     * bucket, every row written before S3) or `s3` (`@/server/storage`).
+     * Defaulted for the existing rows, so a reviewer can still open a document
+     * uploaded before the move — the key alone cannot say where it lives.
+     */
+    storageBackend: text("storage_backend").notNull().default("supabase"),
     /** As Storage recorded it, not as the browser claimed. */
     contentType: text("content_type"),
     byteSize: integer("byte_size"),

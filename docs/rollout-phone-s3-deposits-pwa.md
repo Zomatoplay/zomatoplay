@@ -12,16 +12,29 @@ console, not in this repository.**
 1. ☐ MANUAL — snapshot the production database (RDS snapshot, or a Supabase
    backup if still on Supabase). The migration is additive, but a snapshot is
    the rollback plan.
-2. Deploy the code with the new environment variables **unset** — behaviour is
-   unchanged: email sign-in keeps working, KYC upload follows the existing
+2. Deploy the code. Customer email sign-in is **off** unless
+   `LEGACY_EMAIL_SIGN_IN=true` (§1.3 — decide first whether this database holds
+   customers who still need to link a number). KYC upload follows the existing
    store, and the deposit address is still `TRON_PLATFORM_DEPOSIT_ADDRESS`.
-3. `npm run db:migrate` (migrations `0019_firebase_s3_deposit_requests`,
+   **Never set `DEV_TEST_*` on the server** (they do nothing in a production
+   build, but they do not belong there).
+3. **On the EC2 host** (RDS is in a private subnet; it is not reachable from a
+   laptop): `npm run db:verify` — READ-ONLY. It names the target (e.g. "AWS RDS
+   (ap-south-1), database nanotron"), lists the pending migrations, checks that
+   migration 0020's unique index can build, and prints aggregate counts. Save
+   the output. It exits 1 if something must be fixed first.
+   **`DATABASE_URL`: a `#`, `@` or `/` in the password must be percent-encoded**
+   (`#` → `%23`). Unencoded, dotenv cuts the value at `#` and every query fails
+   with "Could not verify operator access".
+4. `npm run db:migrate` (migrations `0019_firebase_s3_deposit_requests`,
    `0020_deposit_request_cancellation`, `0021_customer_session_epoch`).
    On **Supabase** also run `npm run db:secure` (closes PostgREST on the two new
    tables). On **RDS** skip `db:secure` — it configures Supabase-only features
    (PostgREST RLS, Storage buckets) that RDS does not have.
-4. Configure Firebase (§1), then S3 (§2). Each switches on independently.
-5. Install the EC2 crontab (§5). Remove the Vercel project's crons if the app no
+5. `npm run db:verify` again: 0 pending, and every count identical to step 3.
+6. Configure Firebase (§1), then S3 (§2). Each switches on independently.
+   Set the Telegram support link in **Admin → Settings → Customer support**.
+7. Install the EC2 crontab (§5). Remove the Vercel project's crons if the app no
    longer runs there.
 
 The migrations change no balance, no ledger row, no deposit, no user. They add
@@ -30,10 +43,10 @@ defaulted one (`session_epoch`, 0), one nullable `deposits` column, one
 defaulted `kyc_documents` column, two nullable `deposit_requests` columns, two
 unique indexes, and enum values; and drop `NOT NULL` on `users.email`.
 
-**Verify afterwards** — compare before/after: `select count(*) from users`,
-`select sum(available) from wallet_balances`, and the row counts of `deposits`,
-`transactions`, `investments`, `kyc_documents`, `referrals`. They must be
-identical. `npm run db:check` must report every table present.
+**Verify afterwards** — `npm run db:verify` before and after (steps 3 and 5)
+prints users, Σ available, deposits, transactions, investments, KYC,
+referrals, operators and more. They must be identical. `npm run db:check` must
+report every table present.
 
 ---
 
@@ -75,7 +88,7 @@ identical. `npm run db:check` must report every table present.
 | `FIREBASE_PROJECT_ID` | server, optional | pins the verifier; defaults to the public id |
 | `CUSTOMER_SESSION_SECRET` | **server secret** | signs session cookies; ≥ 32 chars |
 | `CUSTOMER_SESSION_DAYS` | server, optional | 1–14, default 14 |
-| `NEXT_PUBLIC_SUPPORT_TELEGRAM` | public, optional | Telegram support handle |
+| `LEGACY_EMAIL_SIGN_IN` | server, optional | `true` only during a link-your-number migration window (§1.3) |
 
 `NEXT_PUBLIC_*` values are inlined at **build** time: rebuild after changing them.
 
@@ -85,6 +98,10 @@ Existing accounts' phone numbers were typed on a form and never verified, so
 **no account is ever linked by its stored phone number** — a typo would hand
 one person's balance to the owner of the mistyped number.
 
+- **Only while `LEGACY_EMAIL_SIGN_IN=true`.** Off by default: customer-facing
+  email sign-in is removed. Before turning it off for good, check that nobody
+  still needs it: `select count(*) from users where auth_user_id is not null
+  and firebase_uid is null and status = 'active'` should be 0.
 - A customer who signed up by email signs in once at **/login/email**. The app
   then sends them to **/link-phone**, where they verify their mobile number by
   OTP. That number is attached to *the account their email session already
@@ -95,7 +112,11 @@ one person's balance to the owner of the mistyped number.
   automatically. An operator resolves it.
 - A new number that matches no account creates a **new, empty** account.
 - Once phone sign-in is live, email sign-in no longer creates accounts.
-- Operators are unchanged: they sign in at `/admin/login` with Supabase Auth.
+- Operators sign in at `/admin/login` with their work email and an emailed
+  one-time code (Supabase Auth; the password form remains as a secondary
+  option). **☐ MANUAL: confirm Supabase → Authentication → Emails → SMTP is a
+  production sender and the Magic Link template contains `{{ .Token }}`**, or
+  codes will not arrive (the built-in sender allows a few emails an hour).
 
 ---
 
@@ -237,9 +258,10 @@ already been processed"* (own request) or *"Transaction already processed"*
 **Screenshot**: an optional field previews an image on the device only. It is
 never uploaded or stored, and verification never depends on it.
 
-**Support**: unresolved outcomes show *Contact Support on Telegram*, from
-`NEXT_PUBLIC_SUPPORT_TELEGRAM` (the same handle Settings → Support uses).
-Unset, a fallback to the Help centre is shown instead of a broken link.
+**Support**: unresolved outcomes show *Contact Support on Telegram*, from the
+link an operator saves in Admin → Settings → Customer support (the same one
+Settings → Support and the Help centre use). Unset, a fallback to the Help
+centre is shown instead of a broken link.
 
 ### 3.2 Why a submitted hash cannot steal someone's deposit
 
@@ -319,7 +341,9 @@ shows the headers the app relies on (`X-Real-IP`, and no caching of `/sw.js`).
 
 - Firebase project, Blaze plan, authorised domains (add the production
   domain), SMS region policy, `CUSTOMER_SESSION_SECRET` (§1.1).
-- `NEXT_PUBLIC_SUPPORT_TELEGRAM` — the real support handle (not invented here).
+- The real Telegram support link, saved in Admin → Settings → Customer support
+  (not invented here).
+- Supabase SMTP for operator sign-in codes (§1.3).
 - S3 bucket, policy, CORS, instance role (§2).
 - EC2 crontab and Nginx (§5); DNS is untouched by this change.
 - Moving existing Supabase-stored KYC objects to S3 (FUTURE_TASKS).

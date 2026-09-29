@@ -29,7 +29,7 @@ import { KycStatusRow } from "@/components/settings/kyc-status-row";
 import { AccountActions } from "@/components/settings/logout-button";
 import { ProfileHeader } from "@/components/settings/profile-header";
 import { APP_NAME, SUPPORT_EMAIL } from "@/constants/app";
-import { telegramSupportUrl } from "@/lib/support";
+import { getSupportTelegramUrl } from "@/server/services/catalogue.service";
 
 export const metadata: Metadata = {
   title: "Settings",
@@ -138,7 +138,9 @@ export default function SettingsPage() {
           </ListGroup>
 
           <ListGroup title="Support">
-            <ContactSupportRow />
+            <Suspense fallback={<ContactSupportPlaceholder />}>
+              <ContactSupportRow />
+            </Suspense>
             <ListRow
               href="/settings/support"
               icon={LifeBuoy}
@@ -183,20 +185,26 @@ export default function SettingsPage() {
   );
 }
 
+/** Same row, same height, while the destination is read. */
+function ContactSupportPlaceholder() {
+  return <ListRow as="div" icon={Send} title="Contact support" description="Telegram" />;
+}
+
 /**
- * Support → Contact Support → Telegram, from the one configured handle
- * (`@/lib/support`). Unconfigured, the row says so instead of linking
- * somewhere that does not exist.
+ * Support → Contact Support → Telegram, from the destination an operator
+ * saved in Admin → Settings → Customer support (`getSupportTelegramUrl`, cached
+ * across requests with the catalogue). Unconfigured, the row says so instead
+ * of linking somewhere that does not exist.
  */
-function ContactSupportRow() {
-  const url = telegramSupportUrl();
+async function ContactSupportRow() {
+  const url = await getSupportTelegramUrl();
   if (!url) {
     return (
       <ListRow
         as="div"
         icon={Send}
         title="Contact support"
-        description={`Telegram support is not available yet. Email ${SUPPORT_EMAIL}.`}
+        description={`Telegram support is currently unavailable. Email ${SUPPORT_EMAIL}.`}
       />
     );
   }

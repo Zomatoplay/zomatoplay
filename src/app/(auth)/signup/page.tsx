@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { SignUpForm } from "@/components/auth/sign-up-form";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { getAuthenticatedAccount } from "@/server/auth/account";
-import { isPhoneSignInLive } from "@/server/auth/phone-sign-in";
+import { isLegacyEmailSignInEnabled, isPhoneSignInLive } from "@/server/auth/phone-sign-in";
 
 export const metadata: Metadata = {
   title: "Create account",
@@ -20,8 +20,9 @@ export default async function SignUpPage({
 
   // New customers register by mobile number. The middleware has already
   // captured any `ref` code into its cookie, and passing it along keeps the
-  // link intact either way.
-  if (isPhoneSignInLive()) {
+  // link intact either way. Email registration exists only while the legacy
+  // switch is on and phone sign-in is not live.
+  if (isPhoneSignInLive() || !isLegacyEmailSignInEnabled()) {
     const params = new URLSearchParams();
     if (next) params.set("next", next);
     if (ref) params.set("ref", ref);

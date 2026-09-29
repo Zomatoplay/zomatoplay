@@ -43,9 +43,10 @@ or a USDT trading interface. If a request implies any of these, stop and clarify
 ## 2. Current project scope
 
 - **Customers sign in with Firebase phone OTP** (§19.7); the old Supabase email
-  sign-in remains only so existing customers can link a verified number. No demo
-  account, no automatic sign-in (§19). **Operators authenticate with Supabase
-  Auth** (§20); `/admin` is closed without an operator session.
+  sign-in is switched off unless `LEGACY_EMAIL_SIGN_IN=true` (a migration window
+  for linking a verified number). No demo account, no automatic sign-in (§19).
+  **Operators authenticate with Supabase Auth — work email and an emailed
+  one-time code** (§20); `/admin` is closed without an operator session.
 - **Reads and writes both go to PostgreSQL, in both applications.** The client
   stores are read caches. Every mutation is a server action → service → one
   transaction → audit entry → revalidation.
@@ -54,6 +55,14 @@ or a USDT trading interface. If a request implies any of these, stop and clarify
   is credited automatically, by the scanner or by a customer's submitted
   transaction hash; everything else waits for an operator.
 - **Every mutation is traceable** via `pipeline_events` (§22).
+- **Customer support on Telegram is configured in the CRM**, not the
+  environment: Admin → Settings → Customer support →
+  `updateSupportTelegramAction` (`settings` / `manage`, audited), stored as a
+  bare username in `platform_settings.platform.supportTelegram`, read by
+  `getSupportTelegramUrl()` (catalogue cache; the save drops the tag).
+  Validated on write and again on read by `@/lib/support`, so the button can
+  only ever open `t.me`. The general settings form never sees or writes that
+  key (the mapper strips it; the save carries the stored value over in SQL).
 - **The application still runs with no database.** With `DATABASE_URL` unset,
   catalogue and platform reads return the seed modules in `@/data`. User-scoped
   reads and every write refuse instead — deliberate (§16.3).
@@ -82,7 +91,7 @@ mock behaviour.
 | Animation | `motion` — only where it genuinely helps |
 | Fonts | `next/font` (Geist Sans + Geist Mono) |
 | QR codes | `qrcode`, **server-side only** |
-| Customer auth | `firebase` (browser, phone OTP only) + `firebase-admin` (server, session cookies) |
+| Customer auth | `firebase` (browser, phone OTP only) + `firebase-admin` (server, ID-token verification only — no key) |
 | KYC storage | `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`, **server-side only** |
 | Database | PostgreSQL 17 (Supabase, session pooler) |
 | ORM | Drizzle ORM, driver `postgres` (postgres.js) |
@@ -803,6 +812,8 @@ npm run db:migrate             # apply drizzle/*.sql
 npm run db:secure              # RLS + storage bucket — §16.1b
 npm run db:seed                # load the development data
 npm run db:check               # connected? migrated? seeded?
+npm run db:verify              # READ-ONLY: which target, pending migrations,
+                               # will they apply, aggregate counts (before/after)
 ```
 
 Any PostgreSQL 14+ will do; development is a Supabase project (ap-northeast-2,
@@ -1173,6 +1184,7 @@ property the test owns — never a fact about the physical table.**
 | `server/phone-auth.integration.test.ts` | yes | new vs existing phone accounts, never merge, linking keeps the account, session epoch |
 | `server/auth/customer-session-token.test.ts` | no | the signed session cookie: expiry, forgery, garbage |
 | `lib/support.test.ts` | no | the Telegram support handle: only a `t.me` username ever becomes a link |
+| `server/auth/dev-test-auth.test.ts` | no | the local test sign-in gates: production build, flag, host, look-alike hosts, code expiry |
 | `server/auth/phone-identity.test.ts` | no | who a verified phone number may reach — never merge, never by unverified phone |
 | `lib/phone.test.ts` | no | Indian mobile normalisation |
 | `server/storage/s3-kyc-store.test.ts` | no | S3 off by default, opaque keys, forged keys refused, signed size/type |
@@ -1242,7 +1254,7 @@ even a dynamic `import()` behind a `NEXT_RUNTIME` guard drags `postgres` →
 
 | | scope | why |
 |---|---|---|
-| Plans, VIP levels, deposit networks | **cross-request** (`unstable_cache`, tag `catalogue`, 300s) | identical for everyone, belongs to nobody |
+| Plans, VIP levels, deposit networks, the support Telegram link | **cross-request** (`unstable_cache`, tag `catalogue`, 300s) | identical for everyone, belongs to nobody |
 | Everything user-scoped | **per request only** (`cache()`) | it is one person's money |
 
 Caching a balance, allocation, KYC state or security setting across requests would
@@ -1832,6 +1844,21 @@ code:
   email session whose account has no `firebase_uid` to `/link-phone` (only while
   phone sign-in is live), where `linkPhoneAction` attaches the verified number
   to *that* account. With phone sign-in live, email sign-in creates no accounts.
+  **The email pages (`/login/email`, `/signup`, `/forgot-password`) and
+  `completeSignIn` are off unless `LEGACY_EMAIL_SIGN_IN=true`**
+  (`isLegacyEmailSignInEnabled`) — turn it on only for a migration window.
+  `/update-password` stays open: operator password resets land there.
+- **Local test sign-in** (`server/auth/dev-test-auth.ts`, tested): one fixed
+  test number and code for a customer, one code for the dev operator, from
+  `.env.local` (`DEV_TEST_*`). Four gates, all required: `NODE_ENV ===
+  "development"` (inlined at build, so a production build contains a dead
+  branch), `DEV_TEST_AUTH=true`, a localhost `Host`/`X-Forwarded-Host`, and the
+  values configured. It replaces only the code delivery: the customer path runs
+  `ensureAccountForFirebasePrincipal` → `issueCustomerSession` under a
+  `dev-local:` uid; the operator path signs in to Supabase as `DEV_ADMIN_EMAIL`
+  and then the ordinary `completeOperatorSignIn` decides. **Firebase "test phone
+  numbers" are deliberately not used**: they are per Firebase project, and one
+  project serves every environment, so they would work in production too.
 - **`isPhoneSignInLive()`** needs the web config, the project id and
   `CUSTOMER_SESSION_SECRET`.
   Without them `/login` says so and email sign-in keeps working — no half-flow.
@@ -1845,7 +1872,7 @@ code:
   phone session for the account ends on every device on its next request. The
   CRM's *log out all devices* does the same (and says a legacy email session
   is not invalidated). Rotating the secret signs every customer out.
-- Operators are unchanged (§20). Setup: `docs/rollout-phone-s3-deposits-pwa.md` §1.
+- Operators: §20 (work email + emailed code). Setup: `docs/rollout-phone-s3-deposits-pwa.md` §1.
 
 ---
 
@@ -1858,6 +1885,22 @@ code:
         |
         +-- auth_user_id --> admin_agents        an operator
 ```
+
+**How an operator proves who they are: work email → emailed one-time code**
+(`signInWithOtp` with `shouldCreateUser: false`, then `verifyOtp`), with the
+password form kept as a secondary option until the deployment's Supabase SMTP
+is confirmed. Either way the result is a Supabase session and the decision is
+`completeOperatorSignIn` → `admin_agents`, unchanged. The form says the same
+thing for known and unknown addresses. A phone-signed-in customer has no
+Supabase identity, so there is nothing they could present here.
+
+**"Could not verify operator access. Try again."** is the *retryable*
+infrastructure outcome — the operator lookup did not complete — never a
+verdict. On 2026-09-30 its cause was `.env.local`: an unquoted `#` in the RDS
+password truncated `DATABASE_URL` (dotenv reads `#` as a comment, and even
+quoted, `new URL()` reads it as a fragment — write `%23`), and the RDS
+instance is in a private VPC subnet that is unreachable from a laptop anyway.
+`npm run db:verify` identifies a target and its migration state read-only.
 
 **The two lookups are independent, and that is the design.** A principal can be a
 customer, an operator, both or neither. Signing in at `/login` grants nothing in

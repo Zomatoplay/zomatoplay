@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Loader2, ShieldCheck, Smartphone } from "lucide-react";
+import { ArrowLeft, FlaskConical, Loader2, ShieldCheck, Smartphone } from "lucide-react";
 import {
   RecaptchaVerifier,
   signInWithPhoneNumber,
@@ -21,6 +21,10 @@ import {
   linkPhoneAction,
   type PhoneAuthResult,
 } from "@/app/(auth)/login/phone-actions";
+import {
+  completeLocalTestSignInAction,
+  startLocalTestSignInAction,
+} from "@/app/(auth)/login/dev-test-actions";
 
 /**
  * Mobile number → OTP → signed in.
@@ -43,6 +47,11 @@ import {
  * `mode="link"` is the migration path for an existing email customer: same
  * OTP, but the server attaches the number to the account they are already
  * signed in to instead of resolving one.
+ *
+ * `localTest` is set only by a page rendered by `next dev` on localhost with
+ * `DEV_TEST_AUTH=true` (`@/server/auth/dev-test-gate`). Entering exactly that
+ * number takes the local test path instead of Firebase; the server re-checks
+ * every gate, so this prop grants nothing on its own.
  */
 
 const RESEND_COOLDOWN_S = 60;
@@ -54,9 +63,12 @@ type Stage = "phone" | "code";
 export function PhoneOtpForm({
   mode,
   next = "/",
+  localTest = null,
 }: {
   mode: "sign-in" | "link";
   next?: string;
+  /** The local test number (E.164), development builds on localhost only. */
+  localTest?: { phoneE164: string } | null;
 }) {
   const router = useRouter();
   const [stage, setStage] = useState<Stage>("phone");
@@ -72,6 +84,8 @@ export function PhoneOtpForm({
   const confirmation = useRef<ConfirmationResult | null>(null);
   const verifier = useRef<RecaptchaVerifier | null>(null);
   const sentTo = useRef<string | null>(null);
+  /** Set instead of `confirmation` when the local test path is in use. */
+  const localChallenge = useRef<string | null>(null);
 
   const phoneE164 = normalizeIndianMobile(phoneInput);
   const busy = sending || verifying || pending;
@@ -93,6 +107,23 @@ export function PhoneOtpForm({
   async function sendCode(target: string) {
     setSending(true);
     setError(null);
+    if (localTest && mode === "sign-in" && target === localTest.phoneE164) {
+      const started = await startLocalTestSignInAction({ phone: target }).catch(() => null);
+      setSending(false);
+      if (!started?.ok || !started.challenge) {
+        setError(started?.message ?? "Unable to start the local test sign-in.");
+        return;
+      }
+      confirmation.current = null;
+      localChallenge.current = started.challenge;
+      sentTo.current = target;
+      setStage("code");
+      setCode("");
+      setAttempts(0);
+      setCooldown(RESEND_COOLDOWN_S);
+      return;
+    }
+    localChallenge.current = null;
     try {
       const auth = await getFirebaseAuth();
       if (!verifier.current) {
@@ -129,11 +160,40 @@ export function PhoneOtpForm({
 
   async function onSubmitCode(event: React.FormEvent) {
     event.preventDefault();
-    if (busy || !confirmation.current) return;
+    if (busy || !(confirmation.current || localChallenge.current)) return;
     if (!/^\d{6}$/.test(code)) {
       setError("Enter the 6-digit OTP.");
       return;
     }
+
+    if (localChallenge.current && sentTo.current) {
+      setVerifying(true);
+      setError(null);
+      const result = await completeLocalTestSignInAction({
+        phone: sentTo.current,
+        code,
+        challenge: localChallenge.current,
+        next,
+      }).catch((): PhoneAuthResult => ({ ok: false, message: "Unable to sign in. Please try again." }));
+      setVerifying(false);
+      if (!result.ok) {
+        const used = attempts + 1;
+        setAttempts(used);
+        if (used >= MAX_CODE_ATTEMPTS) {
+          localChallenge.current = null;
+          setError("Too many incorrect attempts. Request a new OTP.");
+        } else {
+          setError(result.message);
+        }
+        return;
+      }
+      startTransition(() => {
+        router.replace(result.redirectTo ?? "/");
+        router.refresh();
+      });
+      return;
+    }
+    if (!confirmation.current) return;
 
     setVerifying(true);
     setError(null);
@@ -184,6 +244,7 @@ export function PhoneOtpForm({
 
   function changeNumber() {
     confirmation.current = null;
+    localChallenge.current = null;
     setStage("phone");
     setCode("");
     setError(null);
@@ -196,6 +257,17 @@ export function PhoneOtpForm({
 
   return (
     <div className="space-y-6">
+      {localTest && mode === "sign-in" ? (
+        <p className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/8 p-3 text-xs leading-relaxed text-foreground">
+          <FlaskConical className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
+          <span>
+            Local test sign-in is on (development build, localhost). Test number{" "}
+            <span className="tabular font-medium">{localTest.phoneE164}</span>; its code is{" "}
+            <code className="font-mono">DEV_TEST_CUSTOMER_OTP</code> in <code className="font-mono">.env.local</code>.
+            Any other number uses real SMS.
+          </span>
+        </p>
+      ) : null}
       {stage === "phone" ? (
         <>
           <AuthHeading title={heading.title} subtitle={heading.subtitle} />
@@ -282,7 +354,9 @@ export function PhoneOtpForm({
               variant="brand"
               size="lg"
               block
-              disabled={busy || code.length !== 6 || !confirmation.current}
+              disabled={
+                busy || code.length !== 6 || !(confirmation.current || localChallenge.current)
+              }
             >
               {verifying || pending ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden />

@@ -7,7 +7,7 @@ import { Card } from "@/components/ui/card";
 import { DepositFlow } from "@/components/wallet/deposit-flow";
 import { generateQrSvg } from "@/lib/qr";
 import { requireCurrentUserIdForPage } from "@/server/current-user";
-import { getDepositNetworks } from "@/server/services/catalogue.service";
+import { getDepositNetworks, getSupportTelegramUrl } from "@/server/services/catalogue.service";
 import { listOwnDepositRequests } from "@/server/services/deposit-requests.service";
 import { getActiveDepositAddress } from "@/server/services/deposit-settings.service";
 import { getPublicDepositNetwork } from "@/server/services/tron.service";
@@ -24,16 +24,18 @@ export const metadata: Metadata = {
  * operator's configuration (never from the browser, never hard-coded), the
  * account from the session, and the caller's own most recent request — still
  * open, or recently resolved, so a person who comes back mid-deposit lands on
- * it rather than on a blank form. Three reads in one wave (CLAUDE.md §16.1a).
+ * it rather than on a blank form. Four reads in one wave (CLAUDE.md §16.1a);
+ * the networks and the support link come from the cross-request catalogue cache.
  */
 export default async function DepositPage() {
   const userId = await requireCurrentUserIdForPage();
   const network = getPublicDepositNetwork();
 
-  const [active, requests, networks] = await Promise.all([
+  const [active, requests, networks, supportTelegramUrl] = await Promise.all([
     getActiveDepositAddress(),
     listOwnDepositRequests(userId, 3),
     getDepositNetworks(),
+    getSupportTelegramUrl(),
   ]);
 
   const current =
@@ -54,6 +56,7 @@ export default async function DepositPage() {
             minimumDeposit={minimumDeposit}
             initialRequest={current}
             initialQrSvg={qrSvg}
+            supportTelegramUrl={supportTelegramUrl}
           />
         ) : (
           <Card className="p-5">

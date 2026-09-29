@@ -4,6 +4,7 @@ import { useState } from "react";
 import { RotateCcw, Save } from "lucide-react";
 
 import { AdminHeader } from "@/components/admin/layout/admin-header";
+import { CustomerSupportCard } from "@/components/admin/settings/customer-support-card";
 import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
 import { DetailCard } from "@/components/admin/shared/detail-list";
 import { PermissionGate } from "@/components/admin/shared/permission-gate";
@@ -34,7 +35,11 @@ import type { PlatformSettings } from "@/types/admin";
  * and only a real config service can join the two.
  */
 
-export function SettingsView() {
+export function SettingsView({
+  supportTelegramUrl,
+}: {
+  supportTelegramUrl: string | null;
+}) {
   return (
     <>
       <AdminHeader
@@ -43,7 +48,7 @@ export function SettingsView() {
       />
       <AdminPage>
         <PermissionGate permission="settings">
-          <SettingsForm />
+          <SettingsForm supportTelegramUrl={supportTelegramUrl} />
         </PermissionGate>
       </AdminPage>
     </>
@@ -59,7 +64,11 @@ function summarise(before: PlatformSettings, after: PlatformSettings): string {
   return `Updated ${changed.join(", ")} configuration.`;
 }
 
-export function SettingsForm() {
+export function SettingsForm({
+  supportTelegramUrl,
+}: {
+  supportTelegramUrl: string | null;
+}) {
   const store = useAdminStore();
   const { run } = useAdminAction();
   const allowed = canManage(store.session, "settings");
@@ -147,6 +156,9 @@ export function SettingsForm() {
             />
           </div>
         </DetailCard>
+
+        {/* ------------------------------------------ Customer support */}
+        <CustomerSupportCard currentUrl={supportTelegramUrl} />
 
         {/* --------------------------------------------------- Currency */}
         <DetailCard

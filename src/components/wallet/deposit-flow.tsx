@@ -93,10 +93,13 @@ export function DepositFlow({
   minimumDeposit,
   initialRequest,
   initialQrSvg,
+  supportTelegramUrl,
 }: {
   chainLabel: string;
   isTestnet: boolean;
   minimumDeposit: number;
+  /** The operator-configured support link, validated server-side; null when unset. */
+  supportTelegramUrl: string | null;
   /** The caller's most recent request that is still worth showing, if any. */
   initialRequest: DepositRequestView | null;
   initialQrSvg: string | null;
@@ -126,6 +129,7 @@ export function DepositFlow({
       chainLabel={chainLabel}
       isTestnet={isTestnet}
       minimumDeposit={minimumDeposit}
+      supportTelegramUrl={supportTelegramUrl}
       // Only updates about the request on screen: a poll still in flight for
       // a request that was just replaced must not bring it back.
       onChange={(next) =>
@@ -247,6 +251,7 @@ function RequestStep({
   chainLabel,
   isTestnet,
   minimumDeposit,
+  supportTelegramUrl,
   onChange,
   onReplace,
   onNew,
@@ -256,6 +261,7 @@ function RequestStep({
   chainLabel: string;
   isTestnet: boolean;
   minimumDeposit: number;
+  supportTelegramUrl: string | null;
   onChange: (request: DepositRequestView) => void;
   onReplace: (request: DepositRequestView, qrSvg: string | null) => void;
   onNew: () => void;
@@ -479,7 +485,7 @@ function RequestStep({
             <span className="font-mono text-foreground">{request.id}</span> and the transaction
             hash.
           </p>
-          <TelegramSupportButton />
+          <TelegramSupportButton url={supportTelegramUrl} />
         </div>
       ) : null}
 

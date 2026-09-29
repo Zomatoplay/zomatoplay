@@ -1,6 +1,6 @@
 import "server-only";
 
-import { asc, eq, inArray, ne } from "drizzle-orm";
+import { asc, eq, inArray, ne, sql } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
 import type { DepositNetwork, Plan, VipLevel } from "@/types";
@@ -103,4 +103,21 @@ export async function listVipLevels(db: Database): Promise<VipLevel[]> {
     .from(schema.vipLevels)
     .orderBy(asc(schema.vipLevels.sortOrder));
   return rows.map(toVipLevel);
+}
+
+/**
+ * The customer-support Telegram username an operator saved, or null.
+ *
+ * Projects the one key rather than the settings row: the customer side needs
+ * a contact handle, not the platform's fee and review configuration.
+ */
+export async function findSupportTelegram(db: Database): Promise<string | null> {
+  const [row] = await db
+    .select({
+      telegram: sql<string | null>`${schema.platformSettings.platform}->>'supportTelegram'`,
+    })
+    .from(schema.platformSettings)
+    .where(eq(schema.platformSettings.id, "default"))
+    .limit(1);
+  return row?.telegram ?? null;
 }

@@ -3,6 +3,7 @@ import { AdminDataProvider } from "@/lib/admin-store";
 import {
   getPlatformSettings,
 } from "@/server/services/admin.service";
+import { getSupportTelegramUrl } from "@/server/services/catalogue.service";
 
 export const metadata = { title: "Settings" };
 
@@ -15,11 +16,14 @@ export const metadata = { title: "Settings" };
  * nobody else's.
  */
 export default async function Page() {
-  const settings = await getPlatformSettings();
+  const [settings, supportTelegramUrl] = await Promise.all([
+    getPlatformSettings(),
+    getSupportTelegramUrl(),
+  ]);
 
   return (
     <AdminDataProvider data={{ settings }}>
-      <SettingsView />
+      <SettingsView supportTelegramUrl={supportTelegramUrl} />
     </AdminDataProvider>
   );
 }

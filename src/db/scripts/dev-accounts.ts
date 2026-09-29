@@ -27,7 +27,12 @@ import * as t from "../schema";
  * Environment variables, never source and never the database:
  *
  *   DEV_ADMIN_EMAIL / DEV_ADMIN_PASSWORD   an operator, linked to admin_agents
- *   DEV_TEST_EMAIL  / DEV_TEST_PASSWORD    a customer, linked to public.users
+ *
+ * It used to create a customer too (`DEV_TEST_EMAIL` / `DEV_TEST_PASSWORD`),
+ * an email-and-password login. Customers sign in by mobile number now, so that
+ * target is gone: the local test customer is created by signing in once through
+ * the local test path (`DEV_TEST_CUSTOMER_PHONE`, see dev-test-auth.ts). An
+ * account a previous run created is left alone — it may carry test deposits.
  *
  * Nothing is printed but the email addresses. The password is passed to
  * Supabase and forgotten.
@@ -51,21 +56,6 @@ import * as t from "../schema";
 
 loadEnv({ path: ".env.local", quiet: true });
 loadEnv({ path: ".env", quiet: true });
-
-/**
- * Sortable id, same shape as `newId()` in `@/server/write`.
- *
- * Inlined rather than imported: everything under `src/db/` runs as plain Node
- * for the migration and seed scripts, and `@/server/*` modules import
- * `server-only`, which throws outside Next's react-server condition. That
- * boundary is deliberate (CLAUDE.md §16.2) and four lines is a cheaper price
- * than breaking it.
- */
-function newId(prefix: string, at: Date): string {
-  const time = at.getTime().toString(36);
-  const random = Math.floor(Math.random() * 0xffffff).toString(36).padStart(5, "0");
-  return `${prefix}_${time}${random}`;
-}
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
 const SUPABASE_KEY =
@@ -125,58 +115,6 @@ async function main() {
           })
           .where(eq(t.adminAgents.id, agent.id));
         return `${agent.name} (${agent.id})`;
-      },
-    },
-    {
-      label: "customer",
-      email: process.env.DEV_TEST_EMAIL?.trim(),
-      password: process.env.DEV_TEST_PASSWORD,
-      emailVar: "DEV_TEST_EMAIL",
-      passwordVar: "DEV_TEST_PASSWORD",
-      async link(authUserId, email) {
-        // Deliberately NOT linked to a seeded user: a test account should
-        // start empty, which is the state a real registration produces and the
-        // one most worth being able to test. If a row already exists for this
-        // email — a previous run, or a sign-up through the form — it is
-        // adopted rather than duplicated.
-        const [existing] = await db
-          .select({ id: t.users.id })
-          .from(t.users)
-          .where(eq(t.users.email, email.toLowerCase()))
-          .limit(1);
-
-        if (existing) {
-          await db
-            .update(t.users)
-            .set({ authUserId })
-            .where(eq(t.users.id, existing.id));
-          return `${existing.id} (existing row adopted)`;
-        }
-
-        // Create the row the first sign-in would create. Same shape as
-        // `ensureAccountForCurrentPrincipal`: an empty account with a wallet
-        // and a profile that still needs completing. Doing it here means a
-        // measurement or a scripted check does not have to drive the sign-in
-        // form to get a usable test account.
-        const now = new Date();
-        const userId = newId("usr", now);
-        await db.insert(t.users).values({
-          id: userId,
-          authUserId,
-          displayId: `NT-${Date.now().toString().slice(-7)}`,
-          fullName: "Development Tester",
-          email: email.toLowerCase(),
-          phone: "+91 90000 00000",
-          registeredAt: now,
-          lastActiveAt: now,
-          kycStatus: "not_started",
-          referralCode: userId.replace(/[^a-z0-9]/gi, "").slice(-8).toUpperCase(),
-          walletAddress: "",
-          createdAt: now,
-          updatedAt: now,
-        });
-        await db.insert(t.walletBalances).values({ userId });
-        return `${userId} (empty account created)`;
       },
     },
   ];

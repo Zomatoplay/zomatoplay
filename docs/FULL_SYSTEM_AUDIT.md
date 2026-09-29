@@ -1,356 +1,454 @@
 # Nanotron — Full System Audit
 
-Date: 2026-09-28. Branch: `main`. Scope: the phone-OTP / S3 / single-address
-deposit / PWA work (2026-09-27) and this hardening pass, plus a review of the
-rest of the application.
+**Date:** 2026-09-30 · **Base commit:** `f508c8f` · **Branch:** `main`
 
-Every finding carries one status:
+**Scope:**
+- the operator sign-in failure;
+- phone-only customer auth;
+- the localhost test sign-in (customer and operator);
+- RDS connectivity and migration readiness;
+- admin-configured Telegram support;
+- a deposit regression pass;
+- a whole-application audit.
 
-| Status | Meaning |
-|---|---|
-| **PASS** | Checked and correct, with the evidence named |
-| **WARNING** | Works, but has a known weakness or a condition to watch |
-| **FAIL** | Wrong, and not fixed in this pass |
-| **NOT TESTED** | Implemented, but could not be exercised here |
-| **NEEDS HUMAN REVIEW** | A decision or an action only a person can take |
+This supersedes the 2026-09-28 report.
 
-Nothing below was marked PASS on inspection alone where a test or a run was
-possible.
+Classification used throughout: **PASS**, **WARNING**, **FAIL**,
+**NOT TESTED**, **BLOCKED**, **NEEDS HUMAN REVIEW**.
 
----
-
-## 1. Executive summary
-
-- **Phone OTP sign-in is complete in code and needs one server secret to go
-  live.** The server no longer needs a Firebase service-account key at all
-  (it verifies the ID token with the public project id and signs its own
-  session). What is missing in the runtime is `CUSTOMER_SESSION_SECRET`; with
-  it unset `/login` says phone sign-in is unavailable. A real SMS round trip
-  was **not** tested (no device, no Firebase test number available here).
-- **Deposits**: one configured address, `DEP-XXXXXXXX` requests with a unique
-  exact amount, server-side hash verification, credit-once enforced by the
-  database. This pass added amount change, leave/cancel, "already processed"
-  messages, Telegram support and a non-stored screenshot field. Covered by 18
-  integration tests against a real database and a headless-browser run.
-- **RDS**: the RDS connection string was **not available** to this runtime
-  (`DATABASE_URL` and `DIRECT_DATABASE_URL` both point at the Supabase
-  development project). Migrations `0019`–`0021` were applied to that
-  database only. **RDS still needs `npm run db:migrate`** (§6).
-- **Two real bugs were found by running the product, and fixed** (§20): a
-  deposit poll in flight could put a replaced request back on screen, and a
-  *Verify Payment* press could wait 40 s+ behind a chain scan.
-- No balance, ledger row, deposit, investment, KYC record or referral was
-  changed. Before/after counts are identical (§6).
+> **Security note: read this first.** While I was diagnosing the RDS URL, a Node
+> error message echoed the *truncated* `DATABASE_URL` into the session output.
+> That exposed the database username and the part of the RDS password before its
+> `#`. It was not written to any file, commit or log in the repository.
+> **Rotate the RDS master password.** When you set the new one, percent-encode
+> any `#`, `@`, `/` or `%` in it inside the URL.
 
 ---
 
-## 2. What was implemented (this pass)
+## 1. Requested changes completed
 
-| Area | Change |
+| Request | Status |
 |---|---|
-| Sessions | App-signed customer session (`customer-session-token.ts`), `users.session_epoch` revocation, no Firebase private key anywhere |
-| Sign-out | Ends every phone session on every device; CRM "log out all devices" does the same |
-| Deposit amount | *Change amount* creates a new request and cancels the old one in one transaction |
-| Leave / cancel | In-app navigation away asks, then cancels; evidence-bearing requests refuse |
-| Idempotency UX | "This deposit has already been processed" / "Transaction already processed" |
-| Support | `lib/support.ts` + `TelegramSupportButton`; Settings → Support → Contact support |
-| Screenshot | Optional, local preview only, never uploaded |
-| Auth UI | Security page shows the verified number instead of "Change password" for phone users; profile locks a verified number (server-enforced) and hides an empty email |
-| Fixes | Stale-poll overwrite; scan-blocks-verify; removed orphaned `requestTestDeposit` |
-| Migrations | `0020_deposit_request_cancellation`, `0021_customer_session_epoch` |
-| Tests | +4 files: lifecycle (11), phone auth (6), session token (6), support config (3) |
+| Customer auth is mobile number + OTP; old email login removed from the customer path | **PASS.** The email pages and `completeSignIn` are switched off unless `LEGACY_EMAIL_SIGN_IN=true`. The code is kept (§20). |
+| Remove dummy customer email auth/data safely | **PASS (auth side)** / **NEEDS HUMAN REVIEW (data).** The email-login test customer is no longer created. No database row was provably safe to delete (§19). |
+| Localhost-only test customer (fixed number + code) | **PASS** |
+| Fix operator sign-in ("Could not verify operator access") | **PASS.** The root cause was configuration, fixed locally (§3). |
+| Operator auth made OTP-based | **PASS (code)** / **NOT TESTED (real email delivery)** |
+| Localhost-only test operator + code | **PASS** |
+| RDS migration and verification | **BLOCKED.** RDS is in a private VPC subnet (§6, §7). |
+| Settings → Support → Contact Support → Telegram | **PASS** |
+| Admin → Settings → Customer support → Telegram URL | **PASS** |
+| Customer button uses the admin-configured URL | **PASS** |
+| Deposit regression | **PASS** (§9) |
+| Broad audit, two verification passes, this report | **PASS** |
 
----
+## 2. Customer authentication status
 
-## 3. Firebase authentication status
-
-| Item | Status | Evidence |
-|---|---|---|
-| Web config present in `.env.local` | **PASS** | all six `NEXT_PUBLIC_FIREBASE_*` set; values not printed |
-| Config is one coherent project | **PASS** | Identity Toolkit `projects` lookup with the public key: the returned project number equals the messaging sender id; the auth domain starts with the project id |
-| Phone provider enabled | **PASS (indirect)** | a probe with an invalid reCAPTCHA token to a fictional US number (+1 555-555-0100) returned `OPERATION_NOT_ALLOWED: SMS unable to be sent until this region enabled` — a region-policy refusal, which the phone provider only gives when it is on. No SMS was sent. |
-| SMS region policy | **PASS (partial)** | a region policy is active and refuses +1. **Whether India is allowed could not be checked without sending a real SMS.** |
-| Authorized domains | **WARNING** | `localhost`, the two Firebase defaults, and one IP address. **The production domain is not in the list** — add it before go-live, or reCAPTCHA fails there. |
-| Server verification without a service account | **PASS** | `firebase-admin` `verifyIdToken` initialised with only a project id: a malformed token is rejected with a verdict (`auth/argument-error`), not a credential error |
-| `CUSTOMER_SESSION_SECRET` in runtime | **NEEDS HUMAN REVIEW** | not set in `.env.local`; generate with `openssl rand -base64 48` on the server. Tests used a throwaway in-memory value. |
-| Firebase test phone numbers | **NOT TESTED** | none known; cannot be listed without admin credentials |
-
-## 4. Phone OTP status
-
-| Flow | Status | Evidence |
-|---|---|---|
-| Send OTP / resend (60 s cooldown) / 5-wrong-codes cap | **NOT TESTED** live | client code reviewed; needs a real or test number |
-| Invalid / expired OTP | **PASS (server side)** | any rejected token becomes "Invalid or expired OTP."; `auth_time` > 5 min refused |
-| New customer | **PASS** | `phone-auth.integration`: one account per verified number, second sign-in reaches the same one, no invented email, uid ≠ account id |
-| Duplicate phone | **PASS** | a number on another account is refused, no account created |
-| Session restoration | **PASS** | production server + signed cookie: `/wallet` 200, `/login` → `/` |
-| Protected routes | **PASS** | no cookie → 307 `/login`; forged cookie (one byte changed) → 307 `/login` |
-| Logout / revocation | **PASS** | after the epoch moved, the old cookie's response contained no name, member id, balance or "USDT" and redirected to `/login`; a newly issued cookie worked |
-| Rate limiting | **WARNING** | 20 attempts / 10 min per IP, **process-local** — exact on one process, weaker with several (FUTURE_TASKS) |
-| E.164 normalisation | **PASS** | `lib/phone.test.ts`; +91 only |
-
-## 5. Existing-user migration behaviour
-
-| Rule | Status | Evidence |
-|---|---|---|
-| Never linked by the unverified `users.phone` | **PASS** | test: a legacy account whose typed phone equals the verified number is **not** adopted |
-| Existing email customer keeps account id and balance when linking | **PASS** | test: balance 1234.56789 unchanged, same `user_id`, email kept |
-| Ambiguity refused, never merged | **PASS** | re-linking to a second number refused; number on another account refused |
-| No new empty account for an existing customer | **WARNING** | guaranteed only if the customer takes the email → `/link-phone` path. **A customer who goes straight to `/login` with a phone number that was never verified gets a new, empty account.** That is the documented rule (unverified phones are never trusted) but support will see it; the `/login` page links "Signed up with email?" to reduce it. **NEEDS HUMAN REVIEW** — decide whether to announce the one-time link step to existing customers before switching phone sign-in on. |
-| Email data preserved | **PASS** | `users.email` nullable, never cleared |
-
-## 6. RDS schema / migration status
-
-| Item | Status |
+| Item | Result |
 |---|---|
-| RDS URL available to this runtime | **BLOCKED BY ENVIRONMENT** — not in `.env.local` or the process environment. I did not go looking for it elsewhere. |
-| Migrations applied to RDS | **NOT TESTED / NEEDS HUMAN REVIEW** |
-| Migrations applied to the configured (Supabase dev) database | **PASS** — `0020`, `0021` via `npm run db:migrate`; journal 22 entries |
-| Data preserved | **PASS** — identical before and after: 89 users, Σ available 95347.81732188, 38 deposits, 594 transactions, 48 investments, 30 KYC documents, 22 referrals |
-| Schema agrees with code | **PASS** — `schema.integration.test` compares live ↔ declared both ways |
-| Destructive statements | **PASS** — none. `0019` drops `NOT NULL` on `users.email`; everything else adds. |
+| `/login` is mobile number → OTP only, with no email link | **PASS** (browser, 360 + 1280) |
+| `/login/email`, `/signup`, `/forgot-password` → 307 `/login` | **PASS** (dev and production builds) |
+| `completeSignIn` refuses and signs out when the legacy switch is off | **PASS** (code) |
+| `/update-password`, `/reset-password` still served | **PASS.** Operator password resets land there, so they were deliberately not gated. |
+| New number → new account → profile step (no phone field for a verified number) | **PASS** (local test path) |
+| Existing number → straight to `/` | **PASS** (1280 run) |
+| Wrong code → "Invalid or expired OTP." | **PASS** |
+| Expired code (TTL 30 s, correct code submitted at 35 s) → refused, no cookie | **PASS** |
+| Session cookie: httpOnly, SameSite=Lax, 14 days | **PASS.** `Secure` is only set in production; `secure: false` was observed on http localhost. |
+| Logout → `/login`, cookie cleared | **PASS** |
+| Replaying the pre-logout cookie → `/login` (epoch revocation) | **PASS** |
+| Protected routes redirect when signed out | **PASS** |
+| Real Firebase SMS OTP (send, verify, resend, per-number limits) | **NOT TESTED.** No device and no Firebase test number; not faked. |
+| Duplicate phone / never-merge / E.164 | **PASS.** `phone-auth.integration` 6/6, plus the `phone-identity` and `phone` unit tests. |
 
-**To apply on RDS** (in order): snapshot the instance → set `DIRECT_DATABASE_URL`
-to RDS → `npm run db:migrate` → `npm run db:check` → compare the seven counts
-above before and after. **Skip `db:secure` on RDS** (Supabase-only).
+The server still trusts nothing the browser says about identity:
+- Real sign-in verifies a Firebase ID token server-side.
+- The local path compares server-held values, then runs the same account and session code.
 
-Identifiers the code keeps distinct, all verified in tests or schema:
-internal user id (`users.id`, `usr_…`), Firebase uid (`users.firebase_uid`,
-unique), phone (`users.phone_e164`, unique), deposit request id
-(`DEP-` + 8 Crockford base32), chain transaction hash (64 hex,
-`deposits (chain, tx_hash)` unique), ledger transaction id (`transactions.id`).
+## 3. Operator authentication status
 
-## 7. Deposit architecture status
+**Root cause of "Could not verify operator access. Try again.": PASS (found and fixed locally).**
 
-| Item | Status |
+1. `.env.local` had gained `DATABASE_URL` / `DIRECT_DATABASE_URL` for RDS
+   *below* the Supabase ones, and the later definition wins.
+2. The RDS password contains an unquoted `#`. dotenv treats it as the start of a
+   comment, so the application received a **36-character, invalid URL** and
+   every database call failed. The operator lookup failure was reported,
+   correctly, as the *retryable* infrastructure outcome, and that outcome's
+   message is exactly the one you saw. It was never an authorization verdict.
+3. Even with the `#` encoded as `%23`, the RDS host resolves to a **private
+   `172.31.x.x` address** and the connection times out, because the instance
+   is not publicly accessible.
+
+The fix was applied to `.env.local`, which was backed up first; no values were printed:
+- `#` became `%23` on the RDS lines.
+- Those two lines are commented out with an explanation, so local development uses the reachable Supabase dev database again.
+
+I verified that the dev operator credential signs in and resolves to the active master admin with 13 grants. The root cause needed no code change, and the error message was not changed.
+
+| Item | Result |
 |---|---|
-| One configured address, env fallback, CRM screen with audit | **PASS** (previous pass; unchanged) |
-| Ownership decided by recipient + exact amount + window, exactly one match | **PASS** — `deposit-request.integration` |
-| Client never supplies user, amount credited, address, network, status | **PASS** — action signatures take only an amount *request*, a request id, a hash |
-| Per-user pool removed from active code; tables kept as history | **PASS** |
+| Operator sign-in: work email → emailed one-time code (`signInWithOtp`, `shouldCreateUser: false`) → `verifyOtp` | **PASS (code)** |
+| Same answer for known and unknown emails (no enumeration) | **PASS (code)** |
+| Authorization unchanged: `completeOperatorSignIn` → `admin_agents` → permissions | **PASS** |
+| Real Supabase email code delivery | **NOT TESTED.** I didn't send real email; SMTP needs confirming first (§21). |
+| Password form | Kept as a secondary option: **NEEDS HUMAN REVIEW** (§21) |
+| Customer (phone session) opening `/admin` or `/admin/settings` → `/admin/login` | **PASS** (browser) |
+| Customer cannot become an operator | **PASS.** A phone customer has no Supabase identity, `admin_agents` is looked up only by Supabase `auth_user_id`, and there is no role column on `users`. |
+| Wrong operator code → "Invalid or expired code." | **PASS** |
 
-## 8. Deposit idempotency status
+**Architecture chosen: Option A** (work-email identity, with the OTP as the proof). The existing model already uses Supabase for operator identity, and Supabase supports email OTP, so nothing about `admin_agents` or permissions changed.
 
-The brief's 20 cases:
+Option B (operator phone OTP) was not done. It would need a second identity link on `admin_agents`, and it would put operators on the customers' Firebase project.
 
-| # | Case | Result | Evidence |
-|---|---|---|---|
-| 1 | Valid hash | credited once | integration test |
-| 2 | Invalid / nonexistent | "could not find…" + support | browser run, 4 s |
-| 3 | Wrong network | not found (only the configured network is queried) | code |
-| 4 | Wrong token | not found (contract filtered locally) | `tron.test` |
-| 5 | Wrong recipient | not found (recipient listing) | code |
-| 6–8 | Wrong / under / over amount | unattributed, `needs_review`, credits nobody | integration test |
-| 9 | Not final | `verifying`, nothing recorded | code (§18.3) |
-| 10 | Outside window | `outside_request_window`, no credit | integration test |
-| 11 | Expired request | still matchable inside its window | integration test |
-| 12–14 | Hash submitted again / processed / repeatedly | "already processed", no second credit | lifecycle test |
-| 15 | Same amount repeatedly | same request returned; unique amount among open | lifecycle test |
-| 16 | Someone else's hash | "Transaction already processed" / `not_yours`; victim credited | integration tests |
-| 17 | Ambiguous | refused, `ambiguous_match` | integration test |
-| 18 | Race | 5 concurrent recordings → one credit | integration test |
-| 19 | Scanner replay | `unchanged` | integration test |
-| 20 | Refresh / reopen | resumes the same request | browser run |
+## 4. Localhost test authentication status
 
-Database guards: `deposits_chain_tx_hash_key`, `deposit_requests_deposit_key`,
-`deposit_requests_open_amount_key`, `deposit_requests_one_awaiting_per_user_key`,
-status re-asserted in every crediting `UPDATE`. **PASS.**
+| Item | Result |
+|---|---|
+| Customer: `DEV_TEST_CUSTOMER_PHONE` + `DEV_TEST_CUSTOMER_OTP` on `/login` | **PASS** |
+| Operator: `DEV_ADMIN_EMAIL` + `DEV_TEST_ADMIN_OTP` on `/admin/login` → real master-admin record | **PASS** |
+| Gates: `NODE_ENV=development` (inlined at build), `DEV_TEST_AUTH=true`, a localhost `Host`/`X-Forwarded-Host`, and the values configured | **PASS.** `dev-test-auth.test.ts` 11/11, including look-alike hosts and forwarded public hosts. |
+| Production build, `DEV_TEST_AUTH=true`, localhost: no banner on either login page | **PASS** |
+| Production build: all four local-test actions called directly with the **correct** codes → refused, no cookie | **PASS** |
+| Production bundle: `DEV_TEST_AUTH` absent from server output; no test code, admin password or session secret value anywhere in `.next/` | **PASS** |
+| A challenge token cannot be used as a session cookie, and vice versa | **PASS** (unit test) |
 
-## 9. Deposit cancellation / leave behaviour
+The values live in `.env.local` (git-ignored), in the "LOCAL TEST SIGN-IN" block:
+- The test number is `+91 99999 00001`; I checked that it's unused in the dev database.
+- The two codes were generated randomly and aren't printed anywhere.
+- Accounts created this way carry a `dev-local:` Firebase uid.
+- `.env.example` documents the variables without values.
 
-| Item | Status | Evidence |
+**Why not Firebase fictional test numbers:** they're configured per Firebase
+*project*. This deployment uses one project for every environment, so a test
+number added for localhost would also sign in on the production domain.
+
+## 5. Firebase status
+
+| Item | Result |
+|---|---|
+| Web config and project id present locally; `CUSTOMER_SESSION_SECRET` now set locally (64 chars) | **PASS** |
+| Server verifies ID tokens with the public project id only; no service-account key anywhere | **PASS** |
+| Authorised domains: localhost, the two Firebase defaults and one IP; **production domain missing** | **FAIL (configuration).** Carried over from 2026-09-28; still to do in the console. |
+| An SMS region policy exists (it refused a US number); is India allowed? | **NOT TESTED** without a real SMS |
+| Real SMS end to end | **NOT TESTED** |
+| Environment separation: one Firebase project for all environments | **WARNING.** This is why fictional numbers are unsafe here (§4). |
+
+## 6. RDS connectivity status
+
+**BLOCKED.**
+
+- Nanotron reads two variables:
+  - `DATABASE_URL`;
+  - `DIRECT_DATABASE_URL`, used for migrations, which falls back to `DATABASE_URL`.
+- Target, identified from the URL without connecting: AWS RDS, `ap-south-1`, database `nanotron`.
+- DNS resolves to a private `172.31.x.x` address, and TCP 5432 from this machine times out.
+- No SSH key, AWS CLI or Session Manager is configured here, so there's no tunnel.
+- Consequently the following are unknown:
+  - the PostgreSQL version;
+  - the migration state;
+  - whether the database is empty, staging or production;
+  - its data counts.
+- Per the brief, nothing was modified.
+
+## 7. RDS migration status
+
+**BLOCKED: not applied.** Prepared instead:
+
+- **`npm run db:verify`** (new, read-only, runs inside `BEGIN READ ONLY`). It:
+  - names the target by kind and region;
+  - compares `drizzle.__drizzle_migrations` with the journal and lists pending migrations;
+  - checks every table, plus the columns this code reads:
+    - `users.firebase_uid`, `users.phone_e164`, `users.session_epoch`;
+    - `deposit_requests.cancelled_at`, `deposit_requests.cancellation_reason`;
+    - `kyc_documents.storage_backend`;
+  - **pre-checks that migration 0020's unique index can build** (no account with two `awaiting_payment` requests);
+  - prints aggregate counts;
+  - exits 1 on anything that must be fixed first.
+
+  I ran it against the dev database, and against the RDS URL, where it timed out cleanly with a VPC hint and printed no credentials.
+- **All 22 migrations were reviewed for destructive statements.** None deletes or truncates data:
+  - the `DROP`s rebuild an index or constraint, or relax `NOT NULL`;
+  - the two `UPDATE`s are backfills (`deposit_addresses` history, `deposits.acknowledged_at`).
+- **Runbook:** `docs/rollout-phone-s3-deposits-pwa.md` §0. On the EC2 host: snapshot → `db:verify` → `db:migrate` → `db:verify`, then compare. **Skip `db:secure` on RDS**; it's Supabase-only.
+
+## 8. Database integrity checks (development database)
+
+| Item | Result |
+|---|---|
+| `db:verify` on Supabase dev: 22/22 migrations, 38/38 tables, every needed column, the `cancelled` enum value, the one-awaiting index | **PASS** |
+| `schema.integration` (live schema vs declared in both directions, enums, FKs, no float money) | **PASS** |
+| Counts: 89 users, Σ available 95347.81732188, 38 deposits, 594 ledger rows, 48 investments, 30 KYC documents, 22 referrals. Unchanged by this pass's code (no migration). | **PASS** |
+| Rows written by testing, all in the dev database: one `dev-local:` customer (empty wallet); 4 `cancelled` deposit requests from the browser run, plus the integration suites' usual fixtures; the Telegram test value set and then cleared (both audited); support hours changed and restored | recorded |
+
+## 9. Deposit regression results
+
+| Case | Result | Evidence |
 |---|---|---|
-| Change amount → new id + amount, old cancelled | **PASS** | lifecycle test; browser run (25.88 → 55.28) |
-| Leave dialog on in-app navigation; confirm cancels and navigates | **PASS** | browser run at 360 and 1280 |
-| Request with a submitted hash cannot be cancelled | **PASS** | lifecycle test |
-| Another customer cannot cancel | **PASS** | lifecycle test |
-| Paid then left → still credited | **PASS** | lifecycle test |
-| Cancelled amount not re-quoted while its window is open | **PASS** | deterministic test (98 of 99 offsets occupied) |
-| Browser back button / tab close | **WARNING** | not intercepted, by design: the request expires on its own and reopening resumes it. The App Router has no navigation-blocking API. |
-| Auditable | **PASS** | audit entry per cancellation; `cancelled_at`, `cancellation_reason` on the row |
+| Create request (DEP id, exact amount, one address) | **PASS** | Browser 360 + 1280 on the production build; lifecycle tests |
+| Change amount → old request cancelled (`amount_changed`), new id and amount | **PASS** | Browser + DB rows |
+| Leave page → confirmation → `cancelled` (`left_page`), rows kept | **PASS** | Browser + DB rows |
+| A request with a submitted hash cannot be cancelled | **PASS** | `deposit-request-lifecycle` |
+| A matched or paid request cannot be erased | **PASS** | Lifecycle |
+| Paid after cancel → credited once; the amount stayed reserved | **PASS** | Lifecycle |
+| Same hash twice / "already processed" | **PASS** | Lifecycle + `deposit-request` |
+| Malformed hash | **PASS** | Browser |
+| Wrong recipient, wrong token, wrong amount, expired window, another user's hash, scanner replay, concurrent verification, no double credit | **PASS** | `deposit-request.integration` 8/8, `tron.test`, lifecycle 11/11 |
+| One awaiting request per user, enforced by the database | **PASS** | Lifecycle |
 
-"Release the amount for future use" is deliberately **delayed until the
-window closes**: releasing it earlier is exactly how a later request could be
-credited with someone else's payment.
+The only deposit change in this pass is passing the support URL through as a prop.
 
 ## 10. Telegram support status
 
-**PASS (mechanism) / NEEDS HUMAN REVIEW (value).** One source
-(`NEXT_PUBLIC_SUPPORT_TELEGRAM`); only a valid Telegram username becomes a
-`https://t.me/…` link (tested, including `javascript:` and foreign URLs). Unset
-today, so the deposit screen shows *Contact support* → Help centre and Settings
-says "Telegram support is not available yet. Email …" — both seen in the
-browser run. **No handle was invented.** Set it, then rebuild (it is inlined
-at build time).
+**PASS.**
 
-## 11. Screenshot handling
+- **Admin → Settings → Customer support card.** A "Customer Support Telegram URL" field with its own Save/Clear, disabled without `settings`/`manage`.
+- **`updateSupportTelegramAction`:**
+  - calls `requirePermission("settings")`;
+  - validates server-side to a bare Telegram username of 5–32 characters. It accepts `t.me` and `telegram.me` links and `@name`, and refuses other hosts, paths, queries, fragments, invite links and `javascript:`;
+  - locks the row with `SELECT … FOR UPDATE`;
+  - writes an audit entry with the old and new values;
+  - drops the catalogue cache.
+- **Storage:** `platform_settings.platform.supportTelegram`. One source, and no migration (it's jsonb).
+- **General settings form:** it never sees the key (the mapper strips it), and its save carries the stored value over in SQL, so it can neither clear nor forge it. **Verified in the browser.**
+- **Customer side**, all from `getSupportTelegramUrl()`, which re-validates on read:
+  - Settings → Support → Contact support shows the Telegram link, or "Telegram support is currently unavailable. Email …";
+  - the Help centre button;
+  - the deposit screen's button for unresolved outcomes.
+- **Browser run:**
+  - an invalid URL was blocked;
+  - a test handle was saved, and the customer link became `https://t.me/e2e_test_only_handle` at 360 and 1280;
+  - it was then cleared, and the customer saw "currently unavailable".
+- **The real handle isn't set**; I didn't invent one.
+- `NEXT_PUBLIC_SUPPORT_TELEGRAM` has been removed.
 
-**PASS.** Optional field, object-URL preview only, revoked on change/unmount,
-never sent to the server, labelled "Stays on this device only — it is not
-uploaded or stored". Verification does not read it.
+## 11. S3 status
 
-## 12. S3 KYC status
+**NOT TESTED.** `KYC_STORAGE_DRIVER`, `KYC_S3_BUCKET` and a region aren't set here, and there's no bucket.
 
-| Item | Status |
+The design is unchanged since 2026-09-28:
+- a private-by-default adapter with opaque keys;
+- a 5-minute presigned PUT that signs the exact type and length;
+- an own-prefix check before `HeadObject`;
+- a 120-second reviewer GET after a `kyc`/`view` check;
+- no ACLs;
+- credentials from the instance role.
+
+`s3-kyc-store.test.ts` passes in both passes.
+
+## 12. PWA status
+
+Unchanged in this pass:
+- The service worker caches hashed static assets and `/offline.html` only.
+- Navigations are network-only.
+- There's no caching of RSC payloads, API responses, auth or the CRM.
+
+Install on real devices: **NOT TESTED**.
+
+## 13. Security findings
+
+| Finding | Class |
 |---|---|
-| Off by default, no default bucket | **PASS** — `s3-kyc-store.test` |
-| Opaque keys, own-prefix check before any S3 call, signed size/type | **PASS** — unit tests |
-| Credentials from the instance role, none in code | **PASS** — code review; no key in tracked files (secret scan) |
-| Private bucket, Block Public Access, IAM, CORS | **NOT TESTED** — no bucket; policies are in the runbook §2 |
-| Old Supabase-stored documents still openable | **PASS** — rows carry `storage_backend`; reviewer signing picks the store |
-| Migrating old objects to S3 | **NEEDS HUMAN REVIEW** — deferred; nothing deleted |
+| Partial RDS password exposed in session output during diagnosis | **FAIL → rotate** (top of report) |
+| The RDS password contained an unencoded `#` in the URL | **FIXED locally.** Documented for EC2 (runbook §0). |
+| RDS not publicly accessible | **PASS** (good posture) |
+| No secret, test code or session secret in the build output | **PASS** |
+| Local test sign-in cannot run in a production build | **PASS** (§4) |
+| The Telegram link cannot become an arbitrary URL | **PASS** |
+| `CRON_SECRET` not set locally; cron routes refuse without it (by design) | **WARNING.** Set it on EC2. |
+| `applyReferralCode` is unauthenticated (by design, pre-signup), not rate-limited, and confirms whether a code exists | **WARNING.** Codes are shared publicly by design. |
+| The operator password form remains | **NEEDS HUMAN REVIEW** |
+| Legacy email (Supabase) sessions can't be revoked server-side | **WARNING.** A documented limitation (§20.3). |
 
-## 13. PWA status
+## 14. Authorization findings
 
-| Item | Status |
+- **Server actions: PASS.** All 56 exported server actions were checked:
+  - every admin action calls `requirePermission` first;
+  - every customer action resolves the account from the session;
+  - none takes a `userId`.
+
+  The exceptions are by design: `applyReferralCode` (pre-signup), the two sign-in completions, and the four local-test actions (gated).
+- **ID-taking customer actions: PASS.** `getDepositRequestAction`, `cancelDepositRequestAction`, `acknowledgeDeposit` and `endAllocationAction` scope by the session's user in the query.
+- **API routes: PASS.**
+  - `/api/cron/*` uses a constant-time `CRON_SECRET` check and refuses when it's unset.
+  - `/api/trace` does its work in `after()` and resolves the account itself.
+- **Customer → admin: PASS.** Redirected to `/admin/login` (browser).
+- **Operator permission denial: PASS (integration).** An agent without `settings`/`manage` is refused in `auth-and-kyc.integration`'s permission tests. Not re-driven in a browser, since there's no agent credential.
+
+## 15. Performance findings
+
+Measured on the production build with a real customer session and 8 s idle gaps, against the dev database in Seoul (about 200 ms per round trip from here):
+
+| Route | TTFB | Complete |
+|---|---|---|
+| `/` | 50–66 ms | 1.1–1.3 s |
+| `/wallet` | 51–57 ms | 1.3–1.4 s |
+| `/plans` | ~52 ms | 0.8 s |
+| `/referral` | 60 ms | 1.4–1.6 s |
+| `/settings` | ~68 ms | 0.8 s |
+| `/wallet/deposit` | 42–56 ms | 0.75 s |
+| `/wallet/transactions` | 43–56 ms | 0.75 s |
+| `/settings/support` | 42–45 ms | 0.72–0.74 s |
+
+- First bytes arrive immediately, because the shell streams. Totals are dominated by round trips, as §16.1a predicts.
+- From EC2 in `ap-south-1` to RDS in the same region, round trips should be single-digit milliseconds, so these totals are an upper bound. **Re-measure on EC2.**
+- First-load JS: 102 kB shared, 132–159 kB for customer routes, and up to 200 kB for `/login/email` and `/admin/login`.
+
+## 16. Heavy / expensive areas
+
+| Area | Observation | Recommendation |
+|---|---|---|
+| `/referral` | The slowest customer route (~1.5 s here) | Measure on EC2 before changing anything. |
+| Deposit screen poll | One server action every 5 s while a request is open and the tab is visible, with no overlap. Chain work at most once a minute, floored server-side at 20 s per account. | Acceptable. Don't grow it into a scheduler. |
+| `/admin/notifications` | Reads every campaign, unbounded | Paginate when campaigns grow. **WARNING** |
+| Per-user lists (a user's investments, referrals, commissions) | Unbounded per account | Fine at current volumes. |
+| Customer auth bundle | `/login` first load is 159 kB (Firebase auth) | Acceptable. |
+| Integration test suite | About 40 minutes against the remote dev DB (latency-bound) | A local Postgres for CI would cut it sharply. |
+
+Nothing expensive was changed in this pass, and nothing that touches money was "optimised".
+
+## 17. Bugs found and fixed
+
+1. **Operator sign-in failing.** Configuration (§3), fixed in `.env.local`.
+2. **Customer email sign-in was still reachable** from `/login` and callable server-side. It's now behind `LEGACY_EMAIL_SIGN_IN`, including the action.
+3. **The CRM's "send password reset" to a customer** would have mailed a reset for a login that no longer exists. It now refuses while the switch is off.
+4. **`npm run db:dev-accounts` created an email-and-password dummy customer** with a placeholder phone number. That target is removed.
+5. **The Telegram destination was a build-time env var** that an operator couldn't change. It's now configured in the CRM (§10).
+
+Re-verified from the previous pass:
+- a stale poll could bring back a replaced request;
+- Verify Payment could queue behind a scan.
+
+## 18. Bugs still present
+
+| Issue | Class |
 |---|---|
-| Manifest, icons | **PASS** — build output, previous headless check |
-| Service worker caches only `/_next/static`, `/pwa-icon`, `/offline.html` | **PASS** — code re-read; navigations network-only; non-GET and cross-origin ignored |
-| No financial data cached | **PASS** — no page, RSC payload, API or action response is ever put in a cache |
-| Update behaviour | **WARNING** — `skipWaiting` + `clients.claim` activate a new worker at once (safe: it caches only immutable assets). `/pwa-icon/*` is cache-first and not content-hashed: a changed icon needs `CACHE_VERSION` bumped. |
-| Installation on real devices | **NOT TESTED** |
+| `auth-and-kyc`: "holds exactly the seeded number of accounts" fails. Its upper bound is 50, but there are 89 users because integration tests leave 56 `@example.invalid` users behind. Pre-existing, and it contradicts §16.7's rule. | **FAIL (test)** |
+| `deposit-confirmation`: "the historical backfill left no seeded deposit unannounced". Pre-existing and dependent on fixture state. | **FAIL (test)** |
+| New phone customers have no manual invite-code field, only `?ref=` links, because the only field was on the now-disabled email sign-up form. | **NEEDS HUMAN REVIEW** |
+| The Settings footer says "demo build · no real funds" | **NEEDS HUMAN REVIEW** |
 
-## 14. Settings / support status
+## 19. Potential cleanup items (not done)
 
-**PASS** — Support → *Contact support* row added in the existing `ListRow`
-style (external rows open in a new tab); Security shows the sign-in method;
-settings, security and deposit screens have no horizontal overflow at 360 px
-and 1280 px, and no console errors (headless Chrome).
+- **Dev database accounts:**
+  - 56 `@example.invalid` integration-test users (414 ledger rows);
+  - the old `DEV_TEST_EMAIL` customer (4 deposits, 17 ledger rows, 1 investment, KYC);
+  - 2 unknown email accounts.
 
-## 15. Security findings
+  **Not deleted:** each carries financial or KYC rows, or can't be proven dummy.
+- **30 `@example.com` seed fixtures.** These are CRM/test fixtures, not auth data.
+- **`.env.local`:** `DEV_TEST_EMAIL` / `DEV_TEST_PASSWORD` are now unused.
+- **Unused exports** with no live callers: `listAdminUsers`, `getAdminCommissionLedger`, `getAdminReferralAccounts`.
+- **Legacy email UI:** `sign-in-form`, `sign-up-form`, `forgot-password-form`, `/login/email`, `/signup`, `/forgot-password`, `completeSignIn`. These can be removed once no active account needs linking, which is when this query returns 0:
 
-| Finding | Status |
+  ```sql
+  select count(*) from users
+  where auth_user_id is not null and firebase_uid is null and status = 'active';
+  ```
+- **Legacy pool tables** (`deposit_addresses`, `deposit_address_assignments`). These are evidence; see §18.8.
+- **CLAUDE.md §3 lists `motion`**, which isn't a dependency.
+
+## 20. Items intentionally not removed
+
+- Operator/admin Supabase authentication.
+- `/update-password` and `/reset-password` (operator resets).
+- Database email columns and historical email data.
+- The legacy email sign-in code (switched off, not deleted).
+- Every dev-database row listed in §19.
+- The legacy deposit pool tables.
+- The password form on `/admin/login`.
+
+## 21. Items requiring human review
+
+1. **Rotate the RDS password** (§13), encoding special characters in the URL.
+2. **Supabase SMTP for operator codes.** Authentication → Emails → SMTP must be a production sender, and the template must include `{{ .Token }}`. Then decide whether to remove the operator password form.
+3. **Does RDS hold customers who signed up by email?**
+   - If yes, set `LEGACY_EMAIL_SIGN_IN=true` for a migration window and tell those customers.
+   - If it's empty or new, leave it off.
+4. **Firebase:** add the production domain to authorised domains, and confirm the SMS region policy allows India.
+5. **Set the real Telegram handle** in Admin → Settings → Customer support.
+6. **Invite-code entry** for phone sign-ups (§18).
+7. **The "Demo build · no real funds" footer** copy.
+8. **Whether to clean the dev database's test leftovers.** That would delete ledger rows, so it's a deliberate decision, not a cleanup.
+
+## 22. Tests performed
+
+**Pass 1 (after implementation)**
+- `typecheck` and `lint`: clean.
+- `npm test` without a database: **205/205**.
+- `npm test` against the dev database: two runs covering all 38 files. The first stopped at a 25-minute limit, and the remaining 21 files were run separately. Everything passes except the two pre-existing tests in §18.
+- Browser (dev server, headless Chrome over CDP). No console errors or horizontal overflow on any screen:
+  - **Operator (1280):**
+    - local sign-in;
+    - wrong code refused;
+    - console opens;
+    - Telegram: invalid URL blocked, save, preserved through a general settings save, then restored.
+  - **Customer (360 and 1280):**
+    - local sign-in;
+    - wrong code refused;
+    - profile step;
+    - Telegram link in Settings;
+    - security row;
+    - a customer sent back from the CRM;
+    - logout;
+    - revoked-cookie replay.
+  - **Also:**
+    - expired code refused;
+    - legacy pages redirect;
+    - Telegram cleared (360).
+- DB: an audit entry for every settings change, and platform settings restored.
+
+**Pass 2 (after all changes)**
+- `typecheck` and `lint`: clean. Production `build`: success.
+- Bundle inspection: no secret or test-code values, and the gate is compiled out.
+- Production server with `DEV_TEST_AUTH=true` on localhost:
+  - no test banners;
+  - the four local-test actions refused, even with the correct codes;
+  - the legacy pages redirect.
+- Deposit UI regression at 360 and 1280, with DB states confirmed:
+  - create;
+  - change amount;
+  - malformed hash;
+  - leave → cancel;
+  - Settings support fallback;
+  - security row.
+- Route timings (§15).
+- `npm test` without a database: **205/205**.
+- Key DB files re-run (`phone-auth`, `deposit-request-lifecycle`, `deposit-request`, `schema`, `auth-and-kyc`, `writes`): **65/66**. The one failure is the pre-existing exact-count test.
+
+## 23. Tests blocked by environment
+
+| Test | Class |
 |---|---|
-| No Firebase private key, no AWS key, no connection string in tracked files | **PASS** — pattern scan of tracked files: only placeholders and redaction-test fixtures |
-| Session cookie: httpOnly, Secure in production, SameSite=Lax, HMAC-SHA256, constant-time compare, 14-day cap | **PASS** — tested for forgery, expiry, garbage, future `iat` |
-| Session revocation | **PASS** for phone sessions; **WARNING** — legacy email sessions and operators still cannot be revoked server-side (needs the Supabase service-role key, deliberately not held) |
-| Cron routes | **PASS** — all three use `cron-auth.ts` (constant-time, refuse when `CRON_SECRET` unset) |
-| Operator auth separate | **PASS** — Supabase `admin_agents` gate unchanged |
-| Rate limits process-local | **WARNING** — see §4 |
-| A revoked or blocked session gets HTTP 200 + a streamed redirect, not a 307 | **WARNING** — the layout streams the shell before the account read; verified that no account data is in the response. Same pre-existing behaviour as an operator-blocked account. |
+| RDS: connectivity, version, migrations, counts | **BLOCKED** (private VPC) |
+| Real Firebase SMS OTP (send, resend, per-number limits, region policy for India) | **NOT TESTED** |
+| Real Supabase operator email code | **NOT TESTED** |
+| S3 upload/download | **NOT TESTED** (no bucket) |
+| PWA install on iOS/Android | **NOT TESTED** |
+| A real TRON transfer end to end | **NOT TESTED.** Integration tests use recorded or synthetic chain data. |
+| EC2 cron, Nginx | **NOT TESTED** |
 
-## 16. Authentication findings
+## 24. Production readiness blockers
 
-- **PASS** — one identity question (`getCustomerPrincipal`), phone first, legacy
-  Supabase second; precedence cannot move anyone into an account they did not
-  already own.
-- **PASS** — email sign-in creates no accounts once phone sign-in is live.
-- **WARNING** — the legacy email routes (`/login/email`, `/forgot-password`,
-  `/update-password`, `/reset-password`, `/auth/callback`, `/signup` when phone
-  is off) **are still needed**: an existing customer must reach their account
-  by email once to link a phone, and may need a password reset to do it. They
-  were kept deliberately. Remove only after every account with a balance has a
-  `firebase_uid` (query in §21).
-
-## 17. Authorization findings
-
-- **PASS** — every customer action resolves the account from the session;
-  deposit actions scope by owner in the `WHERE`.
-- **PASS** — CRM actions start with `requirePermission`; the new "all devices"
-  sign-out is under `security`.
-- **PASS** — profile update ignores a phone change for an account with a
-  verified number (server-side, not only hidden).
-
-### Verification commands and results
-
-| Check | Result |
-|---|---|
-| `npm run typecheck` | **PASS** — 0 errors |
-| `npm run lint` | **PASS** — 0 problems |
-| `npm test`, database unset | **PASS** — 193 / 193 |
-| `npm test`, development database | **WARNING** — 356 / 360. Two failures predate this work and fail identically in the earlier `.perf/test-rerun.log`: "holds exactly the seeded number of accounts" and "the historical backfill left no seeded deposit unannounced" (both assert facts about the shared live dataset — see CLAUDE.md §16.7). Two (`writes`: fixture user insert) were connection failures during the parallel run; `writes.integration.test.ts` alone: **13 / 13**. |
-| New integration files alone | **PASS** — lifecycle 11/11, deposit-request 8/8 (18 with lifecycle's first run), phone-auth 6/6 |
-| `npm run build` | **PASS** |
-| Production server + headless Chrome, 360 px and 1280 px | **PASS** — amount → request → change amount → invalid and unknown hash → support → leave dialog → cancel; Settings; Security |
-
-## 18. Database findings
-
-- **PASS** — money stays `numeric`; new columns hold no money.
-- **PASS** — every new uniqueness rule is an index, not a prior `SELECT`.
-- **WARNING** — `drizzle-kit` names migrations randomly; `0020`/`0021` were
-  renamed descriptively and the journal updated to match. Use the same care
-  with future migrations.
-- **WARNING** — the integration suite writes to whatever `DATABASE_URL` names.
-  A run killed mid-way leaves its fixtures behind: this pass found two
-  "Release Test" users from a run I had interrupted, and deleted them (the
-  counts in §6 are after that). **Never point the suite at production.**
-
-## 19. Performance findings
-
-- **PASS (fixed)** — a *Verify Payment* press waited behind an awaited chain
-  scan (Next serialises one client's server actions). The poll now starts the
-  scan with `after()`; the same press answers in ~4 s.
-- **WARNING** — against the development database from here, a deposit
-  request create takes 2–5 s (several round trips at ~200 ms, §16.1a). On
-  EC2 next to RDS this should fall sharply; **measure there**.
-- **PASS** — the session check adds no round trip (epoch read on the existing
-  account query).
-
-## 20. Broken or questionable areas
-
-| Item | Status |
-|---|---|
-| Replaced deposit request reappeared (stale poll) | **FIXED** — updates for any other request id are ignored, and results after unmount dropped |
-| Verify blocked behind scan | **FIXED** (§19) |
-| `CLAUDE.md` §3 lists `motion` as a dependency; it is not installed | **WARNING** — doc drift, left for a human |
-| `CLAUDE.md` §18.5 described the deleted `DepositWatcher` and a 4 s floor (actual 15 s) | **FIXED** |
-| The Settings footer says "demo build · Sample data only. No real funds…" | **NEEDS HUMAN REVIEW** — on a production deployment with real deposits this is false. Not changed: it is product/legal copy. |
-| `SupportCenter` "Send message" says "Demo build — no ticket was actually created" | **WARNING** — honest, but a production support form that does nothing; the Telegram row is the real channel now |
-
-## 21. Potential cleanup (requires human review)
-
-| Item | Why not removed |
-|---|---|
-| Legacy email auth routes/components | still the only path for existing customers to link (§16). Remove when `select count(*) from users u join wallet_balances w on w.user_id = u.id where u.firebase_uid is null and (w.available > 0 or w.locked_in_investments > 0)` is 0. |
-| `deposit_addresses`, `deposit_address_assignments` | history of past attributions (CLAUDE.md §18.8) |
-| `src/components/ui/separator.tsx` (+ `@radix-ui/react-separator`) | unused shadcn primitive; harmless |
-| `src/hooks/use-mounted.ts` | unused; listed in CLAUDE.md's folder map |
-| `recordDepositIntent` | only tests use it now |
-| `measure-tmp.ts`, `q*-tmp.ts` (repo root) | pre-existing, untracked, not mine; left in place and **not** committed |
-| `.perf/test-rerun.log` | pre-existing modified file; not committed |
-
-Removed in this pass, with reason: `requestTestDeposit` (development-only
-action, refused in production, no caller after the old deposit screen was
-replaced); the Firebase service-account code paths (replaced, not needed).
-
-## 22. Items deliberately NOT changed
-
-Production DNS; the production deposit address (still the env default until an
-operator saves one); any balance, ledger row, deposit, investment, KYC record or
-referral; the Supabase database; historical deposit records; operator
-authentication; the exact-amount matching rule; the email column.
-
-## 23. Items requiring human review
-
-1. Generate and set `CUSTOMER_SESSION_SECRET` on EC2.
-2. Add the production domain to Firebase authorized domains; confirm the SMS
-   region policy allows India.
-3. Run the migrations on RDS (§6) after a snapshot.
-4. Set `NEXT_PUBLIC_SUPPORT_TELEGRAM` to the real handle and rebuild.
-5. Decide how existing customers are told about the one-time email → phone
-   link (§5).
-6. The "demo build / no real funds" copy (§20).
-7. S3 bucket, IAM role and CORS (runbook §2).
-
-## 24. Blocked by missing credentials / external services
-
-| Item | Needs |
-|---|---|
-| Real OTP send/verify, resend, wrong/expired code UX | a real device or a Firebase test number |
-| RDS migration and verification | the RDS URL in the runtime |
-| S3 upload/download | the bucket and instance role |
-| PWA install on iOS/Android | real devices |
-| A real deposit credited by a submitted hash | a testnet transfer to a configured address |
+1. RDS not migrated or verified. Run the runbook on EC2.
+2. RDS password rotation, with URL encoding.
+3. `CUSTOMER_SESSION_SECRET` and `CRON_SECRET` on EC2.
+4. Firebase authorised domain for production, and the India SMS policy.
+5. Supabase SMTP for operator codes (or keep using the password form).
+6. The legacy email decision for existing customers (§21.3).
+7. An S3 bucket and instance role, if KYC documents are to be stored on AWS.
 
 ## 25. Recommended next steps
 
-1. Items 1–4 of §23, then a staged test on EC2: sign in with a Firebase test
-   number, link a legacy account, sign out on one device and confirm the other
-   is signed out.
-2. Send a Nile/Shasta testnet transfer to a test deployment and verify it by
-   hash end to end.
-3. Move the rate limiter to a shared store before running more than one
-   process.
-4. Measure deposit request latency on EC2 + RDS.
-5. After most customers have linked a phone, retire the legacy email routes
-   (§21 query).
+1. **On EC2, migrate RDS:**
+   1. set the encoded `DATABASE_URL`;
+   2. run `npm run db:verify`;
+   3. take a snapshot;
+   4. run `npm run db:migrate`;
+   5. run `npm run db:verify` again and compare the counts.
+2. **Secrets and cron:** rotate the RDS password, set `CUSTOMER_SESSION_SECRET` and `CRON_SECRET`, and install `deploy/ec2/nanotron.cron`.
+3. **Firebase console:** add the production domain, confirm the India policy, then test one real SMS from a phone.
+4. **Supabase SMTP:** configure it, test one operator code, then decide on the password form.
+5. **Telegram:** save the real handle in the CRM.
+6. **Performance:** re-measure route timings on EC2 against RDS.
+7. **Test suite:** fix the fixture leak that causes the exact-count failure, and consider a local Postgres for CI.

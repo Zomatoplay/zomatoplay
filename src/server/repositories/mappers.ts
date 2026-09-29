@@ -703,8 +703,13 @@ export function toAuditLogEntry(row: AuditLogRow): AuditLogEntry {
 }
 
 export function toPlatformSettings(row: SettingsRow): PlatformSettings {
+  // The support Telegram username is left out on purpose: it has its own
+  // validated write path, and a copy in the general form's draft is a copy
+  // that form could write back stale (see `StoredPlatformSection`).
+  const platform = { ...row.platform };
+  delete platform.supportTelegram;
   return {
-    platform: row.platform,
+    platform,
     currency: row.currency,
     withdrawals: row.withdrawals,
     deposits: row.deposits,

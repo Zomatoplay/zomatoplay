@@ -4,6 +4,70 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-09-30 (Operator sign-in root cause, phone-only customers, local test sign-in, Telegram from the CRM, RDS verification)
+
+No migration. Nothing was written to RDS: it is in a private VPC subnet and
+unreachable from the development machine (see below). Full findings:
+`docs/FULL_SYSTEM_AUDIT.md`.
+
+### "Could not verify operator access. Try again." — root cause
+- Not an authorization bug. `.env.local` had gained the RDS `DATABASE_URL` /
+  `DIRECT_DATABASE_URL` below the Supabase ones (the later definition wins),
+  and the RDS password contains an unquoted `#`: dotenv reads it as a comment,
+  so the app received a 36-character invalid URL and every query failed — which
+  the operator sign-in correctly reports as the *retryable* infrastructure
+  outcome. Even encoded (`%23`), the RDS host resolves to a private
+  `172.31.x.x` address and times out from outside the VPC.
+- Fixed locally: the `#` percent-encoded and the two RDS lines commented out
+  with a note, so local development uses the reachable Supabase database
+  again. Verified: the dev operator credential signs in and resolves to the
+  active master admin with its 13 grants.
+
+### Operators: work email + emailed one-time code
+- `/admin/login` sends a Supabase email OTP (`shouldCreateUser: false`) and
+  verifies it; the result is decided by the unchanged `completeOperatorSignIn`
+  → `admin_agents`. The password form remains as a secondary option until the
+  deployment's Supabase SMTP is confirmed. The form answers identically for
+  known and unknown addresses.
+
+### Customers: mobile number only
+- The legacy email pages (`/login/email`, `/signup`, `/forgot-password`) and
+  `completeSignIn` are off unless `LEGACY_EMAIL_SIGN_IN=true`
+  (`isLegacyEmailSignInEnabled`); the code is kept for a link-your-number
+  migration window. The CRM's "send password reset" refuses for customers
+  while it is off. `/update-password` stays (operator resets land there).
+- `npm run db:dev-accounts` no longer creates the email-and-password test
+  customer (`DEV_TEST_EMAIL` / `DEV_TEST_PASSWORD`). The account an earlier run
+  created is kept: it carries test deposits, ledger rows and an investment.
+
+### Local test sign-in (development build on localhost only)
+- One test customer number + code, and a code for the dev operator, from
+  `.env.local` (`DEV_TEST_AUTH`, `DEV_TEST_CUSTOMER_PHONE`,
+  `DEV_TEST_CUSTOMER_OTP`, `DEV_TEST_ADMIN_OTP`). Gated on
+  `NODE_ENV === "development"` (inlined at build — dead code in production),
+  the flag, a localhost Host header and the configured values
+  (`server/auth/dev-test-auth.ts`, 11 tests). It replaces only code delivery;
+  account resolution, the session and every operator permission check are the
+  production path. Firebase test numbers were rejected: they are per project
+  and would work on the production domain too.
+
+### Customer support on Telegram, configured in the CRM
+- Admin → Settings → **Customer support** saves a Telegram link
+  (`updateSupportTelegramAction`: `settings`/`manage`, validated to a bare
+  username, audited) into `platform_settings.platform.supportTelegram`.
+  Settings → Support, the Help centre and the deposit screen read it through
+  `getSupportTelegramUrl()` (catalogue cache, dropped on save) and show
+  "currently unavailable" when unset. `NEXT_PUBLIC_SUPPORT_TELEGRAM` is gone.
+  The general settings save can neither clear nor forge the value.
+
+### RDS
+- `npm run db:verify`: read-only (`BEGIN READ ONLY`) target identification,
+  pending migrations, a pre-check that migration 0020's unique index can
+  build, and aggregate counts for before/after comparison. Prints no host
+  credentials or personal data. To be run on the EC2 host.
+
+---
+
 ## 2026-09-28 (Hardening: sessions without a Firebase key, deposit request lifecycle, support)
 
 Two additive migrations: `0020_deposit_request_cancellation` (enum value

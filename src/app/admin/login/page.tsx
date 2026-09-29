@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { AdminSignInForm } from "@/components/admin/layout/admin-sign-in-form";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { getCurrentOperator } from "@/server/admin/session";
+import { localTestOperator } from "@/server/auth/dev-test-gate";
 
 export const metadata: Metadata = {
   title: "Operator sign-in",
@@ -53,5 +54,14 @@ export default async function AdminLoginPage({
    */
   if (operator) redirect("/admin");
 
-  return <AdminSignInForm configured={isAuthConfigured()} reason={refusal} />;
+  // Development build on localhost with DEV_TEST_AUTH=true only; null otherwise.
+  const localTest = await localTestOperator();
+
+  return (
+    <AdminSignInForm
+      configured={isAuthConfigured()}
+      reason={refusal}
+      localTest={localTest ? { email: localTest.email } : null}
+    />
+  );
 }

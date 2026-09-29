@@ -18,7 +18,7 @@ import {
   auditOutcomeEnum,
   auditTargetTypeEnum,
 } from "./enums";
-import type { PlatformSettings } from "@/types/admin";
+import type { PlatformSettings, StoredPlatformSection } from "@/types/admin";
 
 /**
  * Operators of the Master CRM.
@@ -144,7 +144,7 @@ export const auditLogs = pgTable(
  */
 export const platformSettings = pgTable("platform_settings", {
   id: text("id").primaryKey().default("default"),
-  platform: jsonb("platform").$type<PlatformSettings["platform"]>().notNull(),
+  platform: jsonb("platform").$type<StoredPlatformSection>().notNull(),
   currency: jsonb("currency").$type<PlatformSettings["currency"]>().notNull(),
   withdrawals: jsonb("withdrawals")
     .$type<PlatformSettings["withdrawals"]>()

@@ -3,9 +3,9 @@ import { redirect } from "next/navigation";
 
 import { AuthFooterLink } from "@/components/auth/auth-shared";
 import { PhoneOtpForm } from "@/components/auth/phone-otp-form";
-import { isAuthConfigured } from "@/lib/supabase/env";
 import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
-import { isPhoneSignInLive } from "@/server/auth/phone-sign-in";
+import { localTestCustomer } from "@/server/auth/dev-test-gate";
+import { isLegacyEmailSignInEnabled, isPhoneSignInLive } from "@/server/auth/phone-sign-in";
 
 export const metadata: Metadata = {
   title: "Sign in",
@@ -20,8 +20,8 @@ export const metadata: Metadata = {
  * for everything else (see `convenienceLookup`).
  *
  * When phone sign-in is not configured on this deployment the page says so
- * plainly and offers the legacy email sign-in, rather than a form that would
- * send a code to nobody.
+ * plainly rather than showing a form that would send a code to nobody. The
+ * legacy email link appears only while `LEGACY_EMAIL_SIGN_IN=true`.
  */
 export default async function LoginPage({
   searchParams,
@@ -38,6 +38,9 @@ export default async function LoginPage({
 
   const lockedOut = account ? `This account is ${account.status}. Contact support.` : null;
   const phoneLive = isPhoneSignInLive();
+  const legacyEmail = isLegacyEmailSignInEnabled();
+  // Development build on localhost with DEV_TEST_AUTH=true only; null otherwise.
+  const localTest = await localTestCustomer();
 
   return (
     <div className="space-y-6">
@@ -50,8 +53,12 @@ export default async function LoginPage({
         </p>
       ) : null}
 
-      {phoneLive ? (
-        <PhoneOtpForm mode="sign-in" next={safeNext} />
+      {phoneLive || localTest ? (
+        <PhoneOtpForm
+          mode="sign-in"
+          next={safeNext}
+          localTest={localTest ? { phoneE164: localTest.phoneE164 } : null}
+        />
       ) : (
         <div className="space-y-3 rounded-2xl border border-border bg-card p-6 text-center">
           <h1 className="text-lg font-semibold tracking-tight">
@@ -59,12 +66,12 @@ export default async function LoginPage({
           </h1>
           <p className="text-sm leading-relaxed text-muted-foreground">
             Sign-in by mobile number has not been configured on this deployment.
-            If you already have an account, sign in with your email below.
+            Please try again later.
           </p>
         </div>
       )}
 
-      {isAuthConfigured() ? (
+      {legacyEmail ? (
         <AuthFooterLink
           prompt="Signed up with email before?"
           href={`/login/email?next=${encodeURIComponent(safeNext)}`}

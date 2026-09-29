@@ -10,6 +10,7 @@ import {
   errorDiagnostics,
   recordPipelineEvent,
 } from "@/server/observability";
+import { isLegacyEmailSignInEnabled } from "@/server/auth/phone-sign-in";
 import { traceAction } from "@/server/trace-action";
 
 /**
@@ -48,6 +49,18 @@ export async function completeSignIn(input: {
 }
 
 async function resolveSignIn(input: { next?: string }): Promise<SignInResult> {
+  // The page is not the boundary — this action is callable directly. With the
+  // legacy switch off, a Supabase session obtained some other way still gets
+  // no customer account from here.
+  if (!isLegacyEmailSignInEnabled()) {
+    await signOut().catch(() => undefined);
+    return {
+      ok: false,
+      message: "Sign in with your mobile number.",
+      redirectTo: "/login",
+    };
+  }
+
   try {
     // A phone session outranks an email one (`getCustomerPrincipal`). Signing in
     // by email is an explicit choice of account, so any phone session left in

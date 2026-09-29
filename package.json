@@ -12,6 +12,7 @@
     "db:seed": "tsx src/db/scripts/seed.ts",
     "db:backfill-tiers": "tsx src/db/scripts/backfill-plan-tiers.ts",
     "db:check": "tsx src/db/scripts/check.ts",
+    "db:verify": "tsx src/db/scripts/verify.ts",
     "db:studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit",
     "test": "tsx --conditions=react-server --test --test-concurrency=1 $(find src -name '*.test.ts')",

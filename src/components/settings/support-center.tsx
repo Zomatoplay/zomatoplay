@@ -10,6 +10,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { TelegramSupportButton } from "@/components/shared/telegram-support";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -39,9 +40,12 @@ const ticketStatusLabels: Record<
 
 export function SupportCenter({
   tickets,
+  telegramUrl,
 }: {
   /** The account's own conversations. FAQs and help topics stay static copy. */
   tickets: SupportTicket[];
+  /** The operator-configured Telegram destination; null when none is set. */
+  telegramUrl: string | null;
 }) {
   const [contactOpen, setContactOpen] = useState(false);
   const [subject, setSubject] = useState("");
@@ -134,6 +138,7 @@ export function SupportCenter({
 
       {/* Contact */}
       <section className="space-y-3">
+        {telegramUrl ? <TelegramSupportButton url={telegramUrl} /> : null}
         <Button variant="brand" size="lg" block onClick={() => setContactOpen(true)}>
           <Send className="size-4" />
           Contact support

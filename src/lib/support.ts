@@ -1,15 +1,16 @@
 /**
- * Where customers reach support on Telegram — the ONE place it is configured.
+ * Validation for the customer-support Telegram destination.
  *
- * `NEXT_PUBLIC_SUPPORT_TELEGRAM` holds a public Telegram username (`@name` or
- * `name`) or its `https://t.me/name` link. It is a public contact handle, so
- * `NEXT_PUBLIC_` is correct; nothing secret belongs in it.
+ * The destination is configured by an operator in Admin → Settings → Customer
+ * support and stored in `platform_settings.platform.supportTelegram` — the ONE
+ * place it lives (read by `getSupportTelegramUrl()` in `catalogue.service`).
+ * These helpers are the rule both sides apply: the admin action before it
+ * writes, and the service again when it reads.
  *
- * Unset or malformed returns `null`, and every caller renders a fallback
- * rather than a link: a support button that opens the wrong chat — or an
- * arbitrary URL somebody put in the variable — is worse than none. Only a
- * value shaped like a Telegram username ever becomes a link, and the link is
- * always built here, on `t.me`.
+ * An operator may type `@name`, `name` or `https://t.me/name`; only the bare
+ * username is stored, and the link is always rebuilt here, on `t.me`. Anything
+ * else — another host, a path, a query string, `javascript:` — is refused, so
+ * the customer's support button can never be pointed at an arbitrary URL.
  */
 
 /** Telegram's own rule: 5–32 characters, letters, digits and underscores, starting with a letter. */
@@ -23,10 +24,7 @@ export function parseTelegramUsername(raw: string | undefined | null): string | 
   return USERNAME.test(value) ? value : null;
 }
 
-export function telegramSupportUrl(
-  // Referenced literally so Next inlines it into the browser bundle.
-  raw: string | undefined = process.env.NEXT_PUBLIC_SUPPORT_TELEGRAM,
-): string | null {
+export function telegramSupportUrl(raw: string | undefined | null): string | null {
   const username = parseTelegramUsername(raw);
   return username ? `https://t.me/${username}` : null;
 }

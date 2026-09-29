@@ -747,6 +747,17 @@ export interface AdminNotificationCampaign {
 /* Platform settings                                                           */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The `platform_settings.platform` column as stored. It carries one key the
+ * CRM's general settings form never sees: the customer-support Telegram
+ * username, which has its own validated action (`updateSupportTelegramAction`)
+ * and is stripped from `PlatformSettings` by the mapper so the general form
+ * cannot overwrite it with a stale copy.
+ */
+export type StoredPlatformSection = PlatformSettings["platform"] & {
+  supportTelegram?: string | null;
+};
+
 export interface PlatformSettings {
   platform: {
     name: string;

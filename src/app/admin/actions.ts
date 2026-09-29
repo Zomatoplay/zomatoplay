@@ -1,12 +1,13 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { headers } from "next/headers";
 
 import { getDb } from "@/db";
 import * as t from "@/db/schema";
 import { requireSupabaseConfig } from "@/lib/supabase/env";
 import { getSiteUrl } from "@/lib/site-url";
+import { parseTelegramUsername } from "@/lib/support";
 import { sendPasswordRecovery } from "@/lib/supabase/auth-rest";
 import {
   describeError,
@@ -18,6 +19,7 @@ import { toSafeFailure } from "@/server/errors";
 import type { AdminUserOption } from "@/types/admin";
 import { traceAction } from "@/server/trace-action";
 import { requirePermission } from "@/server/admin/session";
+import { isLegacyEmailSignInEnabled } from "@/server/auth/phone-sign-in";
 import { findUsersForPicker } from "@/server/services/admin.service";
 import { revalidate, revalidateCatalogue } from "@/server/revalidate";
 import {
@@ -60,6 +62,7 @@ import type {
   AdminUserRestrictions,
   AdminUserStatus,
   PlatformSettings,
+  StoredPlatformSection,
 } from "@/types/admin";
 
 /**
@@ -713,6 +716,14 @@ export async function sendUserPasswordResetAction(input: {
       );
     }
     const email = user.email;
+    if (!isLegacyEmailSignInEnabled()) {
+      throw Object.assign(
+        new Error(
+          "Customer email sign-in is switched off — customers sign in with a mobile number, so a password reset would not help them.",
+        ),
+        { name: "AdminValidationError" },
+      );
+    }
 
     // Deliberately not the request-scoped client: this acts on the *user's*
     // email, not on the operator's own session.
@@ -1428,6 +1439,13 @@ export async function updateSettingsAction(input: {
         .limit(1);
       if (!existing) throw new Error("Platform settings have not been initialised.");
 
+      // The support Telegram username is not this form's to write: it has its
+      // own validated action below. Anything the client put under that key is
+      // dropped, and the stored value is carried over in SQL, so saving the
+      // general form can neither clear it nor smuggle in an unvalidated one.
+      const platform: StoredPlatformSection = { ...input.settings.platform };
+      delete platform.supportTelegram;
+
       // Stored as one jsonb column per section, matching the shape the CRM
       // edits and the services read. Written whole: the form submits the
       // complete settings object, so a partial update could only ever mean a
@@ -1435,7 +1453,7 @@ export async function updateSettingsAction(input: {
       await tx
         .update(t.platformSettings)
         .set({
-          platform: input.settings.platform,
+          platform: sql`${JSON.stringify(platform)}::jsonb || jsonb_strip_nulls(jsonb_build_object('supportTelegram', ${t.platformSettings.platform}->'supportTelegram'))`,
           currency: input.settings.currency,
           withdrawals: input.settings.withdrawals,
           deposits: input.settings.deposits,
@@ -1458,6 +1476,73 @@ export async function updateSettingsAction(input: {
     return { ok: true, message: "Settings saved." };
   } catch (error) {
     return failed(error, "The settings were not saved.");
+  }
+}
+
+/**
+ * Sets, or clears, where customers contact support on Telegram.
+ *
+ * The one write path for `platform_settings.platform.supportTelegram`, which
+ * Settings → Support and the deposit screen both read. Validated here and
+ * again when read (`getSupportTelegramUrl`): only a Telegram username is
+ * stored, never a URL, so the customer's button can only ever open `t.me`.
+ * An empty value clears it and customers see the unavailable state.
+ */
+export async function updateSupportTelegramAction(input: {
+  telegram: string;
+}): Promise<AdminActionResult> {
+  try {
+    const operator = await requirePermission("settings");
+
+    const raw = typeof input?.telegram === "string" ? input.telegram.trim() : "";
+    const username = raw ? parseTelegramUsername(raw) : null;
+    if (raw && !username) {
+      return {
+        ok: false,
+        message:
+          "Enter a Telegram username (5–32 letters, digits or underscores) or its https://t.me/ link.",
+      };
+    }
+
+    await mutate(operator.actor, async ({ tx, now, audit }) => {
+      const [existing] = await tx
+        .select({
+          id: t.platformSettings.id,
+          previous: sql<string | null>`${t.platformSettings.platform}->>'supportTelegram'`,
+        })
+        .from(t.platformSettings)
+        .limit(1)
+        .for("update");
+      if (!existing) throw new Error("Platform settings have not been initialised.");
+
+      await tx
+        .update(t.platformSettings)
+        .set({
+          platform: username
+            ? sql`jsonb_set(${t.platformSettings.platform}, '{supportTelegram}', to_jsonb(${username}::text))`
+            : sql`${t.platformSettings.platform} - 'supportTelegram'`,
+          updatedAt: now,
+          updatedBy: operator.name,
+        })
+        .where(eq(t.platformSettings.id, existing.id));
+
+      audit({
+        action: "settings_updated",
+        target: { type: "settings", id: existing.id, label: "Customer support" },
+        details: username
+          ? `Support Telegram set to @${username}${existing.previous ? ` (was @${existing.previous})` : ""}.`
+          : `Support Telegram cleared${existing.previous ? ` (was @${existing.previous})` : ""}.`,
+      });
+    });
+
+    revalidateCatalogue();
+    revalidate("/admin/settings", "/settings", "/settings/support", "/wallet/deposit");
+    return {
+      ok: true,
+      message: username ? `Customers now reach @${username} on Telegram.` : "Telegram support cleared.",
+    };
+  } catch (error) {
+    return failed(error, "The support setting was not saved.");
   }
 }
 

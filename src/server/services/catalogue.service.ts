@@ -9,7 +9,10 @@ import { depositNetworks as seedDepositNetworks } from "@/data/transactions";
 import type { DepositNetwork, Plan, VipLevel } from "@/types";
 
 import { resilientRead } from "../database";
+import { telegramSupportUrl } from "@/lib/support";
+
 import {
+  findSupportTelegram,
   listDepositNetworks,
   listPublicPlans,
   listVipLevels,
@@ -122,4 +125,23 @@ export async function getDepositNetworks(): Promise<DepositNetwork[]> {
 
 export async function getVipLevels(): Promise<VipLevel[]> {
   return cachedCatalogueRead("vip-levels", listVipLevels, () => seedVipLevels);
+}
+
+/**
+ * Where customers contact support on Telegram, or null when nobody has
+ * configured it.
+ *
+ * Cached with the catalogue for the same reason the catalogue is: it is one
+ * public contact handle, identical for every visitor and belonging to nobody.
+ * Saving it in the CRM drops the tag, so the change is visible on the next
+ * request. Re-validated on the way out, so a value that reached the column by
+ * some other route than the admin action still cannot become a foreign link.
+ */
+export async function getSupportTelegramUrl(): Promise<string | null> {
+  const username = await cachedCatalogueRead(
+    "support-telegram",
+    findSupportTelegram,
+    () => null,
+  );
+  return telegramSupportUrl(username);
 }

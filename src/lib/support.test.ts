@@ -19,5 +19,12 @@ describe("the Telegram support destination", () => {
   test("a link is only ever built on t.me", () => {
     assert.equal(parseTelegramUsername("https://telegram.me/Support_Desk"), "Support_Desk");
     assert.equal(telegramSupportUrl("https://example.com/Support_Desk"), null);
+    assert.equal(telegramSupportUrl("https://t.me.evil.example/Support_Desk"), null);
+  });
+
+  test("nothing but the username survives — no path, query or fragment rides along", () => {
+    for (const raw of ["https://t.me/Support_Desk?start=x", "https://t.me/Support_Desk/12", "https://t.me/Support_Desk#x", "t.me/+invitehash"]) {
+      assert.equal(telegramSupportUrl(raw), null, raw);
+    }
   });
 });

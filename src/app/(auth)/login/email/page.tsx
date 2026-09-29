@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { SignInForm } from "@/components/auth/sign-in-form";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
-import { isPhoneSignInLive } from "@/server/auth/phone-sign-in";
+import { isLegacyEmailSignInEnabled, isPhoneSignInLive } from "@/server/auth/phone-sign-in";
 
 export const metadata: Metadata = {
   title: "Sign in with email",
@@ -16,7 +16,8 @@ export const metadata: Metadata = {
  *
  * `/login` is phone OTP. This page stays so an existing customer can reach
  * their account once more and link a verified mobile number to it
- * (`/link-phone`, enforced by the app gate). While phone sign-in is live it
+ * (`/link-phone`, enforced by the app gate) — and only while
+ * `LEGACY_EMAIL_SIGN_IN=true`; otherwise it redirects to `/login`. While phone sign-in is live it
  * creates no new accounts — see `ensureAccountForCurrentPrincipal`.
  */
 
@@ -26,6 +27,9 @@ export default async function LoginPage({
   searchParams: Promise<{ next?: string; error?: string }>;
 }) {
   const { next, error } = await searchParams;
+
+  // Switched off unless a migration window is open (`isLegacyEmailSignInEnabled`).
+  if (!isLegacyEmailSignInEnabled()) redirect("/login");
 
   /*
    * Already signed in: nothing to do here. A locked-out account is the one

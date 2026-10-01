@@ -8,7 +8,7 @@ import {
   toSessionView,
   AdminAuthorizationError,
 } from "@/server/admin/session";
-import { getAuthPrincipal } from "@/server/auth/session";
+import { readOperatorSessionClaims } from "@/server/admin/operator-session";
 import { getAdminShell } from "@/server/services/admin.service";
 import { isInfrastructureFailure } from "@/server/errors";
 import {
@@ -89,9 +89,9 @@ async function renderConsoleLayout(children: React.ReactNode) {
    * is in flight, and thrown away if the caller turns out not to be one.
    *
    * The exposure that creates is bounded and small, and worth stating exactly:
-   * a caller who already holds a **verified Supabase JWT** but is not an
-   * operator can cause one extra `platform_settings` read whose result is never
-   * sent to them. Nothing here returns data before `operator` has been checked.
+   * a caller holding a validly signed operator cookie whose operator no longer
+   * resolves (signed out elsewhere, number changed) can cause one extra
+   * `platform_settings` read whose result is never sent to them. Nothing here returns data before `operator` has been checked.
    *
    * THE PRINCIPAL IS RESOLVED FIRST, AND IT HAS TO BE
    * -------------------------------------------------
@@ -105,33 +105,19 @@ async function renderConsoleLayout(children: React.ReactNode) {
    * the same request in ~200ms, because none of them reads anything before the
    * gate.
    *
-   * `getAuthPrincipal()` costs no round trip — it verifies the token's
-   * signature in-process — and it is request-memoised, so `getCurrentOperator()`
-   * below reuses this exact call rather than repeating it. Gating on it
-   * therefore keeps the concurrency win for a real operator and takes the
-   * unauthenticated request off the database entirely.
+   * The operator session cookie is checked first: its HMAC is verified
+   * in-process (`readOperatorSessionClaims`, request-memoised and reused by
+   * `getCurrentOperator()` below), so it costs no round trip, and a request
+   * with no valid operator cookie never reaches the database.
+   *
+   * It used to be `getAuthPrincipal()` — a *Supabase* session — which is not
+   * how operators sign in any more (§20). An SMS-signed-in operator has no
+   * Supabase session, so this gate sent them to `/admin/login`, which saw a
+   * valid operator cookie and sent them back: a redirect loop on every
+   * console URL opened directly.
    */
-  let principal;
-  try {
-    principal = await getAuthPrincipal();
-  } catch (error) {
-    // Same reasoning as the operator gate below: "we could not check" is not a
-    // verdict, so the console is refused rather than the credential blamed.
-    if (isInfrastructureFailure(error)) {
-      recordPipelineEvent({
-        pipeline: "admin",
-        operation: "admin.gate.degraded",
-        status: "failed",
-        message: "The operator gate could not verify the session; console refused",
-        errorMessage: describeError(error),
-        metadata: errorDiagnostics(error),
-      });
-      return <ConsoleUnavailable />;
-    }
-    throw error;
-  }
-
-  if (!principal) redirect("/admin/login");
+  const claims = await readOperatorSessionClaims();
+  if (!claims) redirect("/admin/login");
 
   const shellPromise = getAdminShell();
   // Claimed immediately: if the operator check redirects, nothing awaits this

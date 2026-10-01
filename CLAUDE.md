@@ -1828,6 +1828,13 @@ code:
   session instead, signed with `CUSTOMER_SESSION_SECRET`
   (`customer-session-token.ts`, tested). **Do not reintroduce
   `createSessionCookie` / a service account to "simplify" this.**
+- **`package.json` overrides `jwks-rsa`'s `jose` to 5.x, and removing it takes
+  production down.** `firebase-admin` → `jwks-rsa` 4 does `require('jose')`;
+  jose 6 is ESM-only, and a runtime without `require(esm)` (Vercel, 2026-10-01)
+  fails every route that loads `firebase-admin/auth` — a passing build proves
+  nothing, because Next externalizes the package. Test a change with
+  `NODE_OPTIONS=--no-experimental-require-module next start`. ID-token
+  verification never touches jose (x509 certs, not JWKS).
 - **`getCustomerPrincipal()`** (`server/auth/customer-session.ts`) is the one
   customer identity question: a valid session cookie first (verified locally,
   no network), else the legacy Supabase session. `getAuthenticatedAccount()`

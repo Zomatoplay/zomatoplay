@@ -4,6 +4,27 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-10-01 (Vercel 500: jwks-rsa → jose ESM)
+
+No migration, no code change, nothing written to any database. Full report:
+`docs/incident-2026-10-01-vercel-jose-esm.md`.
+
+- Every customer route returned 500 on Vercel: `firebase-admin@14.5.0` →
+  `jwks-rsa@4.1.0` does `require('jose')`, and `jose@6.2.12` is ESM-only, so
+  loading `firebase-admin/auth` (statically imported via
+  `phone-sign-in.ts` from `(app)/layout.tsx`) threw `ERR_REQUIRE_ESM` on a
+  runtime without `require(esm)`. Builds passed because Next externalizes
+  `firebase-admin`; local Node 22.23 has `require(esm)`.
+- Fix: `"overrides": { "jwks-rsa": { "jose": "5.10.0" } }` — jose 5 ships a
+  CommonJS build. Firebase ID-token verification does not use jwks-rsa or
+  jose (it uses Google's x509 certs via `UrlKeyFetcher`), so it is unchanged.
+- Verified on a production build started with
+  `--no-experimental-require-module`: same build without the fix → 500 with
+  the production error; with it → `/` 307, `/login` 200, forged/expired/
+  `alg:none` ID tokens all rejected. Vercel itself: not yet deployed.
+
+---
+
 ## 2026-09-30 (Operator sign-in root cause, phone-only customers, local test sign-in, Telegram from the CRM, RDS verification)
 
 No migration. Nothing was written to RDS: it is in a private VPC subnet and

@@ -1588,3 +1588,722 @@ ok 65 - postgrest exposure
       duration_ms: 11891.529732
       type: 'test'
       ...
+    # Subtest: a missed cron run catches up every overdue earning period in one pass
+    ok 7 - a missed cron run catches up every overdue earning period in one pass
+      ---
+      duration_ms: 62649.446293
+      type: 'test'
+      ...
+    # Subtest: non-compounding periods split the total profit exactly, with no rounding drift
+    ok 8 - non-compounding periods split the total profit exactly, with no rounding drift
+      ---
+      duration_ms: 4.403219
+      type: 'test'
+      ...
+    # Subtest: crediting the final period and returning principal both happen in one pass at maturity
+    ok 9 - crediting the final period and returning principal both happen in one pass at maturity
+      ---
+      duration_ms: 123059.319368
+      type: 'test'
+      ...
+    # Subtest: Flexible Reserve accrues no scheduled earnings — it has no term to schedule them over
+    ok 10 - Flexible Reserve accrues no scheduled earnings — it has no term to schedule them over
+      ---
+      duration_ms: 10647.623913
+      type: 'test'
+      ...
+    # Subtest: changing a plan's rate does not alter an allocation already sold at the old one
+    ok 11 - changing a plan's rate does not alter an allocation already sold at the old one
+      ---
+      duration_ms: 12490.660692
+      type: 'test'
+      ...
+    # Subtest: one settlement pass matures everything overdue, however long the gap
+    ok 12 - one settlement pass matures everything overdue, however long the gap
+      ---
+      duration_ms: 186363.49406
+      type: 'test'
+      ...
+    # Subtest: the reward schedule shows the next uncredited period, not just the next calendar boundary
+    ok 13 - the reward schedule shows the next uncredited period, not just the next calendar boundary
+      ---
+      duration_ms: 0.849384
+      type: 'test'
+      ...
+    # Subtest: a term that has run out has no schedule and clamped progress
+    ok 14 - a term that has run out has no schedule and clamped progress
+      ---
+      duration_ms: 0.320425
+      type: 'test'
+      ...
+    1..14
+ok 66 - money lifecycle
+  ---
+  duration_ms: 681963.752037
+  type: 'suite'
+  ...
+# Subtest: redaction
+    # Subtest: strips connection strings, keys and JWTs from error text
+    ok 1 - strips connection strings, keys and JWTs from error text
+      ---
+      duration_ms: 2.223997
+      type: 'test'
+      ...
+    # Subtest: caps length, so one enormous error cannot dominate the table
+    ok 2 - caps length, so one enormous error cannot dominate the table
+      ---
+      duration_ms: 0.541699
+      type: 'test'
+      ...
+    1..2
+ok 67 - redaction
+  ---
+  duration_ms: 4.802544
+  type: 'suite'
+  ...
+# Subtest: correlation
+    # Subtest: one id spans everything a request calls
+    ok 1 - one id spans everything a request calls
+      ---
+      duration_ms: 3.436479
+      type: 'test'
+      ...
+    # Subtest: separate requests get separate ids
+    ok 2 - separate requests get separate ids
+      ---
+      duration_ms: 0.886836
+      type: 'test'
+      ...
+    1..2
+ok 68 - correlation
+  ---
+  duration_ms: 4.733589
+  type: 'suite'
+  ...
+# Subtest: pipeline events
+    # Subtest: a successful step is recorded with its duration
+    ok 1 - a successful step is recorded with its duration
+      ---
+      duration_ms: 4820.084078
+      type: 'test'
+      ...
+    # Subtest: a failure is recorded AND re-thrown
+    ok 2 - a failure is recorded AND re-thrown
+      ---
+      duration_ms: 823.04366
+      type: 'test'
+      ...
+    # Subtest: steps of one request share a correlation id and keep their order
+    ok 3 - steps of one request share a correlation id and keep their order
+      ---
+      duration_ms: 788.527535
+      type: 'test'
+      ...
+    # Subtest: recording never throws, even with an impossible foreign key
+    ok 4 - recording never throws, even with an impossible foreign key
+      ---
+      duration_ms: 647.517402
+      type: 'test'
+      ...
+    # Subtest: ten events in one trace are buffered and written together
+    ok 5 - ten events in one trace are buffered and written together
+      ---
+      duration_ms: 1022.37286
+      type: 'test'
+      ...
+    # Subtest: an event may carry a correlation id that is not the trace's
+    ok 6 - an event may carry a correlation id that is not the trace's
+      ---
+      duration_ms: 791.15695
+      type: 'test'
+      ...
+    1..6
+ok 69 - pipeline events
+  ---
+  duration_ms: 9742.369798
+  type: 'suite'
+  ...
+# Subtest: plan rate tiers
+    # Subtest: a valid ladder saves, and comes back in lower-bound order
+    ok 1 - a valid ladder saves, and comes back in lower-bound order
+      ---
+      duration_ms: 5740.830535
+      type: 'test'
+      ...
+    # Subtest: the save is audited, with the ladder before and after
+    ok 2 - the save is audited, with the ladder before and after
+      ---
+      duration_ms: 391.681712
+      type: 'test'
+      ...
+    # Subtest: an overlapping ladder is refused by the server, not only by the form
+    ok 3 - an overlapping ladder is refused by the server, not only by the form
+      ---
+      duration_ms: 834.480857
+      type: 'test'
+      ...
+    # Subtest: a ladder leaving part of the plan's range unpriced is refused
+    ok 4 - a ladder leaving part of the plan's range unpriced is refused
+      ---
+      duration_ms: 1024.032185
+      type: 'test'
+      ...
+    # Subtest: a rate finer than the column stores is refused, not silently rounded
+    ok 5 - a rate finer than the column stores is refused, not silently rounded
+      ---
+      duration_ms: 796.855846
+      type: 'test'
+      ...
+    # Subtest: a refused save leaves the stored ladder exactly as it was
+    ok 6 - a refused save leaves the stored ladder exactly as it was
+      ---
+      duration_ms: 432.000089
+      type: 'test'
+      ...
+    # Subtest: the preview prices an amount with the same function an allocation uses
+    ok 7 - the preview prices an amount with the same function an allocation uses
+      ---
+      duration_ms: 5717.845766
+      type: 'test'
+      ...
+    # Subtest: an allocation is priced at the band its amount falls into, and the band is recorded
+    ok 8 - an allocation is priced at the band its amount falls into, and the band is recorded
+      ---
+      duration_ms: 11905.165978
+      type: 'test'
+      ...
+    # Subtest: the boundary is half-open where it actually matters — in the ledger
+    ok 9 - the boundary is half-open where it actually matters — in the ledger
+      ---
+      duration_ms: 19056.534862
+      type: 'test'
+      ...
+    # Subtest: an amount no band covers is refused, and nothing is debited
+    ok 10 - an amount no band covers is refused, and nothing is debited
+      ---
+      duration_ms: 11031.365236
+      type: 'test'
+      ...
+    # Subtest: a plan with no ladder is priced at its own estimated return
+    ok 11 - a plan with no ladder is priced at its own estimated return
+      ---
+      duration_ms: 14579.493108
+      type: 'test'
+      ...
+    # Subtest: changing a band does not reprice an allocation already made
+    ok 12 - changing a band does not reprice an allocation already made
+      ---
+      duration_ms: 24175.401909
+      type: 'test'
+      ...
+    # Subtest: deleting a band leaves the allocation that cited it intact
+    ok 13 - deleting a band leaves the allocation that cited it intact
+      ---
+      duration_ms: 15135.349488
+      type: 'test'
+      ...
+    # Subtest: an unverified account cannot allocate, whatever the ladder says
+    ok 14 - an unverified account cannot allocate, whatever the ladder says
+      ---
+      duration_ms: 8402.637211
+      type: 'test'
+      ...
+    # Subtest: an account with allocations frozen cannot allocate
+    ok 15 - an account with allocations frozen cannot allocate
+      ---
+      duration_ms: 8191.817178
+      type: 'test'
+      ...
+    # Subtest: a closed plan refuses allocations even with a valid ladder
+    ok 16 - a closed plan refuses allocations even with a valid ladder
+      ---
+      duration_ms: 8423.294696
+      type: 'test'
+      ...
+    # Subtest: insufficient balance is refused, and nothing at all is written
+    ok 17 - insufficient balance is refused, and nothing at all is written
+      ---
+      duration_ms: 9013.158526
+      type: 'test'
+      ...
+    # Subtest: exactly the available balance is allowed
+    ok 18 - exactly the available balance is allowed
+      ---
+      duration_ms: 11471.463836
+      type: 'test'
+      ...
+    # Subtest: two identical allocations submitted together both take their own money
+    ok 19 - two identical allocations submitted together both take their own money
+      ---
+      duration_ms: 11500.684499
+      type: 'test'
+      ...
+    1..19
+ok 70 - plan rate tiers
+  ---
+  duration_ms: 184473.248849
+  type: 'suite'
+  ...
+# Subtest: half-open bands: every boundary resolves to exactly one tier
+ok 71 - half-open bands: every boundary resolves to exactly one tier
+  ---
+  duration_ms: 7.523195
+  type: 'test'
+  ...
+# Subtest: the smallest representable step either side of a boundary lands on different tiers
+ok 72 - the smallest representable step either side of a boundary lands on different tiers
+  ---
+  duration_ms: 0.66976
+  type: 'test'
+  ...
+# Subtest: an inactive tier is skipped, and its range is not absorbed by a neighbour
+ok 73 - an inactive tier is skipped, and its range is not absorbed by a neighbour
+  ---
+  duration_ms: 0.683358
+  type: 'test'
+  ...
+# Subtest: ordering is by lower bound, whatever order the rows arrive in
+ok 74 - ordering is by lower bound, whatever order the rows arrive in
+  ---
+  duration_ms: 2.254776
+  type: 'test'
+  ...
+# Subtest: a plan with no ladder is sold at its own rate
+ok 75 - a plan with no ladder is sold at its own rate
+  ---
+  duration_ms: 0.878658
+  type: 'test'
+  ...
+# Subtest: a plan whose every band is inactive falls back to its own rate
+ok 76 - a plan whose every band is inactive falls back to its own rate
+  ---
+  duration_ms: 0.52655
+  type: 'test'
+  ...
+# Subtest: a matched band's rate wins over the plan's own
+ok 77 - a matched band's rate wins over the plan's own
+  ---
+  duration_ms: 0.931248
+  type: 'test'
+  ...
+# Subtest: an amount no band covers is refused, never sold at the plan rate
+ok 78 - an amount no band covers is refused, never sold at the plan rate
+  ---
+  duration_ms: 1.553542
+  type: 'test'
+  ...
+# Subtest: the top band being open-ended means no amount above it is ever unpriced
+ok 79 - the top band being open-ended means no amount above it is ever unpriced
+  ---
+  duration_ms: 1.581402
+  type: 'test'
+  ...
+# Subtest: a contiguous, non-overlapping ladder validates clean
+ok 80 - a contiguous, non-overlapping ladder validates clean
+  ---
+  duration_ms: 4.371876
+  type: 'test'
+  ...
+# Subtest: an empty ladder validates clean — no ladder is a supported configuration
+ok 81 - an empty ladder validates clean — no ladder is a supported configuration
+  ---
+  duration_ms: 0.481098
+  type: 'test'
+  ...
+# Subtest: overlapping tiers are refused
+ok 82 - overlapping tiers are refused
+  ---
+  duration_ms: 0.641348
+  type: 'test'
+  ...
+# Subtest: an overlap is still refused when one of the two is inactive
+ok 83 - an overlap is still refused when one of the two is inactive
+  ---
+  duration_ms: 0.383304
+  type: 'test'
+  ...
+# Subtest: a gap between tiers is refused
+ok 84 - a gap between tiers is refused
+  ---
+  duration_ms: 0.540644
+  type: 'test'
+  ...
+# Subtest: duplicate lower bounds are refused
+ok 85 - duplicate lower bounds are refused
+  ---
+  duration_ms: 0.418053
+  type: 'test'
+  ...
+# Subtest: an inverted band is refused
+ok 86 - an inverted band is refused
+  ---
+  duration_ms: 0.436882
+  type: 'test'
+  ...
+# Subtest: a zero-width band is refused
+ok 87 - a zero-width band is refused
+  ---
+  duration_ms: 0.455021
+  type: 'test'
+  ...
+# Subtest: a negative bound is refused
+ok 88 - a negative bound is refused
+  ---
+  duration_ms: 0.606109
+  type: 'test'
+  ...
+# Subtest: a zero or negative rate is refused
+ok 89 - a zero or negative rate is refused
+  ---
+  duration_ms: 0.57064
+  type: 'test'
+  ...
+# Subtest: only the highest tier may be open-ended
+ok 90 - only the highest tier may be open-ended
+  ---
+  duration_ms: 0.331963
+  type: 'test'
+  ...
+# Subtest: a ladder that cannot price every amount the plan accepts is refused
+ok 91 - a ladder that cannot price every amount the plan accepts is refused
+  ---
+  duration_ms: 0.555527
+  type: 'test'
+  ...
+# Subtest: every problem in a ladder is reported at once, not just the first
+ok 92 - every problem in a ladder is reported at once, not just the first
+  ---
+  duration_ms: 0.309916
+  type: 'test'
+  ...
+# Subtest: referral commission
+    # Subtest: an allocation pays the direct referrer at their VIP tier-1 rate
+    ok 1 - an allocation pays the direct referrer at their VIP tier-1 rate
+      ---
+      duration_ms: 18428.861223
+      type: 'test'
+      ...
+    # Subtest: the allocation moves the referrer's standing and never their balance
+    ok 2 - the allocation moves the referrer's standing and never their balance
+      ---
+      duration_ms: 12697.200953
+      type: 'test'
+      ...
+    # Subtest: a second allocation adds volume but not a second active referral
+    ok 3 - a second allocation adds volume but not a second active referral
+      ---
+      duration_ms: 19049.11948
+      type: 'test'
+      ...
+    # Subtest: the second tier is paid, and there is no third
+    ok 4 - the second tier is paid, and there is no third
+      ---
+      duration_ms: 16082.099876
+      type: 'test'
+      ...
+    # Subtest: a referrer is promoted once they meet both VIP requirements
+    ok 5 - a referrer is promoted once they meet both VIP requirements
+      ---
+      duration_ms: 56631.042223
+      type: 'test'
+      ...
+    # Subtest: releasing a commission credits the wallet exactly once
+    ok 6 - releasing a commission credits the wallet exactly once
+      ---
+      duration_ms: 20891.867621
+      type: 'test'
+      ...
+    # Subtest: the programme switch in platform settings is honoured
+    ok 7 - the programme switch in platform settings is honoured
+      ---
+      duration_ms: 10445.317658
+      type: 'test'
+      ...
+    # Subtest: an invite code is validated against a real, active account
+    ok 8 - an invite code is validated against a real, active account
+      ---
+      duration_ms: 2867.58119
+      type: 'test'
+      ...
+    # Subtest: an allocation by an unreferred account pays nobody
+    ok 9 - an allocation by an unreferred account pays nobody
+      ---
+      duration_ms: 8192.603734
+      type: 'test'
+      ...
+    1..9
+ok 93 - referral commission
+  ---
+  duration_ms: 177214.656177
+  type: 'suite'
+  ...
+# Subtest: likePattern
+    # Subtest: wraps the needle so it matches anywhere
+    ok 1 - wraps the needle so it matches anywhere
+      ---
+      duration_ms: 1.575117
+      type: 'test'
+      ...
+    # Subtest: neutralises LIKE's own wildcards
+    ok 2 - neutralises LIKE's own wildcards
+      ---
+      duration_ms: 0.365201
+      type: 'test'
+      ...
+    # Subtest: escapes the escape character first
+    ok 3 - escapes the escape character first
+      ---
+      duration_ms: 0.297681
+      type: 'test'
+      ...
+    1..3
+ok 94 - likePattern
+  ---
+  duration_ms: 4.556766
+  type: 'suite'
+  ...
+# Subtest: readPage
+    # Subtest: reports the filtered total, not the page size
+    ok 1 - reports the filtered total, not the page size
+      ---
+      duration_ms: 1.354536
+      type: 'test'
+      ...
+    # Subtest: an empty set still reads as page 1 of 1
+    ok 2 - an empty set still reads as page 1 of 1
+      ---
+      duration_ms: 0.726503
+      type: 'test'
+      ...
+    # Subtest: a page past the end falls back to page 1
+    ok 3 - a page past the end falls back to page 1
+      ---
+      duration_ms: 2.81623
+      type: 'test'
+      ...
+    # Subtest: does not retry an empty page 1
+    ok 4 - does not retry an empty page 1
+      ---
+      duration_ms: 0.817784
+      type: 'test'
+      ...
+    # Subtest: clamps the reported page to the page count
+    ok 5 - clamps the reported page to the page count
+      ---
+      duration_ms: 0.958678
+      type: 'test'
+      ...
+    1..5
+ok 95 - readPage
+  ---
+  duration_ms: 8.282035
+  type: 'suite'
+  ...
+# Subtest: validates base58check, not just the shape
+ok 96 - validates base58check, not just the shape
+  ---
+  duration_ms: 4.172063
+  type: 'test'
+  ...
+# Subtest: compares base58 and hex notations of the same address
+ok 97 - compares base58 and hex notations of the same address
+  ---
+  duration_ms: 1.582177
+  type: 'test'
+  ...
+# Subtest: accepts mainnet, and defaults its grid URL to the mainnet endpoint
+ok 98 - accepts mainnet, and defaults its grid URL to the mainnet endpoint
+  ---
+  duration_ms: 3.259862
+  type: 'test'
+  ...
+# Subtest: refuses to skip confirmation on mainnet, but allows it on a testnet
+ok 99 - refuses to skip confirmation on mainnet, but allows it on a testnet
+  ---
+  duration_ms: 2.973867
+  type: 'test'
+  ...
+# Subtest: refuses a network that is not a TRON network
+ok 100 - refuses a network that is not a TRON network
+  ---
+  duration_ms: 0.849203
+  type: 'test'
+  ...
+# Subtest: the configured mainnet USDT contract is a real TRON address
+ok 101 - the configured mainnet USDT contract is a real TRON address
+  ---
+  duration_ms: 0.369466
+  type: 'test'
+  ...
+# Subtest: refuses a mistyped contract or deposit address
+ok 102 - refuses a mistyped contract or deposit address
+  ---
+  duration_ms: 1.616644
+  type: 'test'
+  ...
+# Subtest: refuses a plaintext TronGrid URL
+ok 103 - refuses a plaintext TronGrid URL
+  ---
+  duration_ms: 3.071557
+  type: 'test'
+  ...
+# Subtest: refuses a deposit address that is the contract
+ok 104 - refuses a deposit address that is the contract
+  ---
+  duration_ms: 1.301716
+  type: 'test'
+  ...
+# Subtest: confirmation is required unless explicitly disabled
+ok 105 - confirmation is required unless explicitly disabled
+  ---
+  duration_ms: 1.307339
+  type: 'test'
+  ...
+# Subtest: reports whether TRON is configured at all
+ok 106 - reports whether TRON is configured at all
+  ---
+  duration_ms: 0.786362
+  type: 'test'
+  ...
+# Subtest: accepts a well-formed incoming USDT transfer
+ok 107 - accepts a well-formed incoming USDT transfer
+  ---
+  duration_ms: 1.839389
+  type: 'test'
+  ...
+# Subtest: ignores a different TRC-20 token
+ok 108 - ignores a different TRC-20 token
+  ---
+  duration_ms: 0.576786
+  type: 'test'
+  ...
+# Subtest: ignores a transfer to another address
+ok 109 - ignores a transfer to another address
+  ---
+  duration_ms: 0.630828
+  type: 'test'
+  ...
+# Subtest: ignores a self-transfer
+ok 110 - ignores a self-transfer
+  ---
+  duration_ms: 0.423622
+  type: 'test'
+  ...
+# Subtest: refuses to guess the token's decimals
+ok 111 - refuses to guess the token's decimals
+  ---
+  duration_ms: 0.484592
+  type: 'test'
+  ...
+# Subtest: scales by the decimals the token reports
+ok 112 - scales by the decimals the token reports
+  ---
+  duration_ms: 0.962077
+  type: 'test'
+  ...
+# Subtest: rejects invalid or empty transaction data
+ok 113 - rejects invalid or empty transaction data
+  ---
+  duration_ms: 1.578588
+  type: 'test'
+  ...
+# Subtest: handles a transfer with no block timestamp
+ok 114 - handles a transfer with no block timestamp
+  ---
+  duration_ms: 0.678686
+  type: 'test'
+  ...
+# Subtest: writes
+    # Subtest: a credit writes a ledger entry and moves the balance together
+    ok 1 - a credit writes a ledger entry and moves the balance together
+      ---
+      duration_ms: 7594.257226
+      type: 'test'
+      ...
+    # Subtest: the ledger always sums to the balance
+    ok 2 - the ledger always sums to the balance
+      ---
+      duration_ms: 10240.435289
+      type: 'test'
+      ...
+    # Subtest: a debit that would overdraw is refused, and nothing is written
+    ok 3 - a debit that would overdraw is refused, and nothing is written
+      ---
+      duration_ms: 4909.982421
+      type: 'test'
+      ...
+    # Subtest: a failure inside the unit of work rolls the whole thing back
+    ok 4 - a failure inside the unit of work rolls the whole thing back
+      ---
+      duration_ms: 2677.434239
+      type: 'test'
+      ...
+    # Subtest: the same blockchain transaction is only ever recorded once
+    ok 5 - the same blockchain transaction is only ever recorded once
+      ---
+      duration_ms: 4494.864664
+      type: 'test'
+      ...
+    # Subtest: a recorded deposit belongs to nobody until an operator says so
+    ok 6 - a recorded deposit belongs to nobody until an operator says so
+      ---
+      duration_ms: 2048.259485
+      type: 'test'
+      ...
+    # Subtest: assignment credits the wallet exactly once
+    ok 7 - assignment credits the wallet exactly once
+      ---
+      duration_ms: 8806.66127
+      type: 'test'
+      ...
+    # Subtest: an unconfirmed deposit cannot be credited
+    ok 8 - an unconfirmed deposit cannot be credited
+      ---
+      duration_ms: 3276.67472
+      type: 'test'
+      ...
+    # Subtest: an ignored deposit cannot be credited
+    ok 9 - an ignored deposit cannot be credited
+      ---
+      duration_ms: 4892.773816
+      type: 'test'
+      ...
+    # Subtest: every deposit action leaves an audit entry
+    ok 10 - every deposit action leaves an audit entry
+      ---
+      duration_ms: 3683.501093
+      type: 'test'
+      ...
+    # Subtest: an investment earning settles once per period
+    ok 11 - an investment earning settles once per period
+      ---
+      duration_ms: 5335.1334
+      type: 'test'
+      ...
+    # Subtest: two concurrent settlement attempts for the same period pay once
+    ok 12 - two concurrent settlement attempts for the same period pay once
+      ---
+      duration_ms: 5105.577111
+      type: 'test'
+      ...
+    # Subtest: verification status and notifications persist
+    ok 13 - verification status and notifications persist
+      ---
+      duration_ms: 3695.95611
+      type: 'test'
+      ...
+    1..13
+ok 115 - writes
+  ---
+  duration_ms: 79552.530602
+  type: 'suite'
+  ...
+1..115
+# tests 338
+# suites 32
+# pass 336
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2299530.010407

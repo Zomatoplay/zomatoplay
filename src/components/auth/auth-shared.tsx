@@ -1,6 +1,8 @@
+import Image from "next/image";
 import Link from "next/link";
 
-import { APP_NAME } from "@/constants/app";
+import { APP_NAME, SUPPORT_EMAIL } from "@/constants/app";
+import { supportContact } from "@/lib/support";
 
 /**
  * The pieces every authentication screen shares.
@@ -10,6 +12,54 @@ import { APP_NAME } from "@/constants/app";
  * not configured" notice. Factoring more than that out would make four small
  * screens harder to read, not easier.
  */
+
+/**
+ * The logo, as supplied (`public/logo.jpeg`, 1254×1254), shown unaltered —
+ * square, scaled down, never cropped or recoloured. `next/image` serves a
+ * resized copy for the device rather than the full 90 KB original, and
+ * `priority` because it is the first thing on the screen. The width and height
+ * are fixed, so nothing shifts as it loads.
+ */
+export function AuthLogo() {
+  return (
+    <div className="flex justify-center">
+      <Image
+        src="/logo.jpeg"
+        alt="Zomato Play logo"
+        width={112}
+        height={112}
+        priority
+        sizes="112px"
+        className="size-28 rounded-3xl"
+      />
+    </div>
+  );
+}
+
+/**
+ * "Having trouble? Contact support" — to the destinations an operator has
+ * actually configured: the Telegram account from Admin → Settings → Customer
+ * support (`telegramUrl`, read server-side and validated to `t.me`), else the
+ * support mailbox (`NEXT_PUBLIC_SUPPORT_EMAIL`). With neither configured it
+ * renders nothing rather than a link to nowhere.
+ */
+export function AuthSupportLink({ telegramUrl }: { telegramUrl: string | null }) {
+  const contact = supportContact(telegramUrl, SUPPORT_EMAIL);
+  if (!contact) return null;
+  const { href, external } = contact;
+  return (
+    <p className="text-center text-sm text-muted-foreground">
+      Having trouble?{" "}
+      <a
+        href={href}
+        {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+        className="font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      >
+        Contact support
+      </a>
+    </p>
+  );
+}
 
 export function AuthHeading({
   title,

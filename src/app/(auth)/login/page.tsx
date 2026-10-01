@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
-import { AuthFooterLink } from "@/components/auth/auth-shared";
+import { AuthFooterLink, AuthLogo } from "@/components/auth/auth-shared";
 import { PhoneOtpForm } from "@/components/auth/phone-otp-form";
 import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
 import { localTestCustomer } from "@/server/auth/dev-test-gate";
@@ -45,6 +45,7 @@ export default async function LoginPage({
 
   return (
     <div className="space-y-6">
+      <AuthLogo />
       {error || lockedOut ? (
         <p
           className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm leading-relaxed text-destructive"

@@ -28,3 +28,17 @@ export function telegramSupportUrl(raw: string | undefined | null): string | nul
   const username = parseTelegramUsername(raw);
   return username ? `https://t.me/${username}` : null;
 }
+
+/**
+ * Where a "Contact support" link points: the operator-configured Telegram
+ * account (already validated to `t.me`), else the support mailbox, else
+ * nowhere — never an invented destination.
+ */
+export function supportContact(
+  telegramUrl: string | null,
+  supportEmail: string | null,
+): { href: string; external: boolean } | null {
+  if (telegramUrl) return { href: telegramUrl, external: true };
+  if (supportEmail) return { href: `mailto:${supportEmail}`, external: false };
+  return null;
+}

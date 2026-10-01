@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
+import { AuthLogo, AuthSupportLink } from "@/components/auth/auth-shared";
 import { SignUpForm } from "@/components/auth/sign-up-form";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { getAuthenticatedAccount } from "@/server/auth/account";
 import { isLegacyEmailSignInEnabled, isPhoneSignInLive } from "@/server/auth/phone-sign-in";
+import { getSupportTelegramUrl } from "@/server/services/catalogue.service";
 import { APP_NAME } from "@/constants/app";
 
 export const metadata: Metadata = {
@@ -48,11 +50,19 @@ export default async function SignUpPage({
   const referralCode =
     ref && /^[A-Za-z0-9]{4,32}$/.test(ref.trim()) ? ref.trim().toUpperCase() : "";
 
+  // Optional on this screen: a lookup that fails must not take the sign-up
+  // form down with it, so it degrades to the support mailbox (or nothing).
+  const telegramUrl = await getSupportTelegramUrl().catch(() => null);
+
   return (
-    <SignUpForm
-      configured={isAuthConfigured()}
-      next={next ?? "/"}
-      referralCode={referralCode}
-    />
+    <div className="space-y-6">
+      <AuthLogo />
+      <SignUpForm
+        configured={isAuthConfigured()}
+        next={next ?? "/"}
+        referralCode={referralCode}
+      />
+      <AuthSupportLink telegramUrl={telegramUrl} />
+    </div>
   );
 }

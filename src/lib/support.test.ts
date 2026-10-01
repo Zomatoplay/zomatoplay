@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { parseTelegramUsername, telegramSupportUrl } from "./support";
+import { parseTelegramUsername, supportContact, telegramSupportUrl } from "./support";
 
 describe("the Telegram support destination", () => {
   test("accepts a username in the forms an operator is likely to paste", () => {
@@ -26,5 +26,25 @@ describe("the Telegram support destination", () => {
     for (const raw of ["https://t.me/Support_Desk?start=x", "https://t.me/Support_Desk/12", "https://t.me/Support_Desk#x", "t.me/+invitehash"]) {
       assert.equal(telegramSupportUrl(raw), null, raw);
     }
+  });
+});
+
+describe("supportContact", () => {
+  test("prefers the operator-configured Telegram account, opened externally", () => {
+    assert.deepEqual(supportContact("https://t.me/example_support", "help@example.invalid"), {
+      href: "https://t.me/example_support",
+      external: true,
+    });
+  });
+
+  test("falls back to the configured support mailbox", () => {
+    assert.deepEqual(supportContact(null, "help@example.invalid"), {
+      href: "mailto:help@example.invalid",
+      external: false,
+    });
+  });
+
+  test("links nowhere when nothing is configured", () => {
+    assert.equal(supportContact(null, null), null);
   });
 });

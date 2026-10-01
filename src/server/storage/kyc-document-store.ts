@@ -76,17 +76,23 @@ export async function issueKycUploadTarget(
 export async function verifyOwnKycUpload(
   account: CustomerForStorage,
   key: string,
+  kind: KycObjectKind,
 ): Promise<StoredDocument & { backend: KycStorageBackend }> {
   const s3 = readS3KycConfig();
   if (s3 && key.startsWith(`${s3.prefix}/`)) {
-    if (!isOwnKycKey(key, s3.prefix, account.userId)) {
-      // Never reachable through the UI. Reachable by hand, which is the point.
-      throw new KycStorageError("That document belongs to another account.");
+    if (!isOwnKycKey(key, s3.prefix, account.userId, kind)) {
+      // Never reachable through the UI. Reachable by hand, which is the point:
+      // another account's key, or this account's document offered as a selfie.
+      throw new KycStorageError("That upload does not belong to this verification.");
     }
     return { ...(await describeKycObject(s3, key)), backend: "s3" };
   }
 
   if (account.signInMethod !== "email" || !account.authUserId) {
+    throw new KycStorageError("That document reference is not a valid key.");
+  }
+  // Legacy keys are `{authUid}/{kind}-{timestamp}-{random}.{ext}`.
+  if (!key.slice(key.lastIndexOf("/") + 1).startsWith(`${kind}-`)) {
     throw new KycStorageError("That document reference is not a valid key.");
   }
   return { ...(await describeOwnUpload(account.authUserId, key)), backend: "supabase" };

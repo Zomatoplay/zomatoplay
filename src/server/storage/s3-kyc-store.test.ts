@@ -77,6 +77,16 @@ describe("KYC object keys", () => {
     // A user id that is a prefix of another must not match it.
     assert.equal(isOwnKycKey(kycObjectKey("kyc", "usr_me2", "document"), "kyc", "usr_me"), false);
   });
+
+  test("a key is bound to the kind of file it was issued for", () => {
+    const document = kycObjectKey("kyc", "usr_me", "document");
+    const selfie = kycObjectKey("kyc", "usr_me", "selfie");
+    assert.equal(isOwnKycKey(document, "kyc", "usr_me", "document"), true);
+    assert.equal(isOwnKycKey(selfie, "kyc", "usr_me", "selfie"), true);
+    // The document's key offered as the live photo, and the reverse.
+    assert.equal(isOwnKycKey(document, "kyc", "usr_me", "selfie"), false);
+    assert.equal(isOwnKycKey(selfie, "kyc", "usr_me", "document"), false);
+  });
 });
 
 describe("upload targets", () => {

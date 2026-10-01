@@ -5,7 +5,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import * as t from "@/db/schema";
 
 import { mutate, newId, withReason, type Actor } from "../write";
-import { DOCUMENTS_NOT_PROVIDED } from "./kyc-policy";
+import { kycFileRefusal } from "./kyc-policy";
 
 /**
  * Verification decisions.
@@ -36,11 +36,8 @@ export class KycError extends Error {
  * input, which is the whole point — it used to be a button in the browser.
  */
 /**
- * One uploaded file, as Storage described it.
- *
- * Present only when a file was genuinely uploaded and verified. There is no
- * "empty" variant and no placeholder: an absent document is `undefined`, and
- * `submitKyc` writes no row for it. See `@/server/services/kyc-policy`.
+ * One uploaded file, as storage described it after the upload — never a
+ * placeholder. See `@/server/services/kyc-policy`.
  */
 export interface KycUploadedDocument {
   fileName: string;
@@ -62,17 +59,10 @@ export interface KycSubmissionRequest {
   documentType: (typeof t.kycDocumentTypeEnum.enumValues)[number];
   /** Already masked by the caller — the full number never reaches this layer. */
   documentNumberMasked: string;
-  /**
-   * The identity document, when one was uploaded.
-   *
-   * Optional because document upload is not enabled on this deployment
-   * (`KYC_REQUIRE_DOCUMENTS`). Optional means absent, never fabricated: when
-   * it is undefined no `kyc_documents` row is written at all, rather than a
-   * row with an invented filename or a storage path pointing at nothing.
-   */
-  document?: KycUploadedDocument;
-  /** The selfie the reviewer compares against the document, when one exists. */
-  selfie?: KycUploadedDocument;
+  /** The identity document. Required. */
+  document: KycUploadedDocument;
+  /** The live photo the reviewer compares against the document. Required. */
+  selfie: KycUploadedDocument;
 }
 
 /**
@@ -91,6 +81,30 @@ export async function submitKyc(
   request: KycSubmissionRequest,
   actor: Actor,
 ): Promise<{ submissionId: string }> {
+  /*
+   * Both files, checked again here rather than trusted from the action.
+   *
+   * The action already refused a submission without them; this is the layer
+   * that writes the case, so it is the one that must not be able to write a
+   * case a reviewer cannot compare against a face — whoever calls it.
+   */
+  if (!request.document?.path || !request.selfie?.path) {
+    throw new KycError("An identity document and a live photo are both required.");
+  }
+  if (request.document.path === request.selfie.path) {
+    throw new KycError("The live photo must be a separate photo from the document.");
+  }
+  const fileRefusal =
+    kycFileRefusal("document", {
+      contentType: request.document.mimeType,
+      byteSize: request.document.byteSize,
+    }) ??
+    kycFileRefusal("selfie", {
+      contentType: request.selfie.mimeType,
+      byteSize: request.selfie.byteSize,
+    });
+  if (fileRefusal) throw new KycError(fileRefusal);
+
   return mutate(actor, async ({ tx, now, audit }) => {
     const [user] = await tx
       .select({ id: t.users.id, kycStatus: t.users.kycStatus })
@@ -120,9 +134,8 @@ export async function submitKyc(
 
     const submissionId = newId("kyc", now);
 
-    const documents: (typeof t.kycDocuments.$inferInsert)[] = [];
-    if (request.document) {
-      documents.push({
+    const documents: (typeof t.kycDocuments.$inferInsert)[] = [
+      {
         id: newId("kyd", now),
         submissionId,
         label: "Identity document",
@@ -134,10 +147,8 @@ export async function submitKyc(
         byteSize: request.document.byteSize,
         uploadedAt: now,
         pages: 1,
-      });
-    }
-    if (request.selfie) {
-      documents.push({
+      },
+      {
         // Offset by a millisecond so two ids generated in the same call cannot
         // collide — `newId` derives from the timestamp.
         id: newId("kyd", new Date(now.getTime() + 1)),
@@ -151,8 +162,8 @@ export async function submitKyc(
         byteSize: request.selfie.byteSize,
         uploadedAt: now,
         pages: 1,
-      });
-    }
+      },
+    ];
 
     await tx.insert(t.kycSubmissions).values({
       id: submissionId,
@@ -177,42 +188,17 @@ export async function submitKyc(
        * approves from, that nothing had established.
        */
       livenessCheckPassed: false,
-      /*
-       * Both signals a reviewer needs, and both of them true statements about
-       * what this deployment did rather than about the person.
-       *
-       * `documents_not_provided` is added when the submission carries no
-       * files. The CRM renders risk flags and declines to recommend approval
-       * while any is present, so a case with nothing to inspect arrives marked
-       * as such instead of looking like a complete one whose documents failed
-       * to render.
-       */
-      riskFlags: documents.length === 0
-        ? [LIVENESS_NOT_VERIFIED, DOCUMENTS_NOT_PROVIDED]
-        : [LIVENESS_NOT_VERIFIED],
+      // A true statement about what this deployment did, not about the person.
+      riskFlags: [LIVENESS_NOT_VERIFIED],
     });
 
     /*
-     * One row per file that actually exists, and none for one that does not.
-     *
-     * A reviewer compares two things where both are present — the document and
-     * the face — which is why the seeded cases carry a separate "Liveness
-     * capture" row and the CRM lists documents rather than assuming one.
-     *
-     * When a file is absent the row is simply not written. The alternative —
-     * a row with a placeholder filename and a null `storage_path` — would put
-     * "there is a document here" into the table an operator approves from,
-     * about a document that does not exist. That is the same class of mistake
-     * as a client-supplied `liveness_check_passed` (CLAUDE.md §23), and it is
-     * not worth making for a filename.
-     *
-     * `storagePath` points at an object in the private bucket that
-     * `describeOwnUpload` has already confirmed exists and belongs to this
-     * account. The bytes are not here; see the note on the table.
+     * Both rows, always: `storagePath` points at an object in the private
+     * bucket that `verifyOwnKycUpload` has already confirmed exists, belongs
+     * to this account and is the right kind of file. The bytes are not here;
+     * see the note on the table.
      */
-    if (documents.length > 0) {
-      await tx.insert(t.kycDocuments).values(documents);
-    }
+    await tx.insert(t.kycDocuments).values(documents);
 
     await tx
       .update(t.users)

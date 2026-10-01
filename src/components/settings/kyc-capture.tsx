@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, RotateCw, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { prepareKycImage, type KycImageKind } from "@/lib/image-compress";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { createKycUploadTargetAction } from "@/app/(app)/settings/kyc/actions";
 import type { KycUploadMode } from "@/types";
@@ -42,9 +43,34 @@ import type { KycUploadMode } from "@/types";
 export interface CapturedImage {
   /** For preview only. Revoked when replaced or unmounted. */
   previewUrl: string;
+  /** The exact bytes that will be uploaded — already compressed. */
+  blob: Blob;
   fileName: string;
   sizeBytes: number;
   mimeType: string;
+}
+
+/**
+ * Turns a chosen file or a camera frame into what will be uploaded: compressed
+ * where that helps (`prepareKycImage`), then checked against the 10 MB limit
+ * the server enforces. Returns a reason instead when the result is unusable.
+ */
+async function toCapturedImage(
+  source: Blob,
+  fileName: string,
+  kind: KycImageKind,
+): Promise<CapturedImage | string> {
+  const prepared = await prepareKycImage(source, fileName, kind);
+  if (prepared.blob.size > MAX_IMAGE_BYTES) {
+    return `That file is ${(prepared.blob.size / 1024 / 1024).toFixed(1)} MB. The limit is 10 MB — try a smaller photo or scan.`;
+  }
+  return {
+    previewUrl: URL.createObjectURL(prepared.blob),
+    blob: prepared.blob,
+    fileName: prepared.fileName,
+    sizeBytes: prepared.blob.size,
+    mimeType: prepared.contentType,
+  };
 }
 
 type Phase = "idle" | "starting" | "live" | "denied" | "unsupported";
@@ -158,15 +184,13 @@ export function SelfieCapture({
         if (!blob) return;
         stop();
         setPhase("idle");
-        onCapture({
-          previewUrl: URL.createObjectURL(blob),
-          fileName: `selfie-${Date.now()}.jpg`,
-          sizeBytes: blob.size,
-          mimeType: blob.type || "image/jpeg",
+        void toCapturedImage(blob, `selfie-${Date.now()}.jpg`, "selfie").then((result) => {
+          if (typeof result === "string") setProblem(result);
+          else onCapture(result);
         });
       },
       "image/jpeg",
-      0.9,
+      0.92,
     );
   }
 
@@ -264,9 +288,11 @@ export function SelfieCapture({
         from the error path is a fallback nobody reaches.
       */}
       <FilePhotoButton
-        label="Take or choose a photo instead"
+        label="Take a photo with the camera app"
+        kind="selfie"
         capture="user"
         onFile={onCapture}
+        onProblem={setProblem}
       />
     </div>
   );
@@ -274,8 +300,16 @@ export function SelfieCapture({
 
 /* -------------------------------------------------------------------------- */
 
-/** 10 MB, matching what the upload copy has always promised. */
+/** 10 MB — what is uploaded, after compression. The server enforces the same. */
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * What a photo may weigh *before* compression. A modern phone's full-size
+ * photo can exceed 10 MB and still compress to well under it, so refusing it
+ * on the raw size would refuse a perfectly good document. A PDF is uploaded
+ * as chosen, so it gets the final limit straight away.
+ */
+const MAX_RAW_IMAGE_BYTES = 40 * 1024 * 1024;
 
 export const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 
@@ -291,13 +325,18 @@ export const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "i
  * blank while the file is still perfectly valid, which is why the filename and
  * size are always shown as well.
  */
-export function describeFileProblem(file: File): string | null {
-  if (file.size > MAX_IMAGE_BYTES) {
-    return `That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is 10 MB.`;
-  }
+export function describeFileProblem(file: File, kind: KycImageKind): string | null {
   if (file.size === 0) return "That file is empty.";
-  if (!file.type.startsWith("image/") && file.type !== "application/pdf") {
-    return "Choose an image (JPG, PNG or HEIC) or a PDF.";
+  const isPdf = file.type === "application/pdf";
+  if (kind === "selfie" && !ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+    return "Take a photo (JPG, PNG or HEIC).";
+  }
+  if (!isPdf && !ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+    return "Choose an image (JPG, PNG, WebP or HEIC) or a PDF.";
+  }
+  const limit = isPdf ? MAX_IMAGE_BYTES : MAX_RAW_IMAGE_BYTES;
+  if (file.size > limit) {
+    return `That file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${limit / 1024 / 1024} MB.`;
   }
   return null;
 }
@@ -312,18 +351,21 @@ export function describeFileProblem(file: File): string | null {
  */
 export function FilePhotoButton({
   label,
+  kind,
   capture,
   accept = "image/*",
   onFile,
   onProblem,
 }: {
   label: string;
+  kind: KycImageKind;
   capture?: "user" | "environment";
   accept?: string;
   onFile: (image: CapturedImage) => void;
   onProblem?: (message: string) => void;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const [preparing, setPreparing] = useState(false);
 
   return (
     <>
@@ -341,17 +383,19 @@ export function FilePhotoButton({
           event.target.value = "";
           if (!file) return;
 
-          const problem = describeFileProblem(file);
+          const problem = describeFileProblem(file, kind);
           if (problem) {
             onProblem?.(problem);
             return;
           }
-          onFile({
-            previewUrl: URL.createObjectURL(file),
-            fileName: file.name,
-            sizeBytes: file.size,
-            mimeType: file.type,
-          });
+          setPreparing(true);
+          void toCapturedImage(file, file.name, kind)
+            .then((result) => {
+              if (typeof result === "string") onProblem?.(result);
+              else onFile(result);
+            })
+            .catch(() => onProblem?.("That photo could not be read. Try another one."))
+            .finally(() => setPreparing(false));
         }}
       />
       <Button
@@ -359,9 +403,10 @@ export function FilePhotoButton({
         variant="outline"
         size="lg"
         block
+        disabled={preparing}
         onClick={() => inputRef.current?.click()}
       >
-        {label}
+        {preparing ? "Preparing photo…" : label}
       </Button>
     </>
   );
@@ -377,33 +422,29 @@ const KYC_BUCKET = "kyc-documents";
 export class UploadError extends Error {}
 
 /**
- * Sends one captured file to Supabase Storage and returns its object key.
+ * Uploads one captured file and returns its object key. Resolves only once the
+ * storage service has accepted the bytes — nothing is "uploaded" before that.
+ *
+ * `onProgress` receives 0–1 as the bytes go up (S3 only; the legacy store has
+ * no progress events and reports 1 when it finishes).
  *
  * STRAIGHT TO STORAGE, NOT THROUGH THE SERVER
  * -------------------------------------------
- * A Vercel serverless function has a ~4.5 MB request body limit, and the flow
- * accepts documents up to 10 MB. Posting the file to a server action would work
- * on a laptop and fail in production on exactly the large scans that matter, so
- * the browser talks to Storage directly with its own session.
- *
- * That does not make the upload unvalidated — it moves the validation somewhere
- * stronger. The bucket carries `file_size_limit` and `allowed_mime_types`, and
- * the INSERT policy pins every object under a folder named for the uploader's
- * own `auth.uid()`. Both are enforced by Postgres and Storage before the object
- * exists, so a client that lies about a file, or aims at somebody else's
- * folder, is refused by the service rather than by code that trusted it. The
- * server then re-reads what actually landed before any row claims it exists.
- *
- * The **path is derived from the session**, not chosen freely: `auth.uid()` is
- * read from the browser's own session, and the policy would reject any other
- * first segment anyway.
+ * A serverless function has a ~4.5 MB request body limit, and a server action
+ * carrying a 10 MB scan would also hold a Node process for the whole upload.
+ * The browser talks to storage directly instead, and that moves validation
+ * somewhere stronger rather than removing it: the S3 slot signs the exact type
+ * and length (S3 refuses anything else), the legacy bucket's policies pin
+ * every object under the uploader's own folder, and the server re-reads what
+ * actually landed before any row claims it exists.
  */
 export async function uploadKycFile(
   image: CapturedImage,
   kind: "document" | "selfie",
   mode: KycUploadMode,
+  onProgress?: (fraction: number) => void,
 ): Promise<string> {
-  if (mode === "s3") return uploadToS3(image, kind);
+  if (mode === "s3") return uploadToS3(image, kind, onProgress);
   if (mode !== "supabase") {
     throw new UploadError("Document upload is not available right now.");
   }
@@ -416,41 +457,27 @@ export async function uploadKycFile(
     throw new UploadError("Your session has expired. Sign in and try again.");
   }
 
-  const blob = await fetch(image.previewUrl).then((response) => response.blob());
-
-  /*
-   * A fresh key every time, never a name derived from the file.
-   *
-   * Two people uploading `passport.jpg` must not collide, and a resubmission
-   * must write a *new* object rather than replacing one a reviewer may already
-   * have opened — there is no UPDATE policy on the bucket, so an overwrite
-   * would simply fail.
-   */
+  // A fresh key every time, never a name derived from the file: two people's
+  // `passport.jpg` must not collide, and a resubmission writes a new object
+  // rather than replacing one a reviewer may already have opened.
   const key = `${authUserId}/${kind}-${Date.now()}-${randomSuffix()}.${extensionFor(image)}`;
 
-  const { error } = await supabase.storage.from(KYC_BUCKET).upload(key, blob, {
-    contentType: image.mimeType || blob.type || "application/octet-stream",
+  const { error } = await supabase.storage.from(KYC_BUCKET).upload(key, image.blob, {
+    contentType: image.mimeType || image.blob.type || "application/octet-stream",
     upsert: false,
   });
 
   if (error) {
-    /*
-     * Reported as a failure, never swallowed.
-     *
-     * The common causes are the bucket's own limits — a file too large, or a
-     * type outside `allowed_mime_types` — and the person can act on both. A
-     * silent failure here would produce a submission with no document, which a
-     * reviewer cannot progress and the person cannot understand.
-     */
     throw new UploadError(
       /too large|exceeded/i.test(error.message)
         ? "That file is larger than the 10 MB limit."
         : /mime|content type/i.test(error.message)
           ? "That file type is not accepted."
-          : `The upload failed: ${error.message}`,
+          : "The upload failed. Check your connection and try again.",
     );
   }
 
+  onProgress?.(1);
   return key;
 }
 
@@ -463,36 +490,47 @@ export async function uploadKycFile(
  * function cannot choose where the file goes or smuggle a different file in —
  * S3 refuses a body that does not match. The returned key is then verified
  * again, server-side, when the submission claims it.
+ *
+ * XMLHttpRequest rather than `fetch` because it is the only browser API that
+ * reports upload progress; on a slow mobile connection a silent spinner over
+ * a 1 MB upload reads as a frozen page.
  */
 async function uploadToS3(
   image: CapturedImage,
   kind: "document" | "selfie",
+  onProgress?: (fraction: number) => void,
 ): Promise<string> {
-  const blob = await fetch(image.previewUrl).then((response) => response.blob());
-  const contentType = image.mimeType || blob.type || "application/octet-stream";
+  const contentType = image.mimeType || image.blob.type || "application/octet-stream";
 
   const target = await createKycUploadTargetAction({
     kind,
     contentType,
-    byteSize: blob.size,
+    byteSize: image.blob.size,
   });
   if (!target.ok || !target.url || !target.key) {
     throw new UploadError(target.message ?? "Could not prepare the upload. Try again.");
   }
 
-  let response: Response;
-  try {
-    response = await fetch(target.url, {
-      method: "PUT",
-      headers: target.headers,
-      body: blob,
-    });
-  } catch {
-    throw new UploadError("The upload failed. Check your connection and try again.");
-  }
-  if (!response.ok) {
+  const status = await new Promise<number>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", target.url as string);
+    for (const [name, value] of Object.entries(target.headers ?? {})) {
+      request.setRequestHeader(name, value);
+    }
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress?.(event.loaded / event.total);
+    };
+    request.onload = () => resolve(request.status);
+    request.onerror = () => reject(new UploadError("The upload failed. Check your connection and try again."));
+    request.ontimeout = () => reject(new UploadError("The upload timed out. Check your connection and try again."));
+    request.timeout = 120_000;
+    request.send(image.blob);
+  });
+
+  if (status < 200 || status >= 300) {
     throw new UploadError("The upload was refused. Try again, or choose a different file.");
   }
+  onProgress?.(1);
   return target.key;
 }
 

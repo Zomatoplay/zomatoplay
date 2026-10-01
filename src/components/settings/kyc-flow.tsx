@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -67,14 +67,15 @@ import {
  *   this deployment performs an automated liveness check, so nothing here may
  *   claim one passed.
  *
- * WHAT IS STILL MISSING, STATED TO THE USER RATHER THAN HIDDEN
- * -----------------------------------------------------------
- * **No file is transmitted.** There is no document store and no verification
- * provider, so the captured images stay in the browser and only their metadata
- * is recorded. The notice at the bottom of the flow says exactly that. Wiring a
- * provider — or a storage bucket with the access rules identity documents
- * require — is the remaining integration, and it is a deployment decision
- * rather than a component change.
+ * BOTH PHOTOGRAPHS ARE REQUIRED
+ * -----------------------------
+ * The document and the live photo are mandatory, here and on the server
+ * (`@/server/services/kyc-policy`). Each is compressed on the device before it
+ * is uploaded straight to private storage, and Submit is only reached once
+ * storage has accepted both — the screen never treats a selected file as an
+ * uploaded one. When no document store is configured the flow says
+ * verification is unavailable instead of offering a submission that cannot
+ * succeed.
  */
 
 const DOCUMENT_TYPES = [
@@ -104,39 +105,10 @@ const STEPS = [
     id: "selfie",
     title: "Selfie",
     description:
-      "A photo of your face, so a reviewer can compare it with your document.",
+      "A live photo of your face, taken now, so a reviewer can compare it with your document.",
     icon: Camera,
   },
 ] as const;
-
-/**
- * What each step says when the photograph on it is not required.
- *
- * Written out rather than appending "(optional)" to the existing sentence,
- * because the useful information is not that it may be skipped — it is *why*,
- * and that skipping costs the person nothing now and may be asked for later.
- */
-const OPTIONAL_STEP_NOTE: Partial<Record<(typeof STEPS)[number]["id"], string>> = {
-  document:
-    "Attaching a photo is optional for now — your document type and number are what we need at this stage.",
-  selfie:
-    "A selfie is optional for now. You can submit without one, and we will ask for it if a reviewer needs it.",
-};
-
-/**
- * Whether the photographs are mandatory in this build.
- *
- * Mirrors the server's `KYC_REQUIRE_DOCUMENTS` policy
- * (`@/server/services/kyc-policy`). A client constant cannot be the boundary —
- * the server validates independently — but it has to agree, or the form either
- * blocks a submission the server would accept or offers one it would refuse.
- *
- * `NEXT_PUBLIC_` because this is the only way a client component can read a
- * deployment setting, and there is nothing sensitive about "are documents
- * required": the answer is visible from using the form for ten seconds.
- */
-const DOCUMENTS_REQUIRED =
-  process.env.NEXT_PUBLIC_KYC_REQUIRE_DOCUMENTS === "true";
 
 /** Everything after the last four characters is dropped before anything is sent. */
 function lastFour(documentNumber: string): string {
@@ -166,6 +138,12 @@ export function KycFlow({
   uploadMode?: KycUploadMode;
 } = {}) {
   const canAttach = uploadMode !== "unavailable";
+  /**
+   * Keys of files already accepted by storage, by preview URL. A submission
+   * that fails after its uploads succeeded (a dropped connection, a server
+   * refusal) is retried without sending the same photos again.
+   */
+  const uploaded = useRef(new Map<string, string>());
   // Status only. The store is a cache of what the database said at render
   // time; it cannot change a verification state, and nothing here asks it to.
   const { kycStatus } = usePrototypeStore();
@@ -178,8 +156,9 @@ export function KycFlow({
   const [documentNumber, setDocumentNumber] = useState("");
   const [document, setDocument] = useState<CapturedImage | null>(null);
   const [selfie, setSelfie] = useState<CapturedImage | null>(null);
-  /** Distinguishes "sending your files" from "recording your submission". */
-  const [uploading, setUploading] = useState(false);
+  /** Upload progress, 0–1 per file, while the photos are being sent. */
+  const [progress, setProgress] = useState<{ document: number; selfie: number } | null>(null);
+  const uploading = progress !== null;
 
   /* ---------------------------------------------------------------- */
   /* Terminal states                                                   */
@@ -247,25 +226,18 @@ export function KycFlow({
   /* Interactive steps                                                 */
   /* ---------------------------------------------------------------- */
   /*
-   * WHAT IS ACTUALLY REQUIRED TO SUBMIT, AND WHAT IS NOT.
-   *
-   * The identity details are: a name, a date of birth, a document type and the
-   * last four characters of the document number. Those are what make a case
-   * reviewable at all, and none of them has been relaxed.
-   *
-   * The photographs are not, on this deployment. `DOCUMENTS_REQUIRED` mirrors
-   * the server's `KYC_REQUIRE_DOCUMENTS` policy so the button and the
-   * validation agree; the server is still the boundary, and turning the policy
-   * on without changing this would produce a refusal rather than a bad
-   * submission.
+   * What each step needs before it can be left: the identity details, then a
+   * document number and a photo of the document, then a live photo. None of
+   * it is optional, and the server checks all of it again.
    */
   const canContinue =
-    step === 0
-      ? fullName.trim().length > 2 && dob.trim() !== ""
-      : step === 1
-        ? lastFour(documentNumber).length === 4 &&
-          (!DOCUMENTS_REQUIRED || document !== null)
-        : !DOCUMENTS_REQUIRED || selfie !== null;
+    !canAttach
+      ? false
+      : step === 0
+        ? fullName.trim().length > 2 && dob.trim() !== ""
+        : step === 1
+          ? lastFour(documentNumber).length === 4 && document !== null
+          : selfie !== null;
 
   function next() {
     if (step < STEPS.length - 1) {
@@ -278,44 +250,43 @@ export function KycFlow({
       return;
     }
 
-    if (DOCUMENTS_REQUIRED && (!document || !selfie)) return;
+    if (!document || !selfie || pending || uploading) return;
 
     startTransition(async () => {
       /*
-       * Whatever the person actually attached goes up first, and the
-       * submission only happens if it landed.
-       *
-       * Uploading straight to Storage rather than through a server action is
-       * what keeps a 10 MB scan working in production — see `uploadKycFile`.
-       * Ordering matters: a submission written before the upload succeeded
-       * would be a `pending_review` case pointing at nothing, which a reviewer
-       * cannot progress and the person cannot understand.
-       *
-       * Nothing attached means nothing uploaded — not a placeholder, not an
-       * empty object. The absence is carried all the way through to the
-       * database as an absence.
+       * Both photos go up first, and the submission happens only once storage
+       * has accepted both. A submission written before its uploads landed
+       * would be a case pointing at nothing, which a reviewer cannot progress.
        */
-      let documentPath: string | undefined;
-      let selfiePath: string | undefined;
-      if (document || selfie) {
-        try {
-          setUploading(true);
-          [documentPath, selfiePath] = await Promise.all([
-            document
-              ? uploadKycFile(document, "document", uploadMode)
-              : Promise.resolve(undefined),
-            selfie ? uploadKycFile(selfie, "selfie", uploadMode) : Promise.resolve(undefined),
-          ]);
-        } catch (error) {
-          toast.error(
-            error instanceof UploadError
-              ? error.message
-              : "Your documents could not be uploaded. Check your connection and try again.",
-          );
-          return;
-        } finally {
-          setUploading(false);
+      let documentPath: string;
+      let selfiePath: string;
+      const send = async (image: CapturedImage, kind: "document" | "selfie") => {
+        const done = uploaded.current.get(image.previewUrl);
+        if (done) {
+          setProgress((current) => (current ? { ...current, [kind]: 1 } : current));
+          return done;
         }
+        const key = await uploadKycFile(image, kind, uploadMode, (fraction) =>
+          setProgress((current) => (current ? { ...current, [kind]: fraction } : current)),
+        );
+        uploaded.current.set(image.previewUrl, key);
+        return key;
+      };
+      try {
+        setProgress({ document: 0, selfie: 0 });
+        [documentPath, selfiePath] = await Promise.all([
+          send(document, "document"),
+          send(selfie, "selfie"),
+        ]);
+      } catch (error) {
+        toast.error(
+          error instanceof UploadError
+            ? error.message
+            : "Your photos could not be uploaded. Check your connection and try again.",
+        );
+        return;
+      } finally {
+        setProgress(null);
       }
 
       const result = await submitKycAction({
@@ -326,11 +297,11 @@ export function KycFlow({
         // mask, so there is no complete identity number in a request body, in a
         // server log, or in the database.
         documentNumberLast4: lastFour(documentNumber),
-        documentFileName: document?.fileName,
-        documentByteSize: document?.sizeBytes,
-        documentMimeType: document?.mimeType,
+        documentFileName: document.fileName,
+        documentByteSize: document.sizeBytes,
+        documentMimeType: document.mimeType,
         documentPath,
-        selfieFileName: selfie?.fileName,
+        selfieFileName: selfie.fileName,
         selfiePath,
       });
 
@@ -405,26 +376,23 @@ export function KycFlow({
             <ActiveIcon className="size-5" aria-hidden />
           </span>
           <div className="min-w-0">
-            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-              <h2 className="text-base font-semibold">{STEPS[step].title}</h2>
-              {!DOCUMENTS_REQUIRED && OPTIONAL_STEP_NOTE[STEPS[step].id] ? (
-                <span className="rounded-full border border-border bg-secondary px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                  Optional
-                </span>
-              ) : null}
-            </div>
+            <h2 className="text-base font-semibold">{STEPS[step].title}</h2>
             <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
               {STEPS[step].description}
             </p>
-            {!DOCUMENTS_REQUIRED && OPTIONAL_STEP_NOTE[STEPS[step].id] ? (
-              <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-                {OPTIONAL_STEP_NOTE[STEPS[step].id]}
-              </p>
-            ) : null}
           </div>
         </div>
 
-        {step === 0 ? (
+        {!canAttach ? (
+          <p
+            className="rounded-xl border border-warning/40 bg-warning/8 p-3.5 text-sm leading-relaxed text-foreground"
+            role="status"
+          >
+            Identity verification is temporarily unavailable because photo
+            upload is not working right now. Please try again later or contact
+            support.
+          </p>
+        ) : step === 0 ? (
           <div className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="kyc-name">Full legal name</Label>
@@ -457,11 +425,6 @@ export function KycFlow({
             onDocument={setDocument}
             canAttach={canAttach}
           />
-        ) : !canAttach ? (
-          <p className="rounded-xl border border-border bg-secondary/60 p-3 text-xs leading-relaxed text-muted-foreground">
-            Photo upload is not available right now. You can submit your details
-            without a selfie, and we will ask for one if a reviewer needs it.
-          </p>
         ) : (
           <div className="space-y-3">
             <SelfieCapture
@@ -478,10 +441,9 @@ export function KycFlow({
               few seconds of processing.
             */}
             <p className="rounded-xl border border-border bg-secondary/60 p-3 text-xs leading-relaxed text-muted-foreground">
-              This photo is <strong className="font-medium text-foreground">not</strong>{" "}
-              checked automatically. Automated liveness verification is not
-              connected on this deployment, so a reviewer compares your selfie
-              with your document by hand.
+              A member of our verification team compares this photo with your
+              document by hand. Take it in good light, facing the camera, with
+              nothing covering your face.
             </p>
           </div>
         )}
@@ -495,22 +457,13 @@ export function KycFlow({
         </p>
       </div>
 
-      {/*
-        Replaces the old `PrototypeNote`, which said the same thing less
-        precisely. This is the state of the integration, and it is what makes
-        the difference between an honest flow and a convincing one.
-      */}
       <p className="rounded-xl border border-border bg-secondary/60 p-3.5 text-xs leading-relaxed text-muted-foreground">
         <strong className="font-medium text-foreground">
-          {DOCUMENTS_REQUIRED
-            ? "Your documents are uploaded to private storage."
-            : "Photographs are optional at this stage."}
+          Your photos are uploaded to private storage.
         </strong>{" "}
-        {DOCUMENTS_REQUIRED
-          ? "Only you and our verification team can open them — they have no public address and are reached through a short-lived link that expires."
-          : "Anything you do attach is uploaded to private storage, where only you and our verification team can open it through a short-lived link. Nothing is recorded as attached unless it really was."}{" "}
-        Your full document number is never sent; only its last four characters
-        are.
+        Only you and our verification team can open them — they have no public
+        address and are reached through a short-lived link that expires. Your
+        full document number is never sent; only its last four characters are.
       </p>
 
       <div className="space-y-2">
@@ -522,20 +475,21 @@ export function KycFlow({
           onClick={next}
         >
           {step === STEPS.length - 1
-            ? uploading
-              ? "Uploading your documents…"
+            ? progress
+              ? `Uploading your photos… ${Math.round(((progress.document + progress.selfie) / 2) * 100)}%`
               : pending
                 ? "Submitting…"
                 : "Submit for review"
-            : !DOCUMENTS_REQUIRED &&
-                OPTIONAL_STEP_NOTE[STEPS[step].id] &&
-                ((step === 1 && document === null) ||
-                  (step === 2 && selfie === null))
-              ? "Skip and continue"
-              : "Continue"}
+            : "Continue"}
         </Button>
         {step > 0 ? (
-          <Button variant="ghost" size="lg" block onClick={() => setStep(step - 1)}>
+          <Button
+            variant="ghost"
+            size="lg"
+            block
+            disabled={pending || uploading}
+            onClick={() => setStep(step - 1)}
+          >
             Back
           </Button>
         ) : null}
@@ -616,12 +570,7 @@ function DocumentStep({
         </p>
       </div>
 
-      {!canAttach ? (
-        <p className="rounded-xl border border-border bg-secondary/60 p-3 text-xs leading-relaxed text-muted-foreground">
-          Photo upload is not available right now. Your document type and number
-          are enough to submit.
-        </p>
-      ) : document ? (
+      {!canAttach ? null : document ? (
         <div className="space-y-3">
           <div className="flex items-start gap-3 rounded-xl border border-brand bg-brand-soft p-4">
             <FileCheck2 className="mt-0.5 size-5 shrink-0 text-brand" aria-hidden />
@@ -654,6 +603,7 @@ function DocumentStep({
         <div className="space-y-2">
           <FilePhotoButton
             label="Photograph the document"
+            kind="document"
             capture="environment"
             onFile={(image) => {
               setProblem(null);
@@ -663,6 +613,7 @@ function DocumentStep({
           />
           <FilePhotoButton
             label="Choose from this device"
+            kind="document"
             accept="image/*,application/pdf"
             onFile={(image) => {
               setProblem(null);
@@ -671,7 +622,8 @@ function DocumentStep({
             onProblem={setProblem}
           />
           <p className="text-center text-xs text-muted-foreground">
-            JPG, PNG, HEIC or PDF, up to 10 MB.
+            JPG, PNG, HEIC or PDF. Photos are resized on your device before
+            upload; make sure all text is sharp and readable.
           </p>
         </div>
       )}

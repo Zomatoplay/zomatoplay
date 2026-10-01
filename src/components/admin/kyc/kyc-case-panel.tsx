@@ -278,24 +278,17 @@ export function KycCasePanel({
       >
         {submission.documents.length === 0 ? (
           /*
-           * A case with nothing to look at, said plainly.
-           *
-           * Document upload is not enabled on this deployment
-           * (`KYC_REQUIRE_DOCUMENTS`), so a submission arriving with no files
-           * is the expected shape rather than a broken one — and the case is
-           * still reviewable, because the declared identity details are all
-           * present. What must not happen is a reviewer assuming the documents
-           * failed to load and approving on that basis, so the reason is
-           * stated instead of leaving an empty list.
+           * Only cases submitted before both photos became mandatory can be
+           * empty. Said plainly, so a reviewer never assumes the documents
+           * failed to load and approves on that basis.
            */
           <p className="rounded-xl border border-warning/40 bg-warning/8 p-3 text-sm leading-relaxed text-muted-foreground">
             <strong className="font-medium text-foreground">
               No documents are attached to this case.
             </strong>{" "}
-            Document upload is not enabled on this deployment, so this
-            submission carries declared details only. Nothing failed to
-            upload — there was nothing to upload. Verify the identity by
-            whatever process is in place before approving.
+            It was submitted before an identity document and a live photo
+            were required. Request a resubmission rather than approving it
+            on declared details alone.
           </p>
         ) : null}
         <ul className="grid gap-2 sm:grid-cols-2">

@@ -105,20 +105,23 @@ export function kycObjectKey(prefix: string, userId: string, kind: KycObjectKind
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
 /**
- * Whether `key` is one this account could have been issued.
+ * Whether `key` is one this account could have been issued — and, when `kind`
+ * is given, issued for that kind of file.
  *
  * Checked before any call to S3, so a forged key — another account's prefix, a
  * `../` walk, a bare bucket path — is refused without revealing whether an
- * object exists there.
+ * object exists there. The kind matters too: the key a document slot issued
+ * must not be accepted as the selfie, or one photo could satisfy both.
  */
 export function isOwnKycKey(
   key: string,
   prefix: string,
   userId: string,
+  kind?: KycObjectKind,
 ): boolean {
   const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(
-    `^${escape(prefix)}/${escape(userId)}/(document|selfie)/${UUID}$`,
+    `^${escape(prefix)}/${escape(userId)}/(${kind ?? "document|selfie"})/${UUID}$`,
   ).test(key);
 }
 

@@ -18,7 +18,10 @@ import {
 } from "@/server/observability";
 import { toSafeFailure } from "@/server/errors";
 import { traceAction } from "@/server/trace-action";
-import { areKycDocumentsRequired } from "@/server/services/kyc-policy";
+import {
+  kycFileRefusal,
+  missingKycFilesRefusal,
+} from "@/server/services/kyc-policy";
 import {
   startKyc,
   submitKyc,
@@ -78,20 +81,14 @@ export interface KycSubmissionInput {
   documentNumberLast4: string;
 
   /*
-   * THE FILE FIELDS ARE OPTIONAL, AND THAT IS A POLICY, NOT A LOOSENING.
+   * BOTH FILES ARE REQUIRED (`@/server/services/kyc-policy`).
    *
-   * Document upload is not enabled on this deployment. The flow used to
-   * require all five of these fields unconditionally, so a person who filled
-   * the form correctly and had nothing to attach was refused at the last step
-   * with "Attach a photo of your document" — a requirement for something the
-   * product was not yet asking for.
-   *
-   * Optional here means *may be absent*. It does not mean trusted when
-   * present: a supplied path is still checked against this session's own
-   * `auth.uid()` folder and re-read from Storage before any row claims it
-   * exists, and a supplied file that fails either check still refuses the
-   * whole submission. `KYC_REQUIRE_DOCUMENTS=true` makes them mandatory again
-   * in one place — see `@/server/services/kyc-policy`.
+   * Each is a storage key the server issued for this account and this kind of
+   * file, plus the display filename. The key is checked against the session's
+   * own prefix and kind, then read back from storage before any row claims the
+   * file exists — the browser's size and type are only a first refusal. A
+   * screen that merely *showed* a file as selected produces no key, and is
+   * refused here.
    */
   documentFileName?: string;
   documentByteSize?: number;
@@ -104,9 +101,6 @@ export interface KycSubmissionInput {
 
 /** The document types the schema's enum accepts. Anything else is refused. */
 const DOCUMENT_TYPES = new Set(["passport", "national_id", "driving_licence", "aadhaar", "pan"]);
-
-/** 10 MB, the limit the flow shows the person. Re-checked because the client's check is a courtesy. */
-const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 
 /**
  * A filename safe to store and to show an operator.
@@ -174,77 +168,54 @@ async function resolveKycSubmission(
   }
 
   /* ---------------------------------------------------------------- */
-  /* Files — required only when the policy says so                     */
+  /* Files — an identity document and a live photo, both required      */
   /* ---------------------------------------------------------------- */
-  const documentsRequired = areKycDocumentsRequired();
-  const hasDocument = Boolean(input.documentPath && input.documentFileName);
-  const hasSelfie = Boolean(input.selfiePath && input.selfieFileName);
+  const missing = missingKycFilesRefusal(input);
+  if (missing) return reject(missing, correlationId);
 
-  if (documentsRequired && !hasDocument) {
-    return reject("Attach a photo of your document.", correlationId);
-  }
-  if (documentsRequired && !hasSelfie) {
-    return reject("Take a selfie before submitting.", correlationId);
-  }
-
-  /*
-   * A CLIENT-SIDE SIZE IS A COURTESY; THE SERVER CHECKS IT ANYWAY.
-   *
-   * Only meaningful when a file is actually being claimed. The authoritative
-   * numbers come back from Storage below, but refusing an obviously impossible
-   * claim here saves a round trip and keeps the message specific.
-   */
-  if (hasDocument && input.documentByteSize !== undefined) {
-    if (!Number.isFinite(input.documentByteSize) || input.documentByteSize <= 0) {
-      return reject("That document could not be read. Try attaching it again.", correlationId);
-    }
-    if (input.documentByteSize > MAX_DOCUMENT_BYTES) {
-      return reject("That document is larger than 10 MB.", correlationId);
-    }
+  // The browser's own figures, refused early when they are already wrong.
+  // The authoritative numbers come back from storage below.
+  if (input.documentByteSize !== undefined || input.documentMimeType !== undefined) {
+    const claimed = kycFileRefusal("document", {
+      contentType: String(input.documentMimeType ?? ""),
+      byteSize: Number(input.documentByteSize),
+    });
+    if (claimed) return reject(claimed, correlationId);
   }
 
   /*
-   * EVERY UPLOAD THAT IS CLAIMED IS VERIFIED BEFORE ANYTHING IS WRITTEN.
+   * EVERY UPLOAD IS VERIFIED BEFORE ANYTHING IS WRITTEN.
    *
-   * Each object must exist, belong to *this* account's folder, and be a type
-   * and size the bucket accepts. The client's byte size and MIME type are UX
-   * values from the file picker; these are the numbers Storage recorded, and
-   * they are what the row keeps.
-   *
-   * A failure here refuses the whole submission, exactly as before. The
-   * difference is only that a submission claiming *no* file has nothing to
-   * verify — it does not fail, because there is no unmet claim.
+   * Each object must exist, belong to *this* account's prefix for *its* kind,
+   * and be a type and size the policy accepts — as storage recorded them, not
+   * as the file picker reported. A failure refuses the whole submission.
    */
-  let document: KycUploadedDocument | undefined;
-  let selfie: KycUploadedDocument | undefined;
+  let document: KycUploadedDocument;
+  let selfie: KycUploadedDocument;
   try {
     const [documentObject, selfieObject] = await Promise.all([
-      hasDocument
-        ? verifyOwnKycUpload(account, input.documentPath as string)
-        : Promise.resolve(null),
-      hasSelfie
-        ? verifyOwnKycUpload(account, input.selfiePath as string)
-        : Promise.resolve(null),
+      verifyOwnKycUpload(account, String(input.documentPath), "document"),
+      verifyOwnKycUpload(account, String(input.selfiePath), "selfie"),
     ]);
 
-    if (documentObject) {
-      document = {
-        fileName: safeFileName(input.documentFileName ?? "", "document"),
-        path: documentObject.path,
-        byteSize: documentObject.byteSize,
-        mimeType: documentObject.contentType,
-        storageBackend: documentObject.backend,
-      };
-    }
-    if (selfieObject) {
-      selfie = {
-        fileName: safeFileName(input.selfieFileName ?? "", "selfie"),
-        path: selfieObject.path,
-        byteSize: selfieObject.byteSize,
-        mimeType: selfieObject.contentType,
-        storageBackend: selfieObject.backend,
-      };
-    }
+    const refusal =
+      kycFileRefusal("document", documentObject) ?? kycFileRefusal("selfie", selfieObject);
+    if (refusal) return reject(refusal, correlationId);
+
+    document = {
+      fileName: safeFileName(input.documentFileName ?? "", "document"),
+      path: documentObject.path,
+      byteSize: documentObject.byteSize,
+      mimeType: documentObject.contentType,
+      storageBackend: documentObject.backend,
+    };
+    selfie = {
+      fileName: safeFileName(input.selfieFileName ?? "", "selfie"),
+      path: selfieObject.path,
+      byteSize: selfieObject.byteSize,
+      mimeType: selfieObject.contentType,
+      storageBackend: selfieObject.backend,
+    };
   } catch (error) {
     recordPipelineEvent({
       pipeline: "kyc",
@@ -283,9 +254,9 @@ async function resolveKycSubmission(
         // metadata is free-form jsonb an operator browses (CLAUDE.md §22.2).
         metadata: {
           documentType: input.documentType,
-          documentsRequired,
-          hasDocument: Boolean(document),
-          hasSelfie: Boolean(selfie),
+          documentBackend: document.storageBackend,
+          documentBytes: document.byteSize,
+          selfieBytes: selfie.byteSize,
         },
       },
       () =>
@@ -314,9 +285,7 @@ async function resolveKycSubmission(
 
     return {
       ok: true,
-      message: document
-        ? "Submitted for review."
-        : "Submitted for review. We will ask for your documents if we need them.",
+      message: "Submitted for review.",
       submissionId,
       correlationId,
     };
@@ -412,6 +381,13 @@ export async function createKycUploadTargetAction(input: {
   if (kycUploadModeFor(account) !== "s3") {
     return { ok: false, message: "Document upload is not available right now." };
   }
+  // The same rule the submission applies, before a slot is signed: a selfie
+  // slot is never issued for a PDF.
+  const refusal = kycFileRefusal(input.kind, {
+    contentType: String(input.contentType),
+    byteSize: Number(input.byteSize),
+  });
+  if (refusal) return { ok: false, message: refusal };
 
   try {
     const target = await issueKycUploadTarget(account, {

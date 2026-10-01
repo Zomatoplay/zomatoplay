@@ -64,7 +64,11 @@ import { getVipLevel } from "@/data/referrals";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
 import { useAdminAction } from "@/components/admin/shared/use-admin-action";
-import { revokeUserSessionAction, updateUserAction } from "@/app/admin/actions";
+import {
+  resetWithdrawalPasswordAction,
+  revokeUserSessionAction,
+  updateUserAction,
+} from "@/app/admin/actions";
 import { formatInr, formatUsdt, formatUsdtAsInr } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import type { AdminUser, SecurityEventType } from "@/types/admin";
@@ -1287,7 +1291,12 @@ const SECURITY_ICONS: Record<SecurityEventType, LucideIcon> = {
 };
 
 export function SecurityPanel({ user }: { user: AdminUser }) {
-  const { securityEvents } = useAdminStore();
+  const store = useAdminStore();
+  const { securityEvents } = store;
+  const { run, pending } = useAdminAction();
+  const canReset = canManage(store.session, "security");
+  const [resetting, setResetting] = useState(false);
+  const withdrawalPassword = user.withdrawalPassword;
   const events = securityEvents.filter((event) => event.userId === user.id);
 
   const entries: TimelineEntry[] = events
@@ -1318,11 +1327,55 @@ export function SecurityPanel({ user }: { user: AdminUser }) {
           <DetailRow label="Withdrawal hold">
             {user.restrictions.withdrawalsFrozen ? "Frozen" : "None"}
           </DetailRow>
+          <DetailRow label="Withdrawal password">
+            {!withdrawalPassword
+              ? "—"
+              : !withdrawalPassword.isSet
+                ? "Not set"
+                : withdrawalPassword.lockedUntil
+                  ? `Locked until ${formatDateTime(withdrawalPassword.lockedUntil)}`
+                  : "Set"}
+          </DetailRow>
           <DetailRow label="Recorded events">
             <span className="tabular">{events.length}</span>
           </DetailRow>
         </DetailList>
+        {withdrawalPassword?.isSet ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-3"
+            disabled={!canReset || pending}
+            onClick={() => setResetting(true)}
+          >
+            Reset withdrawal password
+          </Button>
+        ) : null}
       </DetailCard>
+
+      <ConfirmActionDialog
+        open={resetting}
+        onOpenChange={setResetting}
+        title="Reset this withdrawal password?"
+        description={
+          <>
+            <strong className="font-medium text-foreground">{user.fullName}</strong>{" "}
+            ({user.displayId}) will not be able to withdraw until they create a
+            new withdrawal password, confirmed by an SMS code to their verified
+            number. Only do this after confirming their identity through support.
+          </>
+        }
+        confirmLabel="Reset withdrawal password"
+        destructive
+        reason={{
+          label: "How was the customer's identity confirmed?",
+          required: true,
+          placeholder: "e.g. Telegram support ticket, verified KYC details on call…",
+        }}
+        onConfirm={(reason) =>
+          run(() => resetWithdrawalPasswordAction({ userId: user.id, reason }))
+        }
+      />
 
       <DetailCard title="Security events">
         <ActivityTimeline entries={entries} />

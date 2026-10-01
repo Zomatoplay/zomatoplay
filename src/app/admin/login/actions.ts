@@ -2,43 +2,42 @@
 
 import { redirect } from "next/navigation";
 
+import {
+  clearOperatorSessionCookie,
+  issueOperatorSession,
+  isOperatorSessionConfigured,
+} from "@/server/admin/operator-session";
+import { endOperatorSessions, signInOperatorByPhone } from "@/server/admin/operator-sign-in";
 import { getCurrentOperator } from "@/server/admin/session";
-import { signOut } from "@/server/auth/session";
+import { FirebaseNotConfiguredError } from "@/server/auth/firebase-admin";
+import { verifyPhoneProof } from "@/server/auth/phone-proof";
 import { isInfrastructureFailure, toSafeFailure } from "@/server/errors";
 import { describeError, errorDiagnostics, recordPipelineEvent } from "@/server/observability";
+import { clientAddress, takeToken } from "@/server/rate-limit";
 import { traceAction } from "@/server/trace-action";
 
 /**
- * Confirms that the freshly authenticated principal is an operator.
+ * Operator sign-in: a verified mobile number becomes an operator session.
  *
- * A valid Supabase session says who somebody is, not what they may do here. An
- * ordinary customer signing in with their own perfectly good password must not
- * end up inside the CRM, so the operator lookup happens server-side and its
- * answer is the gate.
- *
- * Takes no arguments for the same reason every action in this codebase does
- * not: there is nothing the browser could send that would be trusted.
+ * The browser sends one thing — a proof that the person just typed the SMS
+ * code for a number (`verifyPhoneProof`: a Firebase ID token, or the local
+ * test code on a localhost dev build). The server decides everything else:
+ * which operator that number was provisioned for (`signInOperatorByPhone`),
+ * whether that operator is enabled, and then issues the httpOnly operator
+ * cookie. There is no operator id, number or role parameter to tamper with.
  *
  * AN UNREACHABLE DATABASE IS NOT A REFUSED SIGN-IN
  * ------------------------------------------------
- * This used to `catch (error)` and return `{ ok: false, message: error.message }`
- * for *anything*. When the Supabase session pooler refused a connection —
- * `(EMAXCONNSESSION) max clients reached in session mode`, five times in a row
- * on 2026-09-14 — the operator was shown Drizzle's raw "Failed query: select
- * …admin_agents… params: <uuid>" and told their sign-in had failed. Two
- * separate defects in one line: an infrastructure fault reported as an
- * authorization verdict, and internal SQL rendered in a browser.
+ * Three outcomes, kept distinct:
  *
- * The three outcomes are now distinct, and the distinction is the whole fix:
- *
- *   ok: true                        — this principal is an operator
- *   ok: false, retryable: false     — a verdict: not an operator, or disabled
+ *   ok: true                        — signed in
+ *   ok: false, retryable: false     — a verdict: not an operator, disabled,
+ *                                     wrong or expired code
  *   ok: false, retryable: true      — no verdict was reached; try again
  *
- * **It still grants nothing on failure.** `retryable` changes what the form
- * says and whether it offers a retry; it never lets anybody through. The gate
- * is `(console)/layout.tsx`, which resolves the operator again on every
- * request and refuses when it cannot.
+ * `retryable` changes what the form says; it never lets anybody through. The
+ * gate is `(console)/layout.tsx`, which resolves the operator again on every
+ * request.
  */
 export interface OperatorSignInResult {
   ok: boolean;
@@ -47,61 +46,67 @@ export interface OperatorSignInResult {
   retryable?: boolean;
 }
 
-export async function completeOperatorSignIn(): Promise<OperatorSignInResult> {
+/** Per address: enough for a team on one office connection, tight for a script. */
+const SIGN_IN_LIMIT = { attempts: 15, windowMs: 10 * 60 * 1000 };
+
+export async function completeOperatorPhoneSignIn(input: {
+  proof: unknown;
+}): Promise<OperatorSignInResult> {
   return traceAction(
     { name: "admin.sign_in", actorType: "admin", pipeline: "admin" },
-    resolveOperatorSignIn,
+    () => resolveOperatorSignIn(input?.proof),
   );
 }
 
-async function resolveOperatorSignIn(): Promise<OperatorSignInResult> {
-  try {
-    const operator = await getCurrentOperator();
+async function resolveOperatorSignIn(proof: unknown): Promise<OperatorSignInResult> {
+  const address = await clientAddress();
+  if (!takeToken(`operator-sign-in:${address}`, SIGN_IN_LIMIT.attempts, SIGN_IN_LIMIT.windowMs).allowed) {
+    recordPipelineEvent({
+      pipeline: "admin",
+      operation: "admin.sign_in.rate_limited",
+      status: "failed",
+      message: "Refused: too many operator sign-in attempts from one address",
+    });
+    return {
+      ok: false,
+      retryable: false,
+      message: "Too many attempts. Please wait a few minutes and try again.",
+    };
+  }
+  if (!isOperatorSessionConfigured()) {
+    return { ok: false, retryable: false, message: "Operator sign-in is not configured on this server." };
+  }
 
-    if (!operator) {
-      /*
-       * A real verdict, and the common one: a valid Supabase session belonging
-       * to somebody who is not an operator. Recorded as `ok` rather than
-       * `failed`, because nothing went wrong — the system produced the answer
-       * it is designed to produce.
-       */
-      recordPipelineEvent({
-        pipeline: "admin",
-        operation: "admin.sign_in.refused",
-        status: "ok",
-        message: "A valid session that belongs to no operator row",
-      });
-      return {
-        ok: false,
-        retryable: false,
-        message:
-          "That account is not an operator on this platform. Ask a master admin to provision access.",
-      };
-    }
+  try {
+    const verified = await verifyPhoneProof(proof, "operator");
+    const operator = await signInOperatorByPhone(verified);
+    await issueOperatorSession({
+      firebaseUid: operator.firebaseUid,
+      sessionEpoch: operator.sessionEpoch,
+    });
 
     recordPipelineEvent({
       pipeline: "admin",
       operation: "admin.sign_in.granted",
       status: "ok",
-      message: "Operator session established",
-      actor: operator.actor,
+      message: "Operator session established by SMS verification",
+      actor: { id: operator.agentId, name: operator.name },
     });
     return { ok: true, message: `Signed in as ${operator.name}.` };
   } catch (error) {
-    const failure = toSafeFailure(
-      error,
-      "Could not verify operator access. Try again.",
-    );
+    if (error instanceof FirebaseNotConfiguredError) {
+      return { ok: false, retryable: false, message: "Operator sign-in is not configured on this server." };
+    }
+    const failure = toSafeFailure(error, "Could not verify operator access. Try again.");
 
     recordPipelineEvent({
       pipeline: "admin",
       operation: "admin.sign_in.failed",
-      status: "failed",
+      // A refusal is the system working; an outage is not.
+      status: isInfrastructureFailure(error) ? "failed" : "ok",
       message: isInfrastructureFailure(error)
         ? "Operator lookup could not complete — infrastructure, not a verdict"
         : "Operator sign-in was refused",
-      // The full cause chain, so the SQLSTATE behind a "Failed query:" wrapper
-      // is in the system log even though it never reaches the browser.
       errorMessage: describeError(error),
       metadata: {
         errorCategory: failure.category,
@@ -115,14 +120,20 @@ async function resolveOperatorSignIn(): Promise<OperatorSignInResult> {
 }
 
 /**
- * Ends the operator session.
- *
- * The same Supabase sign-out the user application performs — one credential
- * store, one way out of it. The redirect matters as much as the cookie: every
- * cached Server Component payload in the tab was rendered for the operator who
- * is leaving, and some of it is other people's identity documents.
+ * Ends the operator session — on every device, not just this browser: the
+ * operator's `session_epoch` moves, so every cookie issued before now stops
+ * resolving on its next request. The redirect matters as much as the cookie:
+ * every cached Server Component payload in the tab was rendered for the
+ * operator who is leaving, and some of it is other people's identity documents.
  */
 export async function signOutOperator(): Promise<never> {
-  await signOut();
+  try {
+    const operator = await getCurrentOperator();
+    if (operator) await endOperatorSessions(operator.agentId);
+  } catch {
+    // The cookie is still cleared below; an unreachable database must not
+    // keep somebody signed in on this device.
+  }
+  await clearOperatorSessionCookie();
   redirect("/admin/login");
 }

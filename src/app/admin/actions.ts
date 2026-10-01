@@ -8,6 +8,7 @@ import * as t from "@/db/schema";
 import { requireSupabaseConfig } from "@/lib/supabase/env";
 import { getSiteUrl } from "@/lib/site-url";
 import { parseTelegramUsername } from "@/lib/support";
+import { maskIndianMobile, normalizeIndianMobile } from "@/lib/phone";
 import { sendPasswordRecovery } from "@/lib/supabase/auth-rest";
 import {
   describeError,
@@ -54,6 +55,7 @@ import {
   rejectWithdrawal,
 } from "@/server/services/withdrawals-write.service";
 import { releaseCommission } from "@/server/services/referrals-write.service";
+import { resetWithdrawalPassword } from "@/server/services/withdrawal-password.service";
 import {
   creditWalletManually,
   findCustomerForCredit,
@@ -1113,9 +1115,35 @@ async function writePermissions(
   }
 }
 
+/**
+ * The operator's sign-in number, validated. Thrown as a validation error, so
+ * the message reaches the form.
+ */
+function operatorPhone(raw: string | undefined): string {
+  const phone = normalizeIndianMobile(String(raw ?? ""));
+  if (!phone) {
+    throw Object.assign(new Error("Enter the operator's 10-digit Indian mobile number."), {
+      name: "AdminValidationError",
+    });
+  }
+  return phone;
+}
+
+/** A unique-index violation on `admin_agents.phone_e164`, said plainly. */
+function rethrowPhoneConflict(error: unknown): never {
+  const text = describeError(error);
+  if (/admin_agents_phone_e164_key/.test(text)) {
+    throw Object.assign(new Error("That mobile number is already registered to another operator."), {
+      name: "AdminValidationError",
+    });
+  }
+  throw error;
+}
+
 export async function createAgentAction(input: {
   name: string;
   email: string;
+  phone: string;
   permissions: AdminPermissionSet;
   note?: string;
 }): Promise<AdminActionResult> {
@@ -1125,6 +1153,7 @@ export async function createAgentAction(input: {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim())) {
       throw new Error("Enter a valid work email address.");
     }
+    const phone = operatorPhone(input.phone);
 
     await mutate(operator.actor, async ({ tx, now, audit }) => {
       const id = newId("agt", now);
@@ -1133,28 +1162,27 @@ export async function createAgentAction(input: {
         name: input.name.trim(),
         email: input.email.trim().toLowerCase(),
         role: "agent",
-        // `invited`, not `active`, and no `auth_user_id`: the row exists but
-        // cannot sign in. Creating an operator here does not create a
-        // credential — that is Supabase's, and linking the two is a deliberate
-        // second step rather than something a form does by implication.
+        // `invited` until the operator proves the number by SMS on their first
+        // sign-in; the number is an authorization, not yet a credential.
         status: "invited",
+        phoneE164: phone,
         createdAt: now,
         note: input.note?.trim() || null,
-      });
+      }).catch(rethrowPhoneConflict);
 
       await writePermissions(tx, id, input.permissions);
 
       audit({
         action: "agent_created",
         target: { type: "agent", id, label: input.name.trim() },
-        details: `Invited ${input.name.trim()}. No sign-in credential is linked yet.`,
+        details: `Invited ${input.name.trim()} to sign in with ${maskIndianMobile(phone)}.`,
       });
     });
 
     revalidate("/admin/agents", "/admin");
     return {
       ok: true,
-      message: "Operator invited. Link a sign-in credential before they can log in.",
+      message: "Operator invited. They can sign in with their mobile number now.",
     };
   } catch (error) {
     return failed(error, "The operator was not created.");
@@ -1165,31 +1193,55 @@ export async function updateAgentAction(input: {
   agentId: string;
   name: string;
   email: string;
+  /** A new sign-in number, or empty to keep the current one. */
+  phone?: string;
   permissions: AdminPermissionSet;
   note?: string;
 }): Promise<AdminActionResult> {
   try {
     const operator = await requirePermission("agents");
+    const newPhone = input.phone?.trim() ? operatorPhone(input.phone) : null;
 
     await mutate(operator.actor, async ({ tx, now, audit }) => {
       void now;
-      const updated = await tx
+      const [current] = await tx
+        .select({ phoneE164: t.adminAgents.phoneE164 })
+        .from(t.adminAgents)
+        .where(eq(t.adminAgents.id, input.agentId))
+        .limit(1)
+        .for("update");
+      if (!current) throw new Error("That operator no longer exists.");
+      const phoneChanged = newPhone !== null && newPhone !== current.phoneE164;
+
+      await tx
         .update(t.adminAgents)
         .set({
           name: input.name.trim(),
           email: input.email.trim().toLowerCase(),
           note: input.note?.trim() || null,
+          // A new number is a new authorization: the old binding is cleared
+          // and every session the operator holds ends, so the next sign-in
+          // must prove the new number.
+          ...(phoneChanged
+            ? {
+                phoneE164: newPhone,
+                firebaseUid: null,
+                phoneVerifiedAt: null,
+                sessionEpoch: sql`${t.adminAgents.sessionEpoch} + 1`,
+              }
+            : {}),
         })
         .where(eq(t.adminAgents.id, input.agentId))
-        .returning({ id: t.adminAgents.id });
-      if (updated.length === 0) throw new Error("That operator no longer exists.");
+        .catch(rethrowPhoneConflict);
 
       await writePermissions(tx, input.agentId, input.permissions);
 
       audit({
         action: "agent_permissions_changed",
         target: { type: "agent", id: input.agentId, label: input.name.trim() },
-        details: `Updated ${input.name.trim()} and their permissions.`,
+        details: phoneChanged
+          ? `Updated ${input.name.trim()} and their permissions; sign-in number changed to ${maskIndianMobile(newPhone)} and their sessions ended.`
+          : `Updated ${input.name.trim()} and their permissions.`,
       });
     });
 
@@ -1251,64 +1303,40 @@ export async function setAgentDisabledAction(input: {
 }
 
 /**
- * Emails an operator a password reset link.
+ * Ends every session an operator holds, on every device.
  *
- * Same mechanism as the customer-facing one, and the same reason for it:
- * Supabase owns the credential, so an operator's password is not something
- * another operator can see or set. Refuses when the target has no linked
- * credential — a reset link for an account that cannot sign in would be a
- * confusing no-op rather than a useful one.
+ * Operators sign in by SMS, so there is no password to reset; what a lost or
+ * shared phone calls for is this — the operator's `session_epoch` moves, and
+ * every operator cookie issued before now stops resolving on its next request.
+ * To stop them signing in again, disable them or change their number.
  */
-export async function sendAgentPasswordResetAction(input: {
+export async function endAgentSessionsAction(input: {
   agentId: string;
   note?: string;
 }): Promise<AdminActionResult> {
   try {
     const operator = await requirePermission("agents");
 
-    const db = getDb();
-    const [agent] = await db
-      .select({
-        id: t.adminAgents.id,
-        email: t.adminAgents.email,
-        name: t.adminAgents.name,
-        authUserId: t.adminAgents.authUserId,
-      })
-      .from(t.adminAgents)
-      .where(eq(t.adminAgents.id, input.agentId))
-      .limit(1);
-    if (!agent) throw new Error("That operator no longer exists.");
-    if (!agent.authUserId) {
-      throw new Error(
-        `${agent.name} has no sign-in credential linked yet, so there is no password to reset.`,
-      );
-    }
-
-    await sendPasswordRecovery(requireSupabaseConfig(), {
-      email: agent.email,
-      redirectTo: `${await originForEmails()}/auth/callback?next=/update-password`,
-    });
-
-    await mutate(operator.actor, async ({ tx, now, audit }) => {
-      await tx
+    const name = await mutate(operator.actor, async ({ tx, audit }) => {
+      const [agent] = await tx
         .update(t.adminAgents)
-        .set({ passwordResetRequestedAt: now })
-        .where(eq(t.adminAgents.id, agent.id));
+        .set({ sessionEpoch: sql`${t.adminAgents.sessionEpoch} + 1` })
+        .where(eq(t.adminAgents.id, input.agentId))
+        .returning({ id: t.adminAgents.id, name: t.adminAgents.name });
+      if (!agent) throw new Error("That operator no longer exists.");
 
       audit({
-        action: "agent_password_reset",
+        action: "agent_updated",
         target: { type: "agent", id: agent.id, label: agent.name },
-        details: withReason(
-          `Sent a password reset link to ${agent.email}.`,
-          input.note,
-        ),
+        details: withReason(`Ended every session ${agent.name} held.`, input.note),
       });
+      return agent.name;
     });
 
     revalidate("/admin/agents");
-    return { ok: true, message: `Reset link sent to ${agent.email}.` };
+    return { ok: true, message: `${name} is signed out on every device.` };
   } catch (error) {
-    return failed(error, "The reset link was not sent.");
+    return failed(error, "The sessions were not ended.");
   }
 }
 
@@ -1796,4 +1824,36 @@ export async function manualCreditAction(input: {
       }
     },
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Withdrawal password                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Clears a customer's withdrawal password after support has confirmed who
+ * they are. `manage` over `security` — the same grant that ends a customer's
+ * sessions — and a reason is required: it is the record of how identity was
+ * established, written into the audit entry in the same transaction.
+ *
+ * It does not set a password. The customer creates a new one themselves,
+ * which needs a fresh SMS code to their verified number; nobody on the
+ * operations side ever knows it.
+ */
+export async function resetWithdrawalPasswordAction(input: {
+  userId: string;
+  reason: string;
+}): Promise<AdminActionResult> {
+  try {
+    const operator = await requirePermission("security");
+    const reason = requireReason(input?.reason, "reset a withdrawal password");
+    await resetWithdrawalPassword({ userId: String(input?.userId ?? ""), reason }, operator.actor);
+    revalidate(`/admin/users/${input.userId}`, "/admin/audit-logs", "/settings/security", "/wallet/withdraw");
+    return {
+      ok: true,
+      message: "Withdrawal password reset. The customer must create a new one before withdrawing.",
+    };
+  } catch (error) {
+    return failed(error, "The withdrawal password was not reset.");
+  }
 }

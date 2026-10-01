@@ -419,3 +419,20 @@ export interface FaqItem {
   question: string;
   answer: string;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Phone verification                                                          */
+/* -------------------------------------------------------------------------- */
+
+/** What a fresh SMS verification is for. A proof started for one cannot be spent on the other. */
+export type PhoneProofPurpose = "operator" | "withdrawal-password";
+
+/**
+ * Evidence that the person just typed the SMS code for a number: the Firebase
+ * ID token, or — on a localhost development build only — the local test code
+ * and its signed challenge. The server verifies it (`verifyPhoneProof`); the
+ * browser's word for it is never enough.
+ */
+export type PhoneProof =
+  | { kind: "firebase"; idToken: string }
+  | { kind: "local-test"; phone: string; code: string; challenge: string };

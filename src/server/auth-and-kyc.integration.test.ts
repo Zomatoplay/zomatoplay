@@ -193,9 +193,12 @@ describe("development dataset", { skip }, () => {
         -- Not a credential: a timestamp recording that a reset was requested.
         and column_name not in ('password_reset_requested_at')
     `);
+    // Exactly one exception, and it is not a sign-in credential: the
+    // customer's withdrawal password, scrypt-hashed (schema/users.ts). Any
+    // other credential-shaped column still fails here.
     assert.deepEqual(
       [...columns].map((c) => `${c.table_name}.${c.column_name}`),
-      [],
+      ["withdrawal_passwords.password_hash"],
     );
   });
 });

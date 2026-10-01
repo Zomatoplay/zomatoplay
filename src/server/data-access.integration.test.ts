@@ -28,6 +28,7 @@ import {
   getPlatformSettings,
 } from "./services/admin.service";
 import { getReferralSummary } from "./services/referrals.service";
+import { ADMIN_PERMISSIONS } from "@/constants/admin";
 
 /**
  * The repositories and services, against the real database.
@@ -256,8 +257,9 @@ describe("repositories", { skip }, () => {
     const agents = await listAdminAgents(db);
     assert.equal(agents.length, 9);
     for (const agent of agents) {
-      // All 13 governable areas present, defaulting to none where ungranted.
-      assert.equal(Object.keys(agent.permissions).length, 13);
+      // Every governable area present, defaulting to none where ungranted —
+      // counted from the catalogue so adding an area does not break this.
+      assert.equal(Object.keys(agent.permissions).length, ADMIN_PERMISSIONS.length);
       assert.ok(
         Object.values(agent.permissions).every((level) =>
           ["none", "view", "manage"].includes(level),

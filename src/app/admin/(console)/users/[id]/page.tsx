@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { UserDetailView } from "@/components/admin/users/user-detail-view";
 import { AdminDataProvider } from "@/lib/admin-store";
 import { getAdminUser } from "@/server/services/admin.service";
+import { getWithdrawalPasswordState } from "@/server/services/withdrawal-password.service";
 
 /**
  * A single user's profile.
@@ -68,11 +69,14 @@ export default async function AdminUserDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const user = await findUser(id);
+  const [user, withdrawalPassword] = await Promise.all([
+    findUser(id),
+    getWithdrawalPasswordState(id),
+  ]);
   if (!user) notFound();
 
   return (
-    <AdminDataProvider data={{ users: [user] }}>
+    <AdminDataProvider data={{ users: [{ ...user, withdrawalPassword }] }}>
       <UserDetailView userId={id} />
     </AdminDataProvider>
   );

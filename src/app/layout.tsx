@@ -32,7 +32,29 @@ const geistMono = Geist_Mono({
   display: "swap",
 });
 
+/**
+ * The public origin, when the deployment names one (`NEXT_PUBLIC_SITE_URL`).
+ * It anchors every relative metadata URL; left undefined rather than guessed,
+ * so a preview deployment never advertises itself as the production site.
+ */
+const SITE_ORIGIN: URL | undefined = (() => {
+  const value = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (!value) return undefined;
+  try {
+    return new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+  } catch {
+    return undefined;
+  }
+})();
+
 export const metadata: Metadata = {
+  metadataBase: SITE_ORIGIN,
+  openGraph: {
+    type: "website",
+    siteName: APP_NAME,
+    title: `${APP_NAME} · ${APP_TAGLINE}`,
+    description: APP_DESCRIPTION,
+  },
   title: {
     default: `${APP_NAME} · ${APP_TAGLINE}`,
     template: `%s · ${APP_NAME}`,

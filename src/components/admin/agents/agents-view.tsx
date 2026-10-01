@@ -60,7 +60,7 @@ import { useAdminStore } from "@/lib/admin-store";
 import { useAdminAction } from "@/components/admin/shared/use-admin-action";
 import {
   createAgentAction,
-  sendAgentPasswordResetAction,
+  endAgentSessionsAction,
   setAgentDisabledAction,
   updateAgentAction,
 } from "@/app/admin/actions";
@@ -149,7 +149,19 @@ function AgentsManager() {
               ) : null}
             </>
           }
-          subtitle={agent.email}
+          subtitle={
+            <>
+              {agent.email}
+              {agent.phoneMasked ? (
+                <span className="block tabular">
+                  {agent.phoneMasked}
+                  {agent.phoneVerified ? "" : " · not yet verified"}
+                </span>
+              ) : (
+                <span className="block text-warning">No sign-in number</span>
+              )}
+            </>
+          }
         />
       ),
     },
@@ -231,7 +243,7 @@ function AgentsManager() {
                 onSelect={() => setResetting(agent)}
               >
                 <KeyRound />
-                Reset password
+                End sessions
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setActivityFor(agent)}>
@@ -311,6 +323,11 @@ function AgentsManager() {
                 <p className="truncate text-sm font-medium">{agent.name}</p>
                 <p className="truncate text-xs text-muted-foreground">
                   {agent.email}
+                </p>
+                <p className="tabular text-xs text-muted-foreground">
+                  {agent.phoneMasked
+                    ? `${agent.phoneMasked}${agent.phoneVerified ? "" : " · not yet verified"}`
+                    : "No sign-in number"}
                 </p>
               </div>
               <AdminStatusBadge kind="agent" status={agent.status} />
@@ -417,6 +434,7 @@ function AgentsManager() {
                 agentId: permissionsFor.id,
                 name: permissionsFor.name,
                 email: permissionsFor.email,
+                // Permissions only — the sign-in number is left as it is.
                 note: permissionsFor.note,
                 permissions,
               }),
@@ -477,23 +495,23 @@ function AgentsManager() {
       <ConfirmActionDialog
         open={resetting !== null}
         onOpenChange={(open) => !open && setResetting(null)}
-        title="Send a password reset?"
+        title="End this operator's sessions?"
         description={
           resetting ? (
             <>
-              A reset link will be sent to{" "}
-              <strong className="font-medium text-foreground">
-                {resetting.email}
-              </strong>
-              . Their current password keeps working until they use it.
+              <strong className="font-medium text-foreground">{resetting.name}</strong>{" "}
+              is signed out on every device at their next request. They can sign
+              in again with their mobile number — disable them or change the
+              number to stop that.
             </>
           ) : null
         }
-        confirmLabel="Send reset link"
-        reason={{ label: "Note" }}
+        confirmLabel="End sessions"
+        destructive
+        reason={{ label: "Reason" }}
         onConfirm={(note) => {
           if (!resetting) return;
-          run(() => sendAgentPasswordResetAction({ agentId: resetting.id, note }));
+          run(() => endAgentSessionsAction({ agentId: resetting.id, note }));
           setResetting(null);
         }}
       />

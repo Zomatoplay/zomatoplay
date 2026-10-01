@@ -40,16 +40,30 @@ const VERSION = "v1";
 /** A secret shorter than this is refused, not used. */
 export const MIN_SECRET_LENGTH = 32;
 
-function sign(body: string, secret: string): string {
-  return createHmac("sha256", secret).update(`${VERSION}.${body}`).digest("base64url");
+/**
+ * Who a session is for. The audience is part of what the HMAC covers, so a
+ * customer session cookie can never verify as an operator session — even when
+ * both are signed with the same secret and carry the same Firebase uid (one
+ * person can be both, and Firebase gives one number one uid per project).
+ * `customer` keeps the original input, so existing customer sessions stay valid.
+ */
+export type SessionAudience = "customer" | "operator";
+
+function sign(body: string, secret: string, audience: SessionAudience): string {
+  const input = audience === "customer" ? `${VERSION}.${body}` : `${VERSION}.${audience}.${body}`;
+  return createHmac("sha256", secret).update(input).digest("base64url");
 }
 
-export function signCustomerSession(claims: CustomerSessionClaims, secret: string): string {
+export function signCustomerSession(
+  claims: CustomerSessionClaims,
+  secret: string,
+  audience: SessionAudience = "customer",
+): string {
   if (secret.length < MIN_SECRET_LENGTH) {
-    throw new Error("CUSTOMER_SESSION_SECRET is too short.");
+    throw new Error("The session secret is too short.");
   }
   const body = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");
-  return `${VERSION}.${body}.${sign(body, secret)}`;
+  return `${VERSION}.${body}.${sign(body, secret, audience)}`;
 }
 
 /**
@@ -60,13 +74,14 @@ export function verifyCustomerSession(
   token: string,
   secret: string,
   nowSeconds = Math.floor(Date.now() / 1000),
+  audience: SessionAudience = "customer",
 ): CustomerSessionClaims | null {
   if (secret.length < MIN_SECRET_LENGTH || token.length > 2048) return null;
   const parts = token.split(".");
   if (parts.length !== 3 || parts[0] !== VERSION) return null;
   const [, body, signature] = parts;
 
-  const expected = Buffer.from(sign(body, secret));
+  const expected = Buffer.from(sign(body, secret, audience));
   const given = Buffer.from(signature);
   if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
 

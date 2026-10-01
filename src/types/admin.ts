@@ -84,6 +84,10 @@ export interface AdminAgent {
   note?: string;
   /** Set when a password reset has been issued but not yet completed. */
   passwordResetRequestedAt?: string | null;
+  /** The provisioned sign-in number, masked. Null when none is set. */
+  phoneMasked?: string | null;
+  /** True once the operator has signed in with that number by SMS. */
+  phoneVerified?: boolean;
 }
 
 /**
@@ -129,6 +133,11 @@ export interface AdminUserTotals {
 
 export interface AdminUser {
   id: string;
+  /**
+   * Whether the customer has a withdrawal password, and whether wrong attempts
+   * have locked it — never the hash. Read by the user detail page only.
+   */
+  withdrawalPassword?: { isSet: boolean; lockedUntil: string | null };
   /** Public-facing member id, the one support asks for on a call. */
   displayId: string;
   fullName: string;

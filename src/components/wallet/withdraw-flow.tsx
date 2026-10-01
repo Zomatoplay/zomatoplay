@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Clock, Landmark, Loader2, ShieldAlert } from "lucide-react";
+import { CheckCircle2, Clock, KeyRound, Landmark, Loader2, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { InfoRow } from "@/components/shared/info-row";
@@ -26,6 +26,7 @@ import {
 } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
 import { requestWithdrawalAction } from "@/app/(app)/wallet/withdraw/actions";
+import { ForgotWithdrawalPassword } from "@/components/settings/withdrawal-password";
 import { cn } from "@/lib/utils";
 import type { BankAccount, WithdrawalQuote } from "@/types";
 
@@ -67,9 +68,15 @@ function buildQuote(amountUsdt: number, rate: number): WithdrawalQuote {
  */
 export function WithdrawFlow({
   bankAccounts,
+  withdrawalPassword,
+  telegramUrl,
 }: {
   /** Registered INR payout destinations, read server-side. */
   bankAccounts: BankAccount[];
+  /** Whether a withdrawal password exists, read server-side. Never the password. */
+  withdrawalPassword: { isSet: boolean; lockedUntil: string | null };
+  /** For the "forgot withdrawal password" route to support. */
+  telegramUrl: string | null;
 }) {
   const { balance, isVerified } = usePrototypeStore();
   const router = useRouter();
@@ -79,6 +86,8 @@ export function WithdrawFlow({
   const [rawAmount, setRawAmount] = useState("");
   const [submitted, setSubmitted] = useState<WithdrawalQuote | null>(null);
   const [pending, startTransition] = useTransition();
+  const [password, setPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [accountId, setAccountId] = useState(
     // Optional chaining, not `[0].id`: a newly registered account has no payout
     // destination at all, and reading index zero of an empty array threw before
@@ -107,14 +116,23 @@ export function WithdrawFlow({
 
   function handleConfirm() {
     if (!account || pending) return;
+    if (password.length === 0) {
+      setPasswordError("Enter your withdrawal password.");
+      return;
+    }
     const requested = quote;
+    setPasswordError(null);
     startTransition(async () => {
       const result = await requestWithdrawalAction({
         amount: rawAmount.trim(),
         bankAccountId: account.id,
+        withdrawalPassword: password,
       });
+      // Never kept around after an attempt, right or wrong.
+      setPassword("");
 
       if (!result.ok) {
+        setPasswordError(/withdrawal password|locked/i.test(result.message) ? result.message : null);
         toast.error(result.message);
         return;
       }
@@ -146,6 +164,30 @@ export function WithdrawFlow({
         </div>
         <Button asChild variant="brand" size="lg" block>
           <Link href="/settings/kyc">Complete KYC</Link>
+        </Button>
+      </Card>
+    );
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* No withdrawal password yet                                        */
+  /* ---------------------------------------------------------------- */
+  if (!withdrawalPassword.isSet) {
+    return (
+      <Card className="space-y-4 p-6 text-center">
+        <span className="mx-auto flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+          <KeyRound className="size-6" aria-hidden />
+        </span>
+        <div className="space-y-1.5">
+          <h2 className="text-base font-semibold">Create a withdrawal password</h2>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            Every withdrawal is confirmed with a withdrawal password, separate
+            from how you sign in. Set one up with a code sent to your mobile
+            number.
+          </p>
+        </div>
+        <Button asChild variant="brand" size="lg" block>
+          <Link href="/settings/security#withdrawal-password">Set up withdrawal password</Link>
         </Button>
       </Card>
     );
@@ -280,12 +322,43 @@ export function WithdrawFlow({
         </div>
 
         <div className="space-y-2">
+          <Label htmlFor="withdraw-password">Withdrawal password</Label>
+          <Input
+            id="withdraw-password"
+            type="password"
+            autoComplete="off"
+            value={password}
+            onChange={(event) => {
+              setPassword(event.target.value);
+              setPasswordError(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") handleConfirm();
+            }}
+            disabled={pending || Boolean(withdrawalPassword.lockedUntil)}
+            aria-invalid={passwordError ? true : undefined}
+            aria-describedby={passwordError ? "withdraw-password-error" : undefined}
+          />
+          {withdrawalPassword.lockedUntil ? (
+            <p className="text-xs leading-relaxed text-destructive" role="alert">
+              Withdrawals are temporarily locked after too many incorrect
+              passwords. Try again later.
+            </p>
+          ) : passwordError ? (
+            <p id="withdraw-password-error" className="text-xs leading-relaxed text-destructive" role="alert">
+              {passwordError}
+            </p>
+          ) : null}
+          <ForgotWithdrawalPassword telegramUrl={telegramUrl} />
+        </div>
+
+        <div className="space-y-2">
           <Button
             variant="brand"
             size="lg"
             block
             onClick={handleConfirm}
-            disabled={pending}
+            disabled={pending || password.length === 0 || Boolean(withdrawalPassword.lockedUntil)}
           >
             {pending ? (
               <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -297,7 +370,11 @@ export function WithdrawFlow({
             size="lg"
             block
             disabled={pending}
-            onClick={() => setStage("amount")}
+            onClick={() => {
+              setPassword("");
+              setPasswordError(null);
+              setStage("amount");
+            }}
           >
             Back
           </Button>

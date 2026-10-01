@@ -47,3 +47,16 @@ describe("the customer session token", () => {
     assert.equal(verifyCustomerSession(token, SECRET, NOW), null);
   });
 });
+
+test("a customer session never verifies as an operator session, and the reverse", () => {
+  const secret = "s".repeat(48);
+  const now = 1_800_000_000;
+  const claims = { fid: "uid_same_person", ep: 0, iat: now, exp: now + 3600 };
+  const customer = signCustomerSession(claims, secret);
+  const operator = signCustomerSession(claims, secret, "operator");
+  assert.notEqual(customer, operator);
+  assert.deepEqual(verifyCustomerSession(customer, secret, now), claims);
+  assert.deepEqual(verifyCustomerSession(operator, secret, now, "operator"), claims);
+  assert.equal(verifyCustomerSession(customer, secret, now, "operator"), null);
+  assert.equal(verifyCustomerSession(operator, secret, now, "customer"), null);
+});

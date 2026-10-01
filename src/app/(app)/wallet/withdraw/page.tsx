@@ -7,6 +7,9 @@ import { PageContainer } from "@/components/navigation/app-shell";
 import { PageHeader } from "@/components/shared/page-header";
 import { WithdrawFlow } from "@/components/wallet/withdraw-flow";
 import { getBankAccounts } from "@/server/services/account.service";
+import { getAuthenticatedAccount } from "@/server/auth/account";
+import { getSupportTelegramUrl } from "@/server/services/catalogue.service";
+import { getWithdrawalPasswordState } from "@/server/services/withdrawal-password.service";
 
 export const metadata: Metadata = {
   title: "Withdraw",
@@ -14,10 +17,16 @@ export const metadata: Metadata = {
 };
 
 export default async function WithdrawPage() {
-  const [bankAccounts, slices] = await Promise.all([
+  const [bankAccounts, slices, account, telegramUrl] = await Promise.all([
     getBankAccounts(),
     getUserSlices(["profile", "balance"] as const),
+    // Request-memoised: the layout's gate already resolved it.
+    getAuthenticatedAccount(),
+    getSupportTelegramUrl(),
   ]);
+  const withdrawalPassword = account
+    ? await getWithdrawalPasswordState(account.userId)
+    : { isSet: false, lockedUntil: null };
 
 
   return (
@@ -25,7 +34,11 @@ export default async function WithdrawPage() {
       <>
         <PageHeader title="Withdraw" backHref="/wallet" />
         <PageContainer className="space-y-5">
-          <WithdrawFlow bankAccounts={bankAccounts} />
+          <WithdrawFlow
+            bankAccounts={bankAccounts}
+            withdrawalPassword={withdrawalPassword}
+            telegramUrl={telegramUrl}
+          />
         </PageContainer>
       </>
   </UserDataProvider>

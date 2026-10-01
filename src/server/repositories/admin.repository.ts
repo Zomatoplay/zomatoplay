@@ -11,6 +11,7 @@ import type {
 } from "@/types/admin";
 
 import { toAuditLogEntry, toPermissionSet, toPlatformSettings } from "./mappers";
+import { maskIndianMobile } from "@/lib/phone";
 
 /** Operators, the audit trail and platform configuration. */
 
@@ -109,6 +110,9 @@ export async function listAdminAgents(db: Database): Promise<AdminAgent[]> {
     note: agent.note ?? undefined,
     passwordResetRequestedAt:
       agent.passwordResetRequestedAt?.toISOString() ?? null,
+    // Masked here, server-side: the full number never reaches the browser.
+    phoneMasked: agent.phoneE164 ? maskIndianMobile(agent.phoneE164) : null,
+    phoneVerified: Boolean(agent.firebaseUid),
   }));
 }
 

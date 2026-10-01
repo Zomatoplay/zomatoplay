@@ -28,17 +28,17 @@ import { normalizeIndianMobile } from "@/lib/phone";
  *     third gate and not the first.
  *  4. The test identity and code are configured in the environment (never in
  *     source): `DEV_TEST_CUSTOMER_PHONE` + `DEV_TEST_CUSTOMER_OTP`, or
- *     `DEV_ADMIN_EMAIL` + `DEV_ADMIN_PASSWORD` + `DEV_TEST_ADMIN_OTP`.
+ *     `DEV_TEST_ADMIN_PHONE` + `DEV_TEST_ADMIN_OTP`.
  *
  * WHAT IT DOES NOT BYPASS
  * -----------------------
- * Only the SMS / email delivery of a code. The customer path then runs the
- * same `ensureAccountForFirebasePrincipal` → `issueCustomerSession` as a real
- * sign-in, under a uid prefixed `dev-local:` so such accounts are
- * recognisable. The operator path signs in to Supabase as the *real*
- * development operator (`DEV_ADMIN_*`, linked by `npm run db:dev-accounts`)
- * and the browser then calls the ordinary `completeOperatorSignIn`, so the
- * `admin_agents` lookup and every permission check are unchanged.
+ * Only the SMS delivery of a code. What follows is the production path: the
+ * customer sign-in runs `ensureAccountForFirebasePrincipal` →
+ * `issueCustomerSession`, the operator sign-in runs the same
+ * `admin_agents` phone binding and permission checks as a real one, and a
+ * withdrawal-password step-up is checked against the account like any other
+ * proof (`phone-proof.ts`) — all under a uid prefixed `dev-local:` so such
+ * identities are recognisable.
  */
 
 /** Firebase uid prefix for accounts created through the local test path. */
@@ -115,19 +115,18 @@ export function readDevTestCustomer(env: Env): DevTestCustomer | null {
 }
 
 export interface DevTestOperator {
-  email: string;
-  password: string;
+  /** Must also be the `admin_agents.phone_e164` of the operator to sign in as. */
+  phoneE164: string;
   code: string;
   ttlSeconds: number;
 }
 
 /** The configured test operator, or null when any part is missing or malformed. */
 export function readDevTestOperator(env: Env): DevTestOperator | null {
-  const email = (env.DEV_ADMIN_EMAIL ?? "").trim().toLowerCase();
-  const password = env.DEV_ADMIN_PASSWORD ?? "";
+  const phoneE164 = normalizeIndianMobile(env.DEV_TEST_ADMIN_PHONE ?? "");
   const code = (env.DEV_TEST_ADMIN_OTP ?? "").trim();
-  if (!email.includes("@") || !password || !SIX_DIGITS.test(code)) return null;
-  return { email, password, code, ttlSeconds: ttlFrom(env) };
+  if (!phoneE164 || !SIX_DIGITS.test(code)) return null;
+  return { phoneE164, code, ttlSeconds: ttlFrom(env) };
 }
 
 /** Constant-time comparison of two short strings. */

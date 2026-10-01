@@ -68,11 +68,17 @@ describe("the configured test identities", () => {
     assert.equal(readDevTestCustomer({ DEV_TEST_CUSTOMER_PHONE: "9999900001", DEV_TEST_CUSTOMER_OTP: "1234" }), null);
   });
 
-  test("operator: needs the dev admin credential and a six-digit code", () => {
-    assert.equal(readDevTestOperator({ DEV_ADMIN_EMAIL: "a@b.c", DEV_ADMIN_PASSWORD: "p" }), null);
+  test("operator: needs an Indian mobile number and a six-digit code", () => {
+    assert.equal(readDevTestOperator({ DEV_TEST_ADMIN_PHONE: "99999 00002" }), null);
+    assert.equal(readDevTestOperator({ DEV_TEST_ADMIN_OTP: "654321" }), null);
+    assert.deepEqual(
+      readDevTestOperator({ DEV_TEST_ADMIN_PHONE: "99999 00002", DEV_TEST_ADMIN_OTP: "654321" }),
+      { phoneE164: "+919999900002", code: "654321", ttlSeconds: 300 },
+    );
+    // The old email/password variables open nothing any more.
     assert.equal(
-      readDevTestOperator({ DEV_ADMIN_EMAIL: "A@B.c", DEV_ADMIN_PASSWORD: "p", DEV_TEST_ADMIN_OTP: "654321" })?.email,
-      "a@b.c",
+      readDevTestOperator({ DEV_ADMIN_EMAIL: "a@b.c", DEV_ADMIN_PASSWORD: "p", DEV_TEST_ADMIN_OTP: "654321" }),
+      null,
     );
   });
 

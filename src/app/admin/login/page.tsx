@@ -2,9 +2,11 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { AdminSignInForm } from "@/components/admin/layout/admin-sign-in-form";
-import { isAuthConfigured } from "@/lib/supabase/env";
+import { isFirebaseWebConfigured } from "@/lib/firebase/config";
+import { isOperatorSessionConfigured } from "@/server/admin/operator-session";
 import { getCurrentOperator } from "@/server/admin/session";
 import { localTestOperator } from "@/server/auth/dev-test-gate";
+import { isFirebaseVerifierConfigured } from "@/server/auth/firebase-admin";
 
 export const metadata: Metadata = {
   title: "Operator sign-in",
@@ -59,9 +61,13 @@ export default async function AdminLoginPage({
 
   return (
     <AdminSignInForm
-      configured={isAuthConfigured()}
+      configured={
+        (isFirebaseWebConfigured() || Boolean(localTest)) &&
+        isFirebaseVerifierConfigured() &&
+        isOperatorSessionConfigured()
+      }
       reason={refusal}
-      localTest={localTest ? { email: localTest.email } : null}
+      localTest={localTest ? { phoneE164: localTest.phoneE164 } : null}
     />
   );
 }

@@ -20,7 +20,8 @@
     "tron:scan": "tsx --conditions=react-server src/db/scripts/tron-scan.ts",
     "db:dev-accounts": "tsx src/db/scripts/dev-accounts.ts",
     "db:link-admin": "tsx src/db/scripts/dev-accounts.ts",
-    "db:secure": "tsx src/db/scripts/secure.ts"
+    "db:secure": "tsx src/db/scripts/secure.ts",
+    "db:operator-phone": "tsx src/db/scripts/operator-phone.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1141.0",

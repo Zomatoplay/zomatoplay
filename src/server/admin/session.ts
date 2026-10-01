@@ -11,10 +11,11 @@ import type {
   AdminPermissionLevel,
   AdminSession,
 } from "@/types/admin";
-import { getAuthPrincipal } from "@/server/auth/session";
 import { resilientRead } from "@/server/database";
 import { describeTraceActor, trackQuery } from "@/server/observability";
 import type { Actor } from "@/server/write";
+
+import { readOperatorSessionClaims } from "./operator-session";
 
 /**
  * Who the operator is.
@@ -29,19 +30,24 @@ import type { Actor } from "@/server/write";
  * themselves the master admin and approve a verification case, credit a
  * deposit or unblock an account.
  *
- * Operator identity now comes from the same place user identity does: a
- * verified Supabase session, resolved through
- * `auth.users.id → admin_agents.auth_user_id`. There is no parameter to
- * tamper with, because there is no parameter.
+ * Operator identity comes from the operator session cookie this server issues
+ * after a verified SMS sign-in (`operator-session.ts`): the Firebase uid it
+ * carries resolves through `admin_agents.firebase_uid`, and its epoch must
+ * equal the row's `session_epoch`. There is no parameter to tamper with,
+ * because there is no parameter.
  *
- * TWO AUTHORITIES, ONE CREDENTIAL STORE
- * -------------------------------------
- * A Supabase principal can be a user, an operator, both or neither — the two
- * lookups are independent and neither implies the other. Signing in at `/login`
- * does not make somebody an operator, and an operator account is not
- * automatically a customer account. That is deliberate: the alternative, a
- * `role` column on `public.users`, makes every customer row one UPDATE away
- * from being an administrator.
+ * Email sign-in (a Supabase session through `admin_agents.auth_user_id`) is no
+ * longer accepted here at all. Keeping it as a fallback would leave a working
+ * password path into the console that the phone requirement was meant to
+ * replace.
+ *
+ * TWO AUTHORITIES, KEPT APART
+ * ---------------------------
+ * A person can be a customer, an operator, both or neither — the two lookups
+ * are independent and neither implies the other. A customer session cookie
+ * cannot verify as an operator cookie (the audience is signed), and there is
+ * deliberately no `role` column on `public.users`, which would make every
+ * customer row one UPDATE away from being an administrator.
  */
 
 export class AdminAuthorizationError extends Error {
@@ -79,12 +85,12 @@ export async function getCurrentOperator(): Promise<Operator | null> {
   // Resolved here, before the cached lookup, so both steps stay in this
   // request's trace — React's `cache()` runs its function in its own async
   // context and anything recorded inside it loses the trace.
-  const principal = await getAuthPrincipal();
-  if (!principal || !isDatabaseConfigured()) return null;
+  const claims = await readOperatorSessionClaims();
+  if (!claims || !isDatabaseConfigured()) return null;
 
   const operator = await trackQuery(
     "admin.resolveOperator",
-    () => loadOperator(principal.authUserId),
+    () => loadOperator(claims.fid, claims.ep),
     { table: "admin_agents", pipeline: "admin" },
   );
   if (operator) {
@@ -98,7 +104,7 @@ export async function getCurrentOperator(): Promise<Operator | null> {
 }
 
 const loadOperator = cache(
-  async function loadOperator(authUserId: string): Promise<Operator | null> {
+  async function loadOperator(firebaseUid: string, sessionEpoch: number): Promise<Operator | null> {
   const db = getDb();
 
   /*
@@ -126,6 +132,7 @@ const loadOperator = cache(
           email: t.adminAgents.email,
           role: t.adminAgents.role,
           status: t.adminAgents.status,
+          sessionEpoch: t.adminAgents.sessionEpoch,
           permission: t.adminAgentPermissions.permission,
           level: t.adminAgentPermissions.level,
         })
@@ -134,13 +141,15 @@ const loadOperator = cache(
           t.adminAgentPermissions,
           eq(t.adminAgentPermissions.agentId, t.adminAgents.id),
         )
-        .where(eq(t.adminAgents.authUserId, authUserId)));
+        .where(eq(t.adminAgents.firebaseUid, firebaseUid)));
 
   const agent = rows[0];
 
-  // A valid Supabase session that belongs to no operator row. Common and
-  // correct: it is what an ordinary customer's session looks like here.
+  // No operator holds this uid any more (its number was changed or cleared).
   if (!agent) return null;
+
+  // Signed out, or its sessions were ended, after this cookie was issued.
+  if (agent.sessionEpoch !== sessionEpoch) return null;
 
   // A disabled operator keeps their rows — audit entries have to keep pointing
   // somewhere — and loses their access.

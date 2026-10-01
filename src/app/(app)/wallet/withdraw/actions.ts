@@ -22,6 +22,8 @@ import { trackPipeline } from "@/server/observability";
 import { traceAction } from "@/server/trace-action";
 import { revalidate } from "@/server/revalidate";
 import { requestWithdrawal } from "@/server/services/withdrawals-write.service";
+import { checkWithdrawalPassword } from "@/server/services/withdrawal-password.service";
+import { toSafeFailure } from "@/server/errors";
 import type { Actor } from "@/server/write";
 
 /**
@@ -53,6 +55,8 @@ const INR_SCALE = 2;
 export async function requestWithdrawalAction(input: {
   amount: string;
   bankAccountId: string;
+  /** Checked server-side against the stored hash; never logged or echoed. */
+  withdrawalPassword: string;
 }): Promise<WithdrawResult> {
   return traceAction(
     { name: "withdrawal.request", actorType: "user", pipeline: "withdrawal" },
@@ -63,6 +67,7 @@ export async function requestWithdrawalAction(input: {
 async function runRequestWithdrawal(input: {
   amount: string;
   bankAccountId: string;
+  withdrawalPassword: string;
 }): Promise<WithdrawResult> {
   const account = await getAuthenticatedAccount();
   if (!account) return { ok: false, message: "Not signed in." };
@@ -108,6 +113,28 @@ async function runRequestWithdrawal(input: {
     return { ok: false, message: "Fees exceed the amount requested." };
   }
 
+  const actor: Actor = {
+    kind: "user",
+    id: account.userId,
+    name: account.fullName || account.email || account.displayId,
+    role: "agent",
+  };
+
+  /*
+   * THE WITHDRAWAL PASSWORD, BEFORE ANYTHING IS HELD.
+   *
+   * Checked in its own committed transaction (`checkWithdrawalPassword`), so a
+   * wrong attempt is counted — and five lock withdrawals for 30 minutes — even
+   * though the withdrawal it came with is refused. KYC, the freeze flags, the
+   * destination and the balance are then checked by `requestWithdrawal`
+   * inside the transaction that holds the funds, exactly as before.
+   */
+  try {
+    await checkWithdrawalPassword(account.userId, input.withdrawalPassword, actor);
+  } catch (error) {
+    return { ok: false, message: toSafeFailure(error, "Your withdrawal password could not be checked. Try again.").message };
+  }
+
   try {
     const quote = {
       amountUsdt: amount,
@@ -116,13 +143,6 @@ async function runRequestWithdrawal(input: {
       percentFeeUsdt: percentFee,
       totalFeeUsdt: totalFee,
       netInr: multiplyByRate(netUsdt, payoutRate, INR_SCALE),
-    };
-
-    const actor: Actor = {
-      kind: "user",
-      id: account.userId,
-      name: account.fullName || account.email,
-      role: "agent",
     };
 
     const { withdrawalId } = await trackPipeline(

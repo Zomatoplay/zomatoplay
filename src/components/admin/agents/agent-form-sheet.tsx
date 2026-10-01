@@ -16,6 +16,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { AGENT_PRESETS } from "@/constants/admin";
+import { normalizeIndianMobile } from "@/lib/phone";
 /**
  * The shape the operator form collects.
  *
@@ -27,6 +28,8 @@ import { AGENT_PRESETS } from "@/constants/admin";
 export interface AgentDraft {
   name: string;
   email: string;
+  /** The sign-in number. Required to create; empty on edit keeps the current one. */
+  phone: string;
   permissions: AdminPermissionSet;
   note?: string;
 }
@@ -46,6 +49,7 @@ function emptyDraft(): AgentDraft {
   return {
     name: "",
     email: "",
+    phone: "",
     permissions: AGENT_PRESETS[0].permissions,
     note: "",
   };
@@ -55,6 +59,8 @@ function toDraft(agent: AdminAgent): AgentDraft {
   return {
     name: agent.name,
     email: agent.email,
+    // Never prefilled: the full number is not sent to the browser.
+    phone: "",
     permissions: agent.permissions,
     note: agent.note ?? "",
   };
@@ -104,7 +110,9 @@ export function AgentFormSheet({
   }
 
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email.trim());
-  const valid = draft.name.trim() !== "" && emailValid;
+  const phoneValid =
+    normalizeIndianMobile(draft.phone) !== null || (mode === "edit" && draft.phone.trim() === "");
+  const valid = draft.name.trim() !== "" && emailValid && phoneValid;
 
   return (
     <Sheet open={open} onOpenChange={handleOpenChange}>
@@ -115,7 +123,7 @@ export function AgentFormSheet({
           </SheetTitle>
           <SheetDescription>
             {mode === "create"
-              ? "The agent is created in an invited state and receives a sign-in link. No authentication exists in this prototype."
+              ? "The agent is created as invited and signs in with an SMS code sent to the mobile number below."
               : "Changes take effect immediately and are written to the audit log."}
           </SheetDescription>
         </SheetHeader>
@@ -146,6 +154,30 @@ export function AgentFormSheet({
                 aria-invalid={touched && !emailValid}
               />
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="agent-phone">Sign-in mobile number</Label>
+            <Input
+              id="agent-phone"
+              type="tel"
+              inputMode="numeric"
+              autoComplete="off"
+              value={draft.phone}
+              onChange={(event) => setDraft({ ...draft, phone: event.target.value })}
+              placeholder={
+                mode === "edit" && agent?.phoneMasked
+                  ? `${agent.phoneMasked} — leave blank to keep`
+                  : "98765 43210"
+              }
+              aria-invalid={touched && !phoneValid}
+              aria-describedby="agent-phone-help"
+            />
+            <p id="agent-phone-help" className="text-xs leading-relaxed text-muted-foreground">
+              The operator signs in with an SMS code to this Indian mobile
+              number. Changing it signs them out everywhere until they verify
+              the new number.
+            </p>
           </div>
 
           <div className="space-y-2">
@@ -209,7 +241,8 @@ export function AgentFormSheet({
 
           {touched && !valid ? (
             <p className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs leading-relaxed text-destructive">
-              A name and a valid work email address are required.
+              A name, a valid work email address and a valid Indian mobile
+              number are required.
             </p>
           ) : null}
         </SheetBody>
@@ -226,6 +259,7 @@ export function AgentFormSheet({
                 ...draft,
                 name: draft.name.trim(),
                 email: draft.email.trim(),
+                phone: draft.phone.trim(),
                 note: draft.note?.trim() || undefined,
               });
               onOpenChange(false);

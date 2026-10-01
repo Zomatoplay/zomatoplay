@@ -81,6 +81,12 @@ export function describePhoneAuthError(
   if (code === "auth/invalid-phone-number" || code === "auth/missing-phone-number") {
     return "Enter a valid 10-digit Indian mobile number.";
   }
+  if (code === "auth/unauthorized-domain" || code === "auth/operation-not-allowed") {
+    // The website address is not on the Firebase project's authorised-domain
+    // list, or phone sign-in is switched off there. Nothing the person can
+    // fix — said plainly so support hears the right symptom.
+    return "SMS verification is not enabled for this website yet. Please contact support.";
+  }
   if (code === "auth/network-request-failed") {
     return "Network problem. Check your connection and try again.";
   }

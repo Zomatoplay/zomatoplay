@@ -61,9 +61,6 @@ export function DesktopSidebar() {
         </ul>
       </nav>
 
-      <p className="mt-auto px-3 text-[11px] leading-relaxed text-muted-foreground">
-        Demo build. Sample data only — no real funds are held or moved.
-      </p>
     </aside>
   );
 }

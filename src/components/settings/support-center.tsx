@@ -1,8 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { Mail, MessageSquare, Send } from "lucide-react";
-import { toast } from "sonner";
+import { Mail, MessageSquare } from "lucide-react";
 
 import {
   Accordion,
@@ -13,17 +11,6 @@ import {
 import { TelegramSupportButton } from "@/components/shared/telegram-support";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input, Textarea } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Sheet,
-  SheetBody,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { SUPPORT_EMAIL } from "@/constants/app";
 import { faqs, helpTopics } from "@/data/support";
 import { formatDate } from "@/utils/format";
@@ -47,21 +34,6 @@ export function SupportCenter({
   /** The operator-configured Telegram destination; null when none is set. */
   telegramUrl: string | null;
 }) {
-  const [contactOpen, setContactOpen] = useState(false);
-  const [subject, setSubject] = useState("");
-  const [message, setMessage] = useState("");
-
-  const canSubmit = subject.trim().length > 3 && message.trim().length > 10;
-
-  function handleSubmit() {
-    setContactOpen(false);
-    setSubject("");
-    setMessage("");
-    toast.success("Message sent", {
-      description: "Demo build — no ticket was actually created.",
-    });
-  }
-
   return (
     <div className="space-y-6">
       {/* Help topics */}
@@ -103,7 +75,9 @@ export function SupportCenter({
         </div>
       </section>
 
-      {/* Tickets */}
+      {/* Tickets — only when the account has any; an empty bordered list
+          reads as a broken screen. */}
+      {tickets.length > 0 ? (
       <section id="tickets" className="space-y-2 scroll-mt-20">
         <h2 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Your support tickets
@@ -135,62 +109,31 @@ export function SupportCenter({
           })}
         </ul>
       </section>
+      ) : null}
 
-      {/* Contact */}
+      {/*
+        Contact. These are the channels that reach a person: the Telegram
+        account an operator configured, and the support mailbox. There used to
+        be an in-app form here that said "Message sent" and stored nothing — a
+        customer waiting on a reply to a message nobody received is worse off
+        than one who is shown where to write.
+      */}
       <section className="space-y-3">
         {telegramUrl ? <TelegramSupportButton url={telegramUrl} /> : null}
-        <Button variant="brand" size="lg" block onClick={() => setContactOpen(true)}>
-          <Send className="size-4" />
-          Contact support
-        </Button>
-        <p className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
-          <Mail className="size-3.5" aria-hidden />
-          {SUPPORT_EMAIL}
-        </p>
+        {SUPPORT_EMAIL ? (
+          <Button asChild variant={telegramUrl ? "outline" : "brand"} size="lg" block>
+            <a href={`mailto:${SUPPORT_EMAIL}`}>
+              <Mail className="size-4" aria-hidden />
+              Email {SUPPORT_EMAIL}
+            </a>
+          </Button>
+        ) : null}
+        {!telegramUrl && !SUPPORT_EMAIL ? (
+          <p className="rounded-xl border border-border bg-secondary/60 p-3.5 text-center text-xs leading-relaxed text-muted-foreground">
+            Support contact details are being set up. Please check back shortly.
+          </p>
+        ) : null}
       </section>
-
-      <Sheet open={contactOpen} onOpenChange={setContactOpen}>
-        <SheetContent>
-          <SheetHeader>
-            <SheetTitle>Contact support</SheetTitle>
-            <SheetDescription>
-              Tell us what happened and we will get back to you.
-            </SheetDescription>
-          </SheetHeader>
-          <SheetBody className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="ticket-subject">Subject</Label>
-              <Input
-                id="ticket-subject"
-                value={subject}
-                onChange={(event) => setSubject(event.target.value)}
-                placeholder="What do you need help with?"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="ticket-message">Message</Label>
-              <Textarea
-                id="ticket-message"
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                placeholder="Include any transaction IDs that are relevant."
-                rows={5}
-              />
-            </div>
-          </SheetBody>
-          <SheetFooter>
-            <Button
-              variant="brand"
-              size="lg"
-              block
-              disabled={!canSubmit}
-              onClick={handleSubmit}
-            >
-              Send message
-            </Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
     </div>
   );
 }

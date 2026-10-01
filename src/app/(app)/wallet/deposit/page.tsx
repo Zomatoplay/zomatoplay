@@ -11,10 +11,11 @@ import { getDepositNetworks, getSupportTelegramUrl } from "@/server/services/cat
 import { listOwnDepositRequests } from "@/server/services/deposit-requests.service";
 import { getActiveDepositAddress } from "@/server/services/deposit-settings.service";
 import { getPublicDepositNetwork } from "@/server/services/tron.service";
+import { APP_NAME } from "@/constants/app";
 
 export const metadata: Metadata = {
   title: "Add funds",
-  description: "Deposit USDT to your Nanotron balance.",
+  description: `Deposit USDT to your ${APP_NAME} balance.`,
 };
 
 /**

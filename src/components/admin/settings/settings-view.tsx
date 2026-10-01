@@ -89,10 +89,10 @@ export function SettingsForm({
   return (
     <AdminSection className="space-y-4">
       <PrototypeNote>
-        Prototype controls. Saving updates the CRM&rsquo;s in-memory state and
-        writes an audit entry; the running user application still reads its
-        configuration from <code className="font-mono">@/constants/app</code>{" "}
-        until a real configuration service joins the two.
+        Saving records these values and an audit entry. Fees, rates and limits
+        shown to customers are still read from the application&rsquo;s own
+        configuration, so changing them here does not change them for
+        customers yet. Customer support (below) does take effect immediately.
       </PrototypeNote>
 
       <div className="grid gap-3 xl:grid-cols-2">

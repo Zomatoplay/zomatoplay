@@ -176,9 +176,7 @@ export default function SettingsPage() {
           <AccountActions />
 
           <p className="px-1 pb-2 text-center text-[11px] leading-relaxed text-muted-foreground">
-            {APP_NAME} · demo build
-            <br />
-            Sample data only. No real funds are held, invested or transferred.
+            {APP_NAME}
           </p>
       </PageContainer>
     </>
@@ -204,7 +202,11 @@ async function ContactSupportRow() {
         as="div"
         icon={Send}
         title="Contact support"
-        description={`Telegram support is currently unavailable. Email ${SUPPORT_EMAIL}.`}
+        description={
+          SUPPORT_EMAIL
+            ? `Telegram support is currently unavailable. Email ${SUPPORT_EMAIL}.`
+            : "Telegram support is currently unavailable."
+        }
       />
     );
   }

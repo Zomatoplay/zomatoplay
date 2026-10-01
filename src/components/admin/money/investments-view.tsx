@@ -302,7 +302,7 @@ export function InvestmentsBrowser({
       <AdminListPager nav={nav} result={result} label="allocations" />
 
       <RiskNote>
-        Projected profit figures are estimates from the prototype investment
+        Projected profit figures are estimates from the investment
         model. They are never guaranteed and must not be presented to users as
         such.
       </RiskNote>

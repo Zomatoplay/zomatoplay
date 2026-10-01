@@ -127,8 +127,7 @@ function AuditLogBrowser() {
     <AdminSection className="space-y-4">
       <PrototypeNote>
         Audit entries are append-only and cannot be edited or deleted from this
-        interface. Actions you take elsewhere in this session appear here
-        immediately.
+        interface.
       </PrototypeNote>
 
       <AdminStatGrid className="md:grid-cols-3 xl:grid-cols-3">

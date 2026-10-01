@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { ADMIN_APP_SUBTITLE } from "@/constants/admin";
+import { APP_NAME } from "@/constants/app";
 
 /**
  * The `/admin` root.
@@ -23,7 +24,7 @@ export const metadata: Metadata = {
     default: ADMIN_APP_SUBTITLE,
     template: `%s · ${ADMIN_APP_SUBTITLE}`,
   },
-  description: "Administrative control panel for the Nanotron platform.",
+  description: `Administrative control panel for the ${APP_NAME} platform.`,
   // An operations console has no business being indexed.
   robots: { index: false, follow: false },
 };

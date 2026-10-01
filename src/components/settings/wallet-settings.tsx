@@ -217,8 +217,8 @@ export function WalletSettings({
       </section>
 
       <PrototypeNote>
-        Demo build — saved destinations are sample data and these preferences are
-        not persisted.
+        Your saved destinations are stored on your account. The network and
+        confirmation preferences on this screen are not saved yet.
       </PrototypeNote>
     </div>
   );

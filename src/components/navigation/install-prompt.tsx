@@ -12,6 +12,7 @@ import {
   shouldOfferInstall,
   type InstallState,
 } from "@/lib/pwa-install";
+import { APP_NAME } from "@/constants/app";
 
 /**
  * "Install Nanotron" — shown after real use, only where installing is real.
@@ -146,11 +147,11 @@ export function InstallPrompt() {
         </span>
         <div className="min-w-0 flex-1">
           <h2 id="install-title" className="text-sm font-semibold">
-            Install Nanotron
+            Install {APP_NAME}
           </h2>
           {mode === "chromium" ? (
             <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-              Install Nanotron on your device for faster access.
+              Install {APP_NAME} on your device for faster access.
             </p>
           ) : (
             <ol className="mt-1 space-y-1 text-xs leading-relaxed text-muted-foreground">

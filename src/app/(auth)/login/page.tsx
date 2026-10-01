@@ -6,10 +6,11 @@ import { PhoneOtpForm } from "@/components/auth/phone-otp-form";
 import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
 import { localTestCustomer } from "@/server/auth/dev-test-gate";
 import { isLegacyEmailSignInEnabled, isPhoneSignInLive } from "@/server/auth/phone-sign-in";
+import { APP_NAME } from "@/constants/app";
 
 export const metadata: Metadata = {
   title: "Sign in",
-  description: "Sign in to Nanotron with your mobile number.",
+  description: `Sign in to ${APP_NAME} with your mobile number.`,
 };
 
 /**

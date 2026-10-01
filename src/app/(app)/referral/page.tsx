@@ -9,7 +9,7 @@ import { VipLevels } from "@/components/referral/vip-levels";
 import { RateNote } from "@/components/shared/notices";
 import { SectionHeader } from "@/components/shared/section-header";
 import { StatTile } from "@/components/shared/stat-tile";
-import { REFERRAL_BASE_URL } from "@/constants/app";
+import { APP_NAME, REFERRAL_BASE_URL } from "@/constants/app";
 import { referralSteps } from "@/data/referrals";
 import { generateQrSvg } from "@/lib/qr";
 import { getUserSlices } from "@/server/services/account.service";
@@ -29,7 +29,7 @@ import {
 export const metadata: Metadata = {
   title: "Referral",
   description:
-    "Invite friends to Nanotron, track your referrals and earn commission.",
+    `Invite friends to ${APP_NAME}, track your referrals and earn commission.`,
 };
 
 /**

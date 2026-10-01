@@ -64,8 +64,8 @@ export function LanguagePicker() {
       </ul>
 
       <PrototypeNote>
-        Demo build — only English is translated. The other options are shown to
-        mark where localisation will plug in.
+        Only English is available at the moment. Other languages will be added
+        here as they become available.
       </PrototypeNote>
     </div>
   );

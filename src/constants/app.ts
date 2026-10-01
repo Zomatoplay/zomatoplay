@@ -1,34 +1,49 @@
 /**
  * Application-wide constants.
  *
- * Everything here is prototype configuration. Values that will later come from
- * a backend, a rates provider or a CMS are marked so they are easy to find.
+ * Values that will later come from a backend, a rates provider or a CMS are
+ * marked so they are easy to find.
  */
 
+/**
+ * The public product name — the one place it is written. Every customer- and
+ * operator-facing string (titles, metadata, the PWA manifest, the install
+ * prompt, share text) reads it from here, so a rebrand is this line plus the
+ * icon in `@/lib/pwa-icon`. The repository, infrastructure and internal
+ * identifiers (cookie names, cache keys) deliberately do not follow it.
+ */
 export const APP_NAME = "Nanotron";
 export const APP_TAGLINE = "Crypto investment platform";
-export const APP_DESCRIPTION =
-  "Nanotron is a mobile-first crypto investment platform: fund your account in USDT, invest in managed plans, track rewards and refer friends.";
+export const APP_DESCRIPTION = `${APP_NAME} is a mobile-first crypto investment platform: fund your account in USDT, invest in managed plans, track rewards and refer friends.`;
 
-/** Mock referral base URL. Replace with the real origin at integration time. */
 /**
  * Where a referral link points.
  *
- * `/signup?ref=CODE` rather than a prettier `/join/CODE`: the query form is
- * what the middleware captures, on any route, into the cookie that survives the
- * signup and the email confirmation that follows it. A path form would need its
- * own route whose only job is to set the same cookie and redirect here.
+ * `/login?ref=CODE`: customers register by mobile number on `/login`, so the
+ * link lands on the form that creates the account. The middleware captures
+ * `?ref=` on any route into the cookie that decides attribution at account
+ * creation (`resolveReferrer`); the query is only the carrier.
  *
- * INTEGRATION POINT: set `NEXT_PUBLIC_SITE_URL` in a real deployment. The
- * fallback is the production hostname, which is right for a link somebody
- * copies out of the app and wrong for one they follow on localhost.
+ * INTEGRATION POINT: set `NEXT_PUBLIC_SITE_URL` to the public origin in every
+ * deployment. Without it a link copied out of the app falls back to the
+ * hosting provider's hostname.
  */
-export const REFERRAL_BASE_URL = `${
-  process.env.NEXT_PUBLIC_SITE_URL ?? "https://nanotron.vercel.app"
-}/signup`;
+export const REFERRAL_BASE_URL = `${(
+  process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://nanotron.vercel.app"
+).replace(/\/+$/, "")}/login`;
 
-/** Support contact shown in Settings → Support. Placeholder values. */
-export const SUPPORT_EMAIL = "support@nanotron.app";
+/**
+ * The support mailbox, or null when the deployment has not named one.
+ *
+ * Configuration rather than a constant, for the same reason the Telegram
+ * contact is: an address printed in source is an address somebody has to
+ * remember to own, and a support email nobody reads is worse than none.
+ * `NEXT_PUBLIC_SUPPORT_EMAIL`; anything that is not address-shaped is ignored.
+ */
+export const SUPPORT_EMAIL: string | null = (() => {
+  const value = process.env.NEXT_PUBLIC_SUPPORT_EMAIL?.trim() ?? "";
+  return /^[^\s@<>"]+@[^\s@<>"]+\.[A-Za-z]{2,}$/.test(value) ? value : null;
+})();
 
 /**
  * ---------------------------------------------------------------------------

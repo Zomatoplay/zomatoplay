@@ -1,3 +1,4 @@
+import { APP_NAME } from "@/constants/app";
 import type { FaqItem, SupportTicket } from "@/types";
 
 /**
@@ -82,7 +83,7 @@ export const legalDocuments = {
     sections: [
       {
         heading: "1. About these terms",
-        body: "These terms govern your use of the Nanotron application. This build is a functional prototype: no real funds are held, transferred or invested, and all balances, plans and transactions shown are sample data.",
+        body: `These terms govern your use of the ${APP_NAME} application.`,
       },
       {
         heading: "2. Eligibility",
@@ -155,10 +156,6 @@ export const legalDocuments = {
       {
         heading: "Network risk",
         body: "Blockchain transfers are irreversible. Sending the wrong asset, or using a network other than the one selected, can result in permanent loss.",
-      },
-      {
-        heading: "Prototype notice",
-        body: "This build is a frontend prototype. It does not process real deposits, investments or withdrawals.",
       },
     ],
   },

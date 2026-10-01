@@ -9,6 +9,7 @@ import { saveProfile } from "@/app/(auth)/complete-profile/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { APP_NAME } from "@/constants/app";
 
 /**
  * The one step between a verified email and a usable account.
@@ -45,7 +46,7 @@ export function CompleteProfileForm({
         toast.error(result.message);
         return;
       }
-      toast.success("Welcome to Nanotron");
+      toast.success(`Welcome to ${APP_NAME}`);
       router.replace("/");
       router.refresh();
     });

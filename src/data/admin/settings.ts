@@ -31,7 +31,7 @@ export const platformSettings: PlatformSettings = {
   platform: {
     name: APP_NAME,
     tagline: APP_TAGLINE,
-    supportEmail: SUPPORT_EMAIL,
+    supportEmail: SUPPORT_EMAIL ?? "",
     supportHours: "Mon–Sat, 09:00–19:00 IST",
     maintenanceMode: false,
     registrationsOpen: true,

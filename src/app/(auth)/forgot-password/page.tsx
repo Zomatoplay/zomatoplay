@@ -4,10 +4,11 @@ import { redirect } from "next/navigation";
 import { ForgotPasswordForm } from "@/components/auth/forgot-password-form";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { isLegacyEmailSignInEnabled } from "@/server/auth/phone-sign-in";
+import { APP_NAME } from "@/constants/app";
 
 export const metadata: Metadata = {
   title: "Forgot password",
-  description: "Request a password reset link for your Nanotron account.",
+  description: `Request a password reset link for your ${APP_NAME} account.`,
 };
 
 /** Per request: the legacy switch is read from the runtime environment. */

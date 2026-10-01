@@ -10,11 +10,12 @@ import { TopBar } from "@/components/navigation/top-bar";
 import { PlansBrowser } from "@/components/plans/plans-browser";
 import { RateNote, RiskNote } from "@/components/shared/notices";
 import { getPlans } from "@/server/services/catalogue.service";
+import { APP_NAME } from "@/constants/app";
 
 export const metadata: Metadata = {
   title: "Plans",
   description:
-    "Browse Nanotron investment plans by term, projected return and risk level.",
+    `Browse ${APP_NAME} investment plans by term, projected return and risk level.`,
 };
 
 /**

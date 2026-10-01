@@ -15,7 +15,9 @@ import type {
  * `@/constants/admin-navigation`.
  */
 
-export const ADMIN_APP_NAME = "Nanotron";
+import { APP_NAME } from "./app";
+
+export const ADMIN_APP_NAME = APP_NAME;
 export const ADMIN_APP_SUBTITLE = "Master CRM";
 
 /* -------------------------------------------------------------------------- */

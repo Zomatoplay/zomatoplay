@@ -5,10 +5,11 @@ import { SignUpForm } from "@/components/auth/sign-up-form";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { getAuthenticatedAccount } from "@/server/auth/account";
 import { isLegacyEmailSignInEnabled, isPhoneSignInLive } from "@/server/auth/phone-sign-in";
+import { APP_NAME } from "@/constants/app";
 
 export const metadata: Metadata = {
   title: "Create account",
-  description: "Create a Nanotron account with your email address.",
+  description: `Create a ${APP_NAME} account with your email address.`,
 };
 
 export default async function SignUpPage({

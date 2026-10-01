@@ -59,10 +59,6 @@ export default async function LegalDocumentPage({
           ))}
         </article>
 
-        <p className="rounded-xl border border-dashed border-border p-3 text-[11px] leading-relaxed text-muted-foreground">
-          This document is placeholder copy for a demo build. It is not legal
-          advice and must be replaced with reviewed terms before any real launch.
-        </p>
       </PageContainer>
     </>
   );

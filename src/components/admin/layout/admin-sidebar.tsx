@@ -102,9 +102,6 @@ function AdminNavFooter() {
         <ArrowUpRight className="size-3.5 shrink-0" aria-hidden />
         Open the user app
       </Link>
-      <p className="px-3 text-[11px] leading-relaxed text-muted-foreground">
-        Demo build. Sample data only — no real accounts, funds or documents.
-      </p>
     </div>
   );
 }

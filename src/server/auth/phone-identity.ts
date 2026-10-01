@@ -96,9 +96,9 @@ export function decidePhoneLink(input: {
 /** What a person is told. Safe to show: they have just proved they own the number. */
 export const PHONE_REFUSAL_MESSAGES = {
   phone_linked_to_other_account:
-    "This mobile number is already linked to a Nanotron account. Contact support to restore access.",
+    "This mobile number is already linked to an account. Contact support to restore access.",
   uid_linked_to_other_account:
-    "This mobile number is already linked to a different Nanotron account. Contact support.",
+    "This mobile number is already linked to a different account. Contact support.",
   account_has_other_number:
     "Your account is already linked to a different mobile number. Contact support to change it.",
 } as const;

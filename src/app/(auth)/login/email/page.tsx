@@ -5,10 +5,11 @@ import { SignInForm } from "@/components/auth/sign-in-form";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
 import { isLegacyEmailSignInEnabled, isPhoneSignInLive } from "@/server/auth/phone-sign-in";
+import { APP_NAME } from "@/constants/app";
 
 export const metadata: Metadata = {
   title: "Sign in with email",
-  description: "Sign in to an existing Nanotron email account.",
+  description: `Sign in to an existing ${APP_NAME} email account.`,
 };
 
 /**

@@ -25,6 +25,7 @@ import {
   completeLocalTestSignInAction,
   startLocalTestSignInAction,
 } from "@/app/(auth)/login/dev-test-actions";
+import { APP_NAME } from "@/constants/app";
 
 /**
  * Mobile number → OTP → signed in.
@@ -252,7 +253,7 @@ export function PhoneOtpForm({
 
   const heading =
     mode === "link"
-      ? { title: "Verify your mobile number", subtitle: "Nanotron now signs you in with your mobile number. Verify it once to keep using your account." }
+      ? { title: "Verify your mobile number", subtitle: `${APP_NAME} now signs you in with your mobile number. Verify it once to keep using your account.` }
       : { title: "Welcome back", subtitle: "Enter your mobile number" };
 
   return (

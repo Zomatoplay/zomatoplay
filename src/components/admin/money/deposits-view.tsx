@@ -381,8 +381,7 @@ function TxLink({ deposit }: { deposit: AdminDeposit }) {
         deployment is configured for — mainnet included — recorded in the
         database and credited for good when assigned. Each row states its own
         network; open the transaction on the block explorer before assigning
-        one. Rows carrying placeholder hashes are sample data from before the
-        chain integration. Withdrawals remain records only — nothing pays out.
+        one. Withdrawals are records only — nothing pays out from this console.
       </PrototypeNote>
 
       <AdminStatGrid className="md:grid-cols-3 xl:grid-cols-3">

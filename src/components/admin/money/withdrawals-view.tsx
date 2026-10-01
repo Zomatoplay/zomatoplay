@@ -261,8 +261,9 @@ export function WithdrawalsBrowser({
   return (
     <AdminSection className="space-y-4">
       <PrototypeNote>
-        No payment rail is connected. Approving or settling a withdrawal changes
-        prototype state and writes an audit entry; no money moves.
+        No payment rail is connected. Approving or marking a withdrawal paid
+        records your decision and an audit entry; the payout itself is sent
+        outside this console.
       </PrototypeNote>
 
       <AdminStatGrid className="md:grid-cols-3 xl:grid-cols-3">

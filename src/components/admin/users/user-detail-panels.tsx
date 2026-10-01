@@ -864,8 +864,8 @@ export function RewardsPanel({ user }: { user: AdminUser }) {
       </DetailCard>
 
       <RiskNote>
-        Profit figures are accrued and projected values from the prototype
-        investment model. Projections are estimates and are never guaranteed.
+        Profit figures are accrued and projected values from the investment
+        model. Projections are estimates and are never guaranteed.
       </RiskNote>
     </div>
   );

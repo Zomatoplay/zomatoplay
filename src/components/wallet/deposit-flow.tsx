@@ -45,6 +45,7 @@ import {
   type HashSubmissionActionResult,
   type NewDepositView,
 } from "@/app/(app)/wallet/deposit/actions";
+import { APP_NAME } from "@/constants/app";
 
 /**
  * Deposit USDT: request → exact amount → pay → transaction hash → verified.
@@ -404,7 +405,7 @@ function RequestStep({
 
       <Card className="space-y-4 p-5">
         {qrSvg ? (
-          <QrCode svg={qrSvg} label={`QR code for the Nanotron ${TOKEN_LABEL} deposit address`} />
+          <QrCode svg={qrSvg} label={`QR code for the ${APP_NAME} ${TOKEN_LABEL} deposit address`} />
         ) : (
           <div className="mx-auto size-44 animate-pulse rounded-2xl bg-secondary" aria-hidden />
         )}

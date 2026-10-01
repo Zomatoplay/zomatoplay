@@ -55,14 +55,16 @@ export function RiskNote({
 }
 
 /**
- * Makes the prototype status explicit wherever a screen would otherwise look
- * like it is moving real money.
+ * A quiet, factual note about what a screen does and does not do — for
+ * example that an operator's approval records a decision rather than sending a
+ * payment. Always given its text: there is no generic wording that is true of
+ * every screen.
  */
 export function PrototypeNote({
   children,
   className,
 }: {
-  children?: React.ReactNode;
+  children: React.ReactNode;
   className?: string;
 }) {
   return (
@@ -74,8 +76,7 @@ export function PrototypeNote({
     >
       <Info className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
       <p className="text-[11px] leading-relaxed text-muted-foreground">
-        {children ??
-          "Demo build — this screen uses sample data and does not move real funds."}
+        {children}
       </p>
     </div>
   );

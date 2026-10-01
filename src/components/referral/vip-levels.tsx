@@ -144,8 +144,7 @@ export function VipLevels({
       })}
 
       <p className="px-1 text-[11px] leading-relaxed text-muted-foreground">
-        Commission rates and level requirements are example values for this demo
-        build and are subject to change.
+        Commission rates and level requirements are subject to change.
       </p>
     </div>
   );

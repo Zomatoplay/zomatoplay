@@ -142,7 +142,7 @@ export function AgentFormSheet({
                 onChange={(event) =>
                   setDraft({ ...draft, email: event.target.value })
                 }
-                placeholder="name@nanotron.app"
+                placeholder="name@company.com"
                 aria-invalid={touched && !emailValid}
               />
             </div>

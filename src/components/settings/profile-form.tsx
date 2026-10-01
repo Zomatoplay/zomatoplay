@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { Camera, Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
 
-import { PrototypeNote } from "@/components/shared/notices";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -187,8 +186,6 @@ export function ProfileForm() {
           </p>
         </div>
       </div>
-
-      <PrototypeNote />
 
       <Button type="submit" variant="brand" size="lg" block disabled={saving}>
         {saving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}

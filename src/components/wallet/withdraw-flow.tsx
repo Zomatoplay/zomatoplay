@@ -274,8 +274,8 @@ export function WithdrawFlow({
         <div className="flex items-start gap-2.5 rounded-xl border border-border bg-secondary/60 p-3.5">
           <Clock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
           <p className="text-xs leading-relaxed text-muted-foreground">
-            {WITHDRAWAL_PROCESSING_WINDOW}. Demo build — no funds actually leave
-            your account.
+            {WITHDRAWAL_PROCESSING_WINDOW}. The amount is held from your
+            available balance while the request is reviewed.
           </p>
         </div>
 

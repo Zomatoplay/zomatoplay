@@ -26,6 +26,7 @@ import { isTronConfigured, TRON_NETWORK_LABELS } from "@/server/tron/config";
 import { triggerDepositScan } from "@/server/tron/scan-trigger";
 import { traceAction } from "@/server/trace-action";
 import type { Actor } from "@/server/write";
+import { APP_NAME } from "@/constants/app";
 
 /**
  * The deposit screen's server half: deposit requests and transaction hashes.
@@ -162,7 +163,7 @@ const OUTCOME_MESSAGES: Record<HashSubmissionOutcome, string> = {
   needs_review:
     "Transaction found, but it does not match this request exactly (for example, a different amount). Our team will review it — no action is needed.",
   not_found:
-    "We could not find a USDT (TRC-20) transfer with this hash to the Nanotron deposit address after this request was created. Check the hash, or try again in a minute if you have just sent it.",
+    `We could not find a USDT (TRC-20) transfer with this hash to the ${APP_NAME} deposit address after this request was created. Check the hash, or try again in a minute if you have just sent it.`,
   already_used:
     "Transaction already processed. This transaction has already been used for a deposit and cannot be credited again.",
   not_yours: "This transaction does not match your deposit request.",

@@ -4,6 +4,61 @@ Factual record of development on Nanotron. Newest first.
 
 ---
 
+## 2026-10-01 (Production hardening: operator SMS sign-in, mandatory KYC photos, manual credits, withdrawal password)
+
+Migration **0022** (additive only — no existing row changed): enum values
+`admin_permission.wallet_credits`, `audit_action.wallet_manual_credit`,
+`audit_action.withdrawal_password_reset`, `transaction_type.adjustment`; tables
+`manual_credits`, `withdrawal_passwords`; `admin_agents.phone_e164`,
+`firebase_uid`, `phone_verified_at`, `session_epoch` (default 0). Applied to the
+development Supabase project, followed by `db:secure`. **Not applied to the
+production database** — it is in a private VPC subnet.
+
+### Production copy
+- "Demo build / sample data / prototype / placeholder" wording removed from both
+  applications; notices that describe a real limitation keep their facts.
+- The in-app support form that discarded messages was replaced by the
+  configured Telegram contact and a `mailto:` link (`NEXT_PUBLIC_SUPPORT_EMAIL`).
+- The CRM dashboard no longer shows the fixture-backed platform totals and
+  trend charts (§16.5); queue counts and activity panels read the database.
+- Legal: the terms' prototype sentence and the risk disclosure's "Prototype
+  notice" section removed; nothing else changed.
+- Every public use of the product name reads `APP_NAME`; referral links point
+  at `/login?ref=`; `metadataBase`/OpenGraph from `NEXT_PUBLIC_SITE_URL`.
+
+### KYC (§23)
+- Identity document and live photo both required (form, action, `submitKyc`);
+  storage keys bound to their kind; selfie must be an image.
+- Photos resized on the device before upload, with upload progress; uploaded
+  files are not re-sent when a submission is retried.
+
+### Manual USDT credit (§26)
+- `/admin/wallet-credits` behind the new `wallet_credits` permission; ledger
+  type `adjustment`, `manual_credits` record, audit entry, idempotency key.
+
+### Operator sign-in (§20)
+- Mobile number + SMS; Supabase email sessions no longer accepted by the
+  console; operator cookie with its own signed audience and epoch;
+  `npm run db:operator-phone` to provision the first master admin.
+- Development: the dev master admin (`agt_master`) was given the test number
+  `+91 99999 00002` with that script. Set your real number the same way.
+
+### Withdrawal password (§27)
+- Created after an SMS code, scrypt-hashed, checked before every withdrawal,
+  five failures lock for 30 minutes, reset only by an operator.
+
+### Tests
+- New: `kyc-policy`, `image-compress`, `manual-credit` (unit + integration),
+  `password-hash`, `withdrawal-password-rules`, `withdrawal-password`
+  (integration), `operator-phone`, session audience separation.
+- Pre-existing failures against the shared development database, unrelated to
+  this change: "holds exactly the seeded number of accounts" (122 users, 77 of
+  them `@example.invalid` leftovers from interrupted runs), "the commission
+  ledger is the seeded ledger" (33 vs 21), "the historical backfill left no
+  seeded deposit unannounced".
+
+---
+
 ## 2026-10-01 (Vercel 500: jwks-rsa → jose ESM)
 
 No migration, no code change, nothing written to any database. Full report:

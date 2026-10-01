@@ -45,8 +45,9 @@ or a USDT trading interface. If a request implies any of these, stop and clarify
 - **Customers sign in with Firebase phone OTP** (§19.7); the old Supabase email
   sign-in is switched off unless `LEGACY_EMAIL_SIGN_IN=true` (a migration window
   for linking a verified number). No demo account, no automatic sign-in (§19).
-  **Operators authenticate with Supabase Auth — work email and an emailed
-  one-time code** (§20); `/admin` is closed without an operator session.
+  **Operators sign in with a mobile number and an SMS code (Firebase), to a
+  number a master admin provisioned** (§20); `/admin` is closed without an
+  operator session. Email sign-in no longer reaches the console.
 - **Reads and writes both go to PostgreSQL, in both applications.** The client
   stores are read caches. Every mutation is a server action → service → one
   transaction → audit entry → revalidation.
@@ -634,6 +635,7 @@ exchange prohibition applies here too.**
 | `/admin/deposits` | Deposit ledger + the **Unmatched** queue; credit / mark-failed / assign |
 | `/admin/deposits/configuration` | The single deposit address, its history (§18.9) |
 | `/admin/withdrawals` | Payout queue with full fee arithmetic |
+| `/admin/wallet-credits` | Manual USDT credit + recent credits (§26) |
 | `/admin/investments` | Every allocation, filterable by plan and status |
 | `/admin/plans` | Plan catalogue; create / edit / disable |
 | `/admin/referrals` | Referral accounts + commission ledger, VIP configuration |
@@ -654,10 +656,12 @@ Plus `error.tsx`, `not-found.tsx` and the catch-all above.
 Permissions are **graded, not boolean**: `none` / `view` / `manage`. Real
 operations teams need a read-only tier distinct from an operator tier.
 
-The 13 governable areas are in `ADMIN_PERMISSIONS` (`src/constants/admin.ts`):
+The 14 governable areas are in `ADMIN_PERMISSIONS` (`src/constants/admin.ts`):
 `users`, `user_details`, `kyc`, `deposits`, `withdrawals`, `investments`,
 `plans`, `referrals`, `notifications`, `audit_logs`, `settings`, `security`,
-`agents`. **Do not add a permission to a component without adding it there.**
+`agents`, `wallet_credits`. **Do not add a permission to a component without
+adding it there.** `wallet_credits` (manual USDT credits, §26) is never granted
+`manage` by a preset — only by hand, or by the master admin role.
 
 UI enforcement: `AdminNavList` omits destinations the operator cannot `view`;
 `PermissionGate` replaces a whole screen with an access notice; `canManage()`
@@ -1195,6 +1199,14 @@ property the test owns — never a fact about the physical table.**
 | `server/kyc-storage.integration.test.ts` | yes | RLS closed on every table, derived from the schema |
 | `server/commission-release.integration.test.ts` | partly | eligibility, missed-midnight recovery, pay-once-under-race |
 | `server/pipeline.integration.test.ts` | partly | redaction, correlation, recording |
+| `server/services/kyc-policy.test.ts` | no | both KYC files required; type and size rules |
+| `lib/image-compress.test.ts` | no | resize maths, PDFs untouched, no-DOM fallback |
+| `server/services/manual-credit.test.ts` | no | credit amount, customer id, key and note validation |
+| `server/manual-credit.integration.test.ts` | yes | ledger + record + audit, once under replay and race, rollback, permission |
+| `server/auth/password-hash.test.ts` | no | scrypt format, salts, tampered hashes refused |
+| `lib/withdrawal-password-rules.test.ts` | no | withdrawal password rules |
+| `server/withdrawal-password.integration.test.ts` | yes | hash only, counted failures, lock, support-only reset |
+| `server/admin/operator-phone.test.ts` | no | which operator a verified phone may become |
 
 **`connection.integration.test.ts` fires twenty then forty queries at once** — not
 a benchmark, the regression test for the transaction-pooler stall in §16.1, which
@@ -1701,10 +1713,12 @@ configuration. And it never *generates* an address (§18.8).
    wallet / KYC / investments / deposits / referrals
 ```
 
-**Nothing in `public` stores a credential.** No password, no hash, no OTP, no
-token. **There is a test asserting no column in the schema is named like one** — a
-second authority would start with somebody adding a column, and that fails the
-suite.
+**Nothing in `public` stores a sign-in credential.** No password, no hash, no
+OTP, no token. **There is a test asserting no column in the schema is named like
+one** — a second authority would start with somebody adding a column, and that
+fails the suite. It allows exactly one exception: `withdrawal_passwords.password_hash`,
+a scrypt hash of a spending authorisation the product itself defines (§27) — not
+a way to sign in. Do not widen that allowance.
 
 `auth_user_id` is nullable because the seeded accounts have no credential; they
 exist to populate the CRM, and giving them auth users would create sign-in-able
@@ -1806,8 +1820,8 @@ work runs server-side over `DATABASE_URL`, a separate credential.
 
 ### 19.7 Customer phone sign-in (Firebase)
 
-§19.1–19.6 describe the Supabase path, which is now **operators plus legacy
-email customers**. Customers sign in at `/login` with a mobile number and an SMS
+§19.1–19.6 describe the Supabase path, which is now **legacy email customers
+only** (operators moved to SMS, §20). Customers sign in at `/login` with a mobile number and an SMS
 code:
 
 ```
@@ -1879,47 +1893,62 @@ code:
   phone session for the account ends on every device on its next request. The
   CRM's *log out all devices* does the same (and says a legacy email session
   is not invalidated). Rotating the secret signs every customer out.
-- Operators: §20 (work email + emailed code). Setup: `docs/rollout-phone-s3-deposits-pwa.md` §1.
+- Operators: §20 (mobile number + SMS code). Setup: `docs/rollout-phone-s3-deposits-pwa.md` §1.
 
 ---
 
 ## 20. Operator authentication
 
 ```
-   auth.users            (Supabase — credentials, sessions)
+   Firebase phone auth   (SMS code → ID token, verified server-side, no key)
         |
-        +-- auth_user_id --> public.users        a customer
-        |
-        +-- auth_user_id --> admin_agents        an operator
+        |  firebase_uid, bound on the first verified sign-in to
+        |  the phone_e164 a master admin provisioned
+        v
+   admin_agents  →  nanotron-operator-session cookie (HMAC, audience "operator",
+                    session_epoch, 12 h)  →  requirePermission on every action
 ```
 
-**How an operator proves who they are: work email → emailed one-time code**
-(`signInWithOtp` with `shouldCreateUser: false`, then `verifyOtp`), with the
-password form kept as a secondary option until the deployment's Supabase SMTP
-is confirmed. Either way the result is a Supabase session and the decision is
-`completeOperatorSignIn` → `admin_agents`, unchanged. The form says the same
-thing for known and unknown addresses. A phone-signed-in customer has no
-Supabase identity, so there is nothing they could present here.
+**How an operator proves who they are: mobile number → SMS code.** The browser
+gets a Firebase ID token (`usePhoneOtp`) and sends it once to
+`completeOperatorPhoneSignIn`, which verifies it (`verifyPhoneProof`: signature,
+project, `sign_in_provider = phone`, `auth_time` < 5 min), then
+`signInOperatorByPhone` decides with `decideOperatorPhoneSignIn` (pure, tested):
+
+- a uid already bound to an operator → that operator, if the number still matches;
+- a number a master admin provisioned with no uid bound → bind this uid (first
+  sign-in; an `invited` operator becomes `active`);
+- a number bound to a different uid → refused, never silently re-bound;
+- otherwise → not an operator.
+
+**Matching on the number is safe here and never for customers** because an
+operator's `phone_e164` is an authorization written by a master admin (Admin →
+Agents) or by `npm run db:operator-phone` (the bootstrap for the first master
+admin, allowed in production for that reason) — not something the person typed
+about themselves. Changing it clears `firebase_uid` and increments
+`session_epoch`.
+
+**Supabase email sessions are not accepted at all** (`getCurrentOperator` reads
+only the operator cookie). A fallback would leave a working password path into
+the console. Consequences: operator password resets are gone (replaced by *End
+sessions*), and legacy KYC documents in the Supabase bucket can no longer be
+opened from the CRM — that path signs with the operator's own Supabase session.
+
+**The operator cookie can never be a customer cookie.** Same construction as
+§19.7, with the audience inside the HMAC (`customer-session-token.ts`, tested);
+signed with `OPERATOR_SESSION_SECRET` or, absent that, `CUSTOMER_SESSION_SECRET`.
+Sign-out and *End sessions* increment `session_epoch`: every device, next request.
 
 **"Could not verify operator access. Try again."** is the *retryable*
-infrastructure outcome — the operator lookup did not complete — never a
-verdict. On 2026-09-30 its cause was `.env.local`: an unquoted `#` in the RDS
-password truncated `DATABASE_URL` (dotenv reads `#` as a comment, and even
-quoted, `new URL()` reads it as a fragment — write `%23`), and the RDS
-instance is in a private VPC subnet that is unreachable from a laptop anyway.
+infrastructure outcome — never a verdict. On 2026-09-30 its cause was
+`.env.local`: an unquoted `#` in the RDS password truncated `DATABASE_URL`
+(write `%23`), and RDS is in a private VPC subnet unreachable from a laptop.
 `npm run db:verify` identifies a target and its migration state read-only.
 
-**The two lookups are independent, and that is the design.** A principal can be a
-customer, an operator, both or neither. Signing in at `/login` grants nothing in
-the CRM; `completeOperatorSignIn` checks `admin_agents` server-side and ends the
-session if it finds nothing. **There is deliberately no `role` column on
-`public.users`** — that would put every customer row one `UPDATE` away from being
-an administrator.
-
-`admin_agents.auth_user_id` is nullable; a seeded operator is a fixture with nobody
-behind it and cannot sign in. Creating an operator in the CRM writes an `invited`
-row with no credential — provisioning an account and issuing a credential are two
-decisions.
+**The two lookups are independent, and that is the design.** A person can be a
+customer, an operator, both or neither. **There is deliberately no `role` column
+on `public.users`** — that would put every customer row one `UPDATE` away from
+being an administrator.
 
 ### 20.1 The route group
 
@@ -2099,22 +2128,15 @@ for weeks. Every level goes through `redact()`.
   document number and **only its last four characters leave the browser**; the
   server composes the mask.
 
-  **Documents are OPTIONAL, and that is a policy in one place.**
-  `KYC_REQUIRE_DOCUMENTS` (`@/server/services/kyc-policy`, mirrored to the form as
-  `NEXT_PUBLIC_KYC_REQUIRE_DOCUMENTS`) is off, so a submission may carry declared
-  details alone. The flow used to require a document *and* a selfie
-  unconditionally, which meant verification was not completable at all.
-
-  Three things this does **not** relax at any setting: the identity fields, the
-  session the account is resolved from, and the verification of a document that *is*
-  supplied — still checked against the caller's own `auth.uid()` folder and re-read
-  from Storage before any row claims it exists.
-
-  **An absent document is absent.** No `kyc_documents` row is written for a file
-  that does not exist: no placeholder filename, no null-path row. Such a row tells
-  the operator there is a document there, which is the same class of lie as a
-  client-supplied `liveness_check_passed`. The case carries a
-  `documents_not_provided` risk flag instead.
+  **An identity document AND a live photo are both REQUIRED** — in the form, in
+  the server action and again in `submitKyc` (`@/server/services/kyc-policy`,
+  pure and tested). Each storage key is bound to its kind (a document's key
+  cannot be submitted as the selfie), a selfie must be an image, and sizes and
+  types are taken from storage after upload, not from the browser. Photos are
+  resized on the device before upload (`@/lib/image-compress`: 2400 px documents,
+  1600 px selfies, JPEG 0.85; PDFs and undecodable images kept as chosen). With
+  no document store configured the flow says verification is unavailable. Older
+  cases submitted without documents still exist and the CRM says so.
 
   **`liveness_check_passed` is not a value the client can send.** It used to be, and
   the flow sent `true` whenever a button had been pressed — a claim an operator reads
@@ -2190,4 +2212,44 @@ The customer app installs to a home screen; the CRM is not offered for install.
 - The session is an httpOnly cookie, so sign-in survives closing and reopening
   the installed app. iOS gives a home-screen app its own cookie jar — signing in
   once inside it is expected, not a bug.
+
+---
+
+## 26. Manual USDT credits
+
+`/admin/wallet-credits`, gated on `wallet_credits` (§15.3). An operator enters a
+member id (or account id), an amount and an optional internal note; the review
+step shows who that id is, as the server resolved it; confirming credits once.
+
+- **Money moves only through `applyLedgerEntry`**: one `transactions` row of type
+  `adjustment` ("Account credit" to the customer), in one transaction with the
+  append-only `manual_credits` decision record and a `wallet_manual_credit`
+  audit entry (`creditWalletManually`). Never a direct balance update.
+- **Once per confirmation.** The review issues a UUID idempotency key; a
+  transaction-scoped advisory lock on it serialises duplicates, and the unique
+  index on `manual_credits.idempotency_key` is the backstop. A key reused for a
+  different amount or customer is refused. There are tests for sequential and
+  concurrent replays and for rollback; do not make them pass by deleting them.
+- Credits only: positive, at most 6 decimals, at most 100,000 USDT per credit
+  (`MAX_MANUAL_CREDIT_USDT`, a typo guard). A customer can never be the actor.
+
+---
+
+## 27. Withdrawal password
+
+A second secret, separate from sign-in, required by `requestWithdrawalAction`
+before `requestWithdrawal` runs.
+
+- **Created once, after a fresh SMS code to the account's own verified number**
+  (`createWithdrawalPasswordAction`: the proof's uid and number must equal the
+  account's). Rules in `@/lib/withdrawal-password-rules` (shared with the form).
+  Stored as scrypt (`@/server/auth/password-hash`); never logged, echoed or put in
+  a pipeline event.
+- **Checked in its own committed transaction**, so wrong attempts count even
+  though the withdrawal is refused: five lock withdrawals for 30 minutes.
+- **No self-service reset, deliberately.** "Forgot withdrawal password?" tells the
+  customer to contact support. An operator with `security: manage` clears it
+  (`resetWithdrawalPasswordAction`, reason required, `withdrawal_password_reset`
+  audit entry); the customer then creates a new one through the SMS step. Do not
+  add "OTP → new password": whoever holds an unlocked phone could then withdraw.
 

@@ -104,8 +104,14 @@ test("every table in the schema is seeded", async () => {
    * and `deposit_settings` is an operator's choice of the address real money
    * goes to — a seeded row would be, respectively, a deposit nobody started and
    * a receiving address nobody chose.
+   * `manual_credits` is an operator's decision to put money in a wallet, and
+   * `withdrawal_passwords` a secret a customer set after an SMS code — a
+   * fixture would be, respectively, a credit nobody made and a credential
+   * nobody chose.
    */
   const operational = new Set([
+    "manual_credits",
+    "withdrawal_passwords",
     "investment_earnings",
     "chain_scan_state",
     "pipeline_events",

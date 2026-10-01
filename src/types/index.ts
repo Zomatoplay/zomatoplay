@@ -192,7 +192,9 @@ export type TransactionType =
   | "withdrawal"
   | "investment"
   | "reward"
-  | "referral";
+  | "referral"
+  /** A manual credit by an operator — see `manual_credits`. */
+  | "adjustment";
 
 export type TransactionStatus =
   | "completed"

@@ -2,6 +2,7 @@ import {
   BadgeCheck,
   Banknote,
   BellRing,
+  CirclePlus,
   ClipboardList,
   KeyRound,
   LayoutDashboard,
@@ -89,6 +90,13 @@ export const ADMIN_NAV: AdminNavItem[] = [
     label: "Withdrawals",
     icon: Banknote,
     permission: "withdrawals",
+    group: "Operations",
+  },
+  {
+    href: "/admin/wallet-credits",
+    label: "Manual credits",
+    icon: CirclePlus,
+    permission: "wallet_credits",
     group: "Operations",
   },
   {

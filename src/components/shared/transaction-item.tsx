@@ -1,6 +1,7 @@
 import {
   ArrowDownLeft,
   ArrowUpRight,
+  BadgePlus,
   Gift,
   TrendingUp,
   Users,
@@ -19,6 +20,7 @@ const typeMeta: Record<TransactionType, { label: string; icon: LucideIcon }> = {
   investment: { label: "Investment", icon: TrendingUp },
   reward: { label: "Reward", icon: Gift },
   referral: { label: "Referral", icon: Users },
+  adjustment: { label: "Account credit", icon: BadgePlus },
 };
 
 /**

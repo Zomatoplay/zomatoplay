@@ -213,6 +213,8 @@ const SPEAKABLE_ERROR_NAMES = new Set([
   "DepositError",
   "DepositRequestError",
   "DepositSettingsError",
+  "ManualCreditError",
+  "WithdrawalPasswordError",
   "FirebaseCredentialError",
   "WritesUnavailableError",
   "AccountUnavailableError",

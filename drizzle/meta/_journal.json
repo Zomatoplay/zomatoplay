@@ -155,6 +155,13 @@
       "when": 1790539121719,
       "tag": "0021_customer_session_epoch",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1790838483638,
+      "tag": "0022_launch_operator_phone_manual_credit_withdrawal_password",
+      "breakpoints": true
     }
   ]
 }

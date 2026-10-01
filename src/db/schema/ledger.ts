@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  check,
   index,
   integer,
   pgTable,
@@ -438,5 +439,49 @@ export const withdrawals = pgTable(
     index("withdrawals_user_idx").on(table.userId),
     index("withdrawals_status_idx").on(table.status),
     index("withdrawals_requested_idx").on(table.requestedAt),
+  ],
+);
+
+/**
+ * A manual USDT credit an operator made to a customer's wallet.
+ *
+ * The money itself moves through the ledger like every other movement — one
+ * `transactions` row of type `adjustment`, applied by `applyLedgerEntry` in the
+ * same transaction as this row and its audit entry. This table is the
+ * *decision* record: who credited, how much, why, and the key that makes the
+ * action idempotent.
+ *
+ * Append-only. Nothing updates or deletes a row; a mistaken credit is
+ * corrected by a new, separately audited movement, never by editing history.
+ *
+ * `idempotency_key` is unique: the confirmation dialog generates one key per
+ * confirmation, so a double-click, a retried request or a replayed action
+ * inserts nothing the second time and credits nothing twice.
+ */
+export const manualCredits = pgTable(
+  "manual_credits",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    amountUsdt: usdt("amount_usdt").notNull(),
+    /** The operator's internal note. Never shown to the customer. */
+    note: text("note"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    /** The ledger entry that moved the money. */
+    ledgerTxId: text("ledger_tx_id")
+      .notNull()
+      .references(() => transactions.id, { onDelete: "restrict" }),
+    createdById: text("created_by_id").notNull(),
+    /** Copied, not joined — same reason as `audit_logs.actor_name`. */
+    createdByName: text("created_by_name").notNull(),
+    createdAt: ts("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("manual_credits_idempotency_key").on(table.idempotencyKey),
+    index("manual_credits_user_idx").on(table.userId),
+    index("manual_credits_created_idx").on(table.createdAt),
+    check("manual_credits_amount_positive", sql`${table.amountUsdt} > 0`),
   ],
 );

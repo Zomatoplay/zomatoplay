@@ -293,3 +293,36 @@ export const supportTickets = pgTable(
   },
   (table) => [index("support_tickets_user_idx").on(table.userId)],
 );
+
+/**
+ * A customer's withdrawal password — a second secret, separate from sign-in,
+ * required to request a withdrawal.
+ *
+ * THE ONE CREDENTIAL IN `public`, AND WHY
+ * ---------------------------------------
+ * Sign-in credentials belong to Firebase and Supabase and nothing in this
+ * schema may hold one (§19.1; a test enforces it). A withdrawal password is a
+ * different thing — a spending authorisation the product itself defines — and
+ * no identity provider holds it, so it lives here. That test allows exactly
+ * this column and nothing else.
+ *
+ * - `password_hash` is scrypt with a per-password random salt
+ *   (`@/server/auth/password-hash`); the plaintext is never stored, logged or
+ *   returned.
+ * - Created only after a fresh SMS code proves control of the account's
+ *   verified number. Never changed by the customer afterwards: a forgotten
+ *   password is cleared by an operator (`security: manage`, audited), and the
+ *   customer then creates a new one through the same OTP step.
+ * - `failed_attempts` / `locked_until`: five wrong passwords lock withdrawals
+ *   for 30 minutes, so the password cannot be guessed through the form.
+ */
+export const withdrawalPasswords = pgTable("withdrawal_passwords", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  passwordHash: text("password_hash").notNull(),
+  failedAttempts: integer("failed_attempts").notNull().default(0),
+  lockedUntil: ts("locked_until"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+});

@@ -356,6 +356,8 @@ export const auditActionLabels: Record<AuditAction, string> = {
   agent_permissions_changed: "Permissions changed",
   notification_sent: "Notification sent",
   settings_updated: "Settings updated",
+  wallet_manual_credit: "Manual USDT credit",
+  withdrawal_password_reset: "Withdrawal password reset",
 };
 
 /** Groupings used by the audit-log filter bar. */
@@ -382,6 +384,7 @@ export const auditActionGroups: { label: string; actions: AuditAction[] }[] = [
       "user_restriction_changed",
       "device_logged_out",
       "all_devices_logged_out",
+      "withdrawal_password_reset",
     ],
   },
   {
@@ -396,6 +399,7 @@ export const auditActionGroups: { label: string; actions: AuditAction[] }[] = [
       "withdrawal_approved",
       "withdrawal_rejected",
       "withdrawal_marked_paid",
+      "wallet_manual_credit",
     ],
   },
   {

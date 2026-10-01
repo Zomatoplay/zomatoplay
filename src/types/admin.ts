@@ -44,7 +44,9 @@ export type AdminPermissionId =
   | "audit_logs"
   | "settings"
   | "security"
-  | "agents";
+  | "agents"
+  /** Manually crediting USDT to a customer's wallet. Never implied by another grant. */
+  | "wallet_credits";
 
 /**
  * Graded rather than boolean: most real operations teams need a read-only tier
@@ -607,7 +609,9 @@ export type AuditAction =
   | "agent_password_reset"
   | "agent_permissions_changed"
   | "notification_sent"
-  | "settings_updated";
+  | "settings_updated"
+  | "wallet_manual_credit"
+  | "withdrawal_password_reset";
 
 /**
  * A step the system took, with how long it took and how it went.
@@ -965,4 +969,29 @@ export interface AdminReferralsSummary {
   creditedCommissionUsdt: number;
   pendingCommissionUsdt: number;
   totalTeamVolumeUsdt: number;
+}
+
+/** What the confirmation shows, so a wrong id is caught before money moves. */
+export interface ManualCreditCustomer {
+  userId: string;
+  displayId: string;
+  fullName: string;
+  /** Masked — enough to recognise on a call, not to contact. */
+  phone: string | null;
+  status: string;
+  kycStatus: string;
+  availableUsdt: number;
+}
+
+/** One manual credit, as the CRM history lists it. */
+export interface ManualCreditRecord {
+  id: string;
+  userId: string;
+  displayId: string;
+  customerName: string;
+  amountUsdt: number;
+  note: string | null;
+  ledgerTxId: string;
+  createdByName: string;
+  createdAt: string;
 }

@@ -217,6 +217,9 @@ async function clear(db: Database) {
   // must never silently move it back to the environment's default.
   await db.delete(t.depositRequests);
   await db.delete(t.deposits);
+  // References `transactions` and `users` with RESTRICT, so it goes first.
+  await db.delete(t.manualCredits);
+  await db.delete(t.withdrawalPasswords);
   await db.delete(t.transactions);
   await db.delete(t.investments);
   await db.delete(t.notifications);

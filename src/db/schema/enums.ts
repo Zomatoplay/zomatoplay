@@ -102,12 +102,19 @@ export const depositNetworkEnum = pgEnum("deposit_network", [
   "polygon",
 ]);
 
+/**
+ * `adjustment` is a balance movement an operator made by hand — today only a
+ * manual USDT credit (`manual_credits` holds who, why and the idempotency
+ * key). It is a ledger type like any other so the ledger still sums to the
+ * balance; it is not a deposit, because no transfer arrived.
+ */
 export const transactionTypeEnum = pgEnum("transaction_type", [
   "deposit",
   "withdrawal",
   "investment",
   "reward",
   "referral",
+  "adjustment",
 ]);
 
 export const transactionStatusEnum = pgEnum("transaction_status", [
@@ -370,7 +377,7 @@ export const agentStatusEnum = pgEnum("agent_status", [
 ]);
 
 /**
- * The 13 governable areas of the CRM. This list is the contract a backend
+ * The 14 governable areas of the CRM. This list is the contract a backend
  * authorization layer must implement; it must stay identical to
  * `ADMIN_PERMISSIONS` in `@/constants/admin`.
  */
@@ -388,6 +395,7 @@ export const adminPermissionEnum = pgEnum("admin_permission", [
   "settings",
   "security",
   "agents",
+  "wallet_credits",
 ]);
 
 export const adminPermissionLevelEnum = pgEnum("admin_permission_level", [
@@ -447,6 +455,8 @@ export const auditActionEnum = pgEnum("audit_action", [
   "agent_permissions_changed",
   "notification_sent",
   "settings_updated",
+  "wallet_manual_credit",
+  "withdrawal_password_reset",
 ]);
 
 export const auditTargetTypeEnum = pgEnum("audit_target_type", [

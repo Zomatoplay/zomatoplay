@@ -1,5 +1,6 @@
 import {
   index,
+  integer,
   jsonb,
   pgTable,
   primaryKey,
@@ -25,11 +26,13 @@ import type { PlatformSettings, StoredPlatformSection } from "@/types/admin";
  *
  * NO CREDENTIAL COLUMN EXISTS, AND NONE EVER SHOULD.
  *
- * Operators authenticate through Supabase Auth, exactly as users do, and
- * `auth_user_id` is the whole of the link. There is no password, no hash, no
- * one-time code and no token in `public` — a second credential store is a
- * second thing to leak, and an operations console is the worst place to keep
- * one.
+ * Operators sign in with their mobile number and an SMS code (Firebase phone
+ * auth); `firebase_uid` is the link, bound on the first verified sign-in to the
+ * number a master admin provisioned in `phone_e164`. `auth_user_id` is the
+ * older Supabase link, honoured only while `LEGACY_OPERATOR_EMAIL_SIGN_IN` is
+ * on. There is no password, no hash, no one-time code and no token in
+ * `public` — a second credential store is a second thing to leak, and an
+ * operations console is the worst place to keep one.
  *
  * Nullable, because the seeded operators are fixtures with nobody behind them.
  * An operator row with no `auth_user_id` cannot sign in; it exists so the
@@ -62,9 +65,33 @@ export const adminAgents = pgTable(
     lastActiveAt: ts("last_active_at"),
     note: text("note"),
     passwordResetRequestedAt: ts("password_reset_requested_at"),
+
+    /**
+     * The mobile number this operator signs in with, E.164 (`+91…`).
+     *
+     * Set by a master admin (or `npm run db:operator-phone`), never by the
+     * operator: it is an authorization — "this number may become this
+     * operator" — which is why matching a verified number against it on the
+     * first sign-in is safe here when it is not for a customer's self-typed
+     * `users.phone`. Changing it unbinds `firebase_uid` and ends every session.
+     */
+    phoneE164: text("phone_e164"),
+    /**
+     * The Firebase uid that proved control of `phone_e164`, bound on the first
+     * verified sign-in. Every later sign-in must present this uid.
+     */
+    firebaseUid: text("firebase_uid"),
+    phoneVerifiedAt: ts("phone_verified_at"),
+    /**
+     * Operator sessions carry the value this had when issued; sign-out and a
+     * phone change increment it, ending every session on every device.
+     */
+    sessionEpoch: integer("session_epoch").notNull().default(0),
   },
   (table) => [
     uniqueIndex("admin_agents_auth_user_id_key").on(table.authUserId),
+    uniqueIndex("admin_agents_phone_e164_key").on(table.phoneE164),
+    uniqueIndex("admin_agents_firebase_uid_key").on(table.firebaseUid),
     index("admin_agents_status_idx").on(table.status),
   ],
 );

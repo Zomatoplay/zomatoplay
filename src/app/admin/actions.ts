@@ -54,6 +54,11 @@ import {
   rejectWithdrawal,
 } from "@/server/services/withdrawals-write.service";
 import { releaseCommission } from "@/server/services/referrals-write.service";
+import {
+  creditWalletManually,
+  findCustomerForCredit,
+  type ManualCreditCustomer,
+} from "@/server/services/manual-credit.service";
 import { KycStorageError } from "@/server/storage/kyc-storage";
 import { signStoredKycDocument } from "@/server/storage/kyc-document-store";
 import { mutate, newId, withReason } from "@/server/write";
@@ -1688,4 +1693,107 @@ export async function previewPlanTierAction(input: {
         error instanceof Error ? error.message : "Could not price that amount.",
     };
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Manual USDT credit                                                          */
+/* -------------------------------------------------------------------------- */
+
+export interface ManualCreditLookupResult {
+  ok: boolean;
+  message: string;
+  customer?: ManualCreditCustomer;
+}
+
+/**
+ * Step one of a manual credit: who is this id?
+ *
+ * Gated on `manage` over `wallet_credits`, the same grant the credit itself
+ * needs — the lookup exists only to confirm a credit, and an operator without
+ * that grant has no reason to resolve customers through it. Returns the
+ * customer's name, masked number and status so a mistyped id is caught on the
+ * confirmation screen, before any money moves.
+ */
+export async function lookupCustomerForCreditAction(input: {
+  customerId: string;
+}): Promise<ManualCreditLookupResult> {
+  try {
+    await requirePermission("wallet_credits");
+    const customer = await findCustomerForCredit(input?.customerId);
+    if (!customer) {
+      return { ok: false, message: "No customer has that id. Check it and try again." };
+    }
+    return { ok: true, message: "Customer found.", customer };
+  } catch (error) {
+    return failed(error, "The customer could not be looked up.");
+  }
+}
+
+export interface ManualCreditActionResult extends AdminActionResult {
+  creditId?: string;
+  ledgerTxId?: string;
+  duplicate?: boolean;
+}
+
+/**
+ * Step two: credit the wallet.
+ *
+ * `manage` over `wallet_credits`, from the session — a master admin holds it by
+ * role, an agent only when granted it explicitly (no preset grants it). The
+ * customer, amount, note and idempotency key are all re-validated by the
+ * service, which moves the money through the ledger in one transaction with
+ * the decision record and the audit entry (`creditWalletManually`).
+ */
+export async function manualCreditAction(input: {
+  userId: string;
+  amount: string;
+  note?: string;
+  idempotencyKey: string;
+}): Promise<ManualCreditActionResult> {
+  return traceAction(
+    { name: "admin.wallet.manual_credit", actorType: "admin", pipeline: "admin" },
+    async () => {
+      try {
+        const operator = await requirePermission("wallet_credits");
+        const result = await trackPipeline(
+          {
+            pipeline: "admin",
+            operation: "wallet.manual_credit",
+            message: "Operator credited USDT to a customer wallet by hand",
+            userId: String(input?.userId ?? ""),
+            actor: operator.actor,
+          },
+          () =>
+            creditWalletManually(
+              {
+                userId: String(input?.userId ?? ""),
+                amount: String(input?.amount ?? ""),
+                note: input?.note ?? null,
+                idempotencyKey: String(input?.idempotencyKey ?? ""),
+              },
+              operator.actor,
+            ),
+        );
+        revalidate(
+          "/admin/wallet-credits",
+          `/admin/users/${result.userId}`,
+          "/admin/audit-logs",
+          "/wallet",
+          "/wallet/transactions",
+          "/",
+        );
+        return {
+          ok: true,
+          duplicate: result.duplicate,
+          creditId: result.creditId,
+          ledgerTxId: result.ledgerTxId,
+          message: result.duplicate
+            ? `Already applied: ${result.amountUsdt} USDT to ${result.displayId} (${result.creditId}). Nothing was credited again.`
+            : `Credited ${result.amountUsdt} USDT to ${result.displayId}. Reference ${result.creditId}.`,
+        };
+      } catch (error) {
+        return failed(error, "The wallet was not credited.");
+      }
+    },
+  );
 }

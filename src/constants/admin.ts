@@ -101,13 +101,21 @@ export const ADMIN_PERMISSIONS: AdminPermissionDescriptor[] = [
     id: "security",
     label: "Security",
     description: "View user devices, sessions and security events.",
-    manageHint: "Revoke sessions and force sign-out across devices.",
+    manageHint:
+      "Revoke sessions, force sign-out across devices and reset withdrawal passwords.",
   },
   {
     id: "agents",
     label: "Agent management",
     description: "View the agent directory and their activity.",
     manageHint: "Create agents, assign permissions and reset their passwords.",
+  },
+  {
+    id: "wallet_credits",
+    label: "Manual wallet credits",
+    description: "View the history of manual USDT credits.",
+    manageHint:
+      "Credit USDT to a customer's wallet by hand. Grant sparingly — it creates money on the ledger.",
   },
 ];
 
@@ -124,7 +132,7 @@ export function buildPermissionSet(
 
 /**
  * Starting points offered when creating an agent. Real teams almost never
- * hand-pick 13 toggles from scratch.
+ * hand-pick 14 toggles from scratch.
  */
 export const AGENT_PRESETS: {
   id: string;
@@ -141,6 +149,7 @@ export const AGENT_PRESETS: {
       settings: "none",
       agents: "none",
       audit_logs: "none",
+      wallet_credits: "none",
     },
   },
   {
@@ -155,6 +164,7 @@ export const AGENT_PRESETS: {
       plans: "none",
       settings: "none",
       agents: "none",
+      wallet_credits: "none",
     },
   },
   {
@@ -169,6 +179,9 @@ export const AGENT_PRESETS: {
       settings: "none",
       agents: "none",
       security: "none",
+      // Can see the credit history; crediting is granted to a person, never
+      // by preset.
+      wallet_credits: "view",
     },
   },
   {
@@ -181,6 +194,7 @@ export const AGENT_PRESETS: {
       investments: "manage",
       notifications: "manage",
       agents: "none",
+      wallet_credits: "none",
     },
   },
   {

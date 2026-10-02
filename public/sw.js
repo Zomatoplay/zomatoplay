@@ -1,5 +1,5 @@
 /*
- * Nanotron service worker.
+ * Zomato Play service worker.
  *
  * WHAT IT CACHES, AND WHAT IT NEVER TOUCHES
  * -----------------------------------------
@@ -26,7 +26,9 @@
  */
 
 const CACHE_VERSION = "v1";
-const STATIC_CACHE = `nanotron-static-${CACHE_VERSION}`;
+const STATIC_CACHE = `zomatoplay-static-${CACHE_VERSION}`;
+// Caches written before the rename carry the old prefix; sweep both.
+const CACHE_PREFIXES = ["zomatoplay-", "nanotron-"];
 const OFFLINE_URL = "/offline.html";
 
 self.addEventListener("install", (event) => {
@@ -45,7 +47,9 @@ self.addEventListener("activate", (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key.startsWith("nanotron-") && key !== STATIC_CACHE)
+            .filter(
+              (key) => CACHE_PREFIXES.some((prefix) => key.startsWith(prefix)) && key !== STATIC_CACHE,
+            )
             .map((key) => caches.delete(key)),
         ),
       )

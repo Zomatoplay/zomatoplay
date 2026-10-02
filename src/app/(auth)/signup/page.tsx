@@ -6,7 +6,7 @@ import { SignUpForm } from "@/components/auth/sign-up-form";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { getAuthenticatedAccount } from "@/server/auth/account";
 import { isLegacyEmailSignInEnabled, isPhoneSignInLive } from "@/server/auth/phone-sign-in";
-import { getSupportTelegramUrl } from "@/server/services/catalogue.service";
+import { getSupportEmail, getSupportTelegramUrl } from "@/server/services/catalogue.service";
 import { APP_NAME } from "@/constants/app";
 
 export const metadata: Metadata = {
@@ -52,7 +52,10 @@ export default async function SignUpPage({
 
   // Optional on this screen: a lookup that fails must not take the sign-up
   // form down with it, so it degrades to the support mailbox (or nothing).
-  const telegramUrl = await getSupportTelegramUrl().catch(() => null);
+  const [telegramUrl, supportEmail] = await Promise.all([
+    getSupportTelegramUrl().catch(() => null),
+    getSupportEmail().catch(() => null),
+  ]);
 
   return (
     <div className="space-y-6">
@@ -62,7 +65,7 @@ export default async function SignUpPage({
         next={next ?? "/"}
         referralCode={referralCode}
       />
-      <AuthSupportLink telegramUrl={telegramUrl} />
+      <AuthSupportLink telegramUrl={telegramUrl} supportEmail={supportEmail} />
     </div>
   );
 }

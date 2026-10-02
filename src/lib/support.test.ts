@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { parseTelegramUsername, supportContact, telegramSupportUrl } from "./support";
+import { parseSupportEmail, parseTelegramUsername, supportContact, telegramSupportUrl } from "./support";
 
 describe("the Telegram support destination", () => {
   test("accepts a username in the forms an operator is likely to paste", () => {
-    for (const raw of ["nanotron_support", "@nanotron_support", "https://t.me/nanotron_support", "t.me/nanotron_support/"]) {
-      assert.equal(telegramSupportUrl(raw), "https://t.me/nanotron_support", raw);
+    for (const raw of ["zomatoplay_support", "@zomatoplay_support", "https://t.me/zomatoplay_support", "t.me/zomatoplay_support/"]) {
+      assert.equal(telegramSupportUrl(raw), "https://t.me/zomatoplay_support", raw);
     }
   });
 
@@ -46,5 +46,14 @@ describe("supportContact", () => {
 
   test("links nowhere when nothing is configured", () => {
     assert.equal(supportContact(null, null), null);
+  });
+});
+
+describe("the support email", () => {
+  test("only an address-shaped value is accepted, and it is trimmed", () => {
+    assert.equal(parseSupportEmail("  help@zomatoplay.com "), "help@zomatoplay.com");
+    for (const raw of [undefined, null, "", "help", "a b@x.com", "<a@x.com>", "mailto:a@x.com", "a@b"]) {
+      assert.equal(parseSupportEmail(raw), null, String(raw));
+    }
   });
 });

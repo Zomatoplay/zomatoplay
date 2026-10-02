@@ -70,6 +70,7 @@ export function WithdrawFlow({
   bankAccounts,
   withdrawalPassword,
   telegramUrl,
+  supportEmail,
 }: {
   /** Registered INR payout destinations, read server-side. */
   bankAccounts: BankAccount[];
@@ -77,6 +78,7 @@ export function WithdrawFlow({
   withdrawalPassword: { isSet: boolean; lockedUntil: string | null };
   /** For the "forgot withdrawal password" route to support. */
   telegramUrl: string | null;
+  supportEmail: string | null;
 }) {
   const { balance, isVerified } = usePrototypeStore();
   const router = useRouter();
@@ -349,7 +351,7 @@ export function WithdrawFlow({
               {passwordError}
             </p>
           ) : null}
-          <ForgotWithdrawalPassword telegramUrl={telegramUrl} />
+          <ForgotWithdrawalPassword telegramUrl={telegramUrl} supportEmail={supportEmail} />
         </div>
 
         <div className="space-y-2">

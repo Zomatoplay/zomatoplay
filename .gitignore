@@ -42,3 +42,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local perf-measurement artefacts (hold session cookies)
+/.perf/cookies.txt

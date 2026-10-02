@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 
-import { APP_NAME, SUPPORT_EMAIL } from "@/constants/app";
+import { APP_NAME } from "@/constants/app";
 import { supportContact } from "@/lib/support";
 
 /**
@@ -40,11 +40,17 @@ export function AuthLogo() {
  * "Having trouble? Contact support" — to the destinations an operator has
  * actually configured: the Telegram account from Admin → Settings → Customer
  * support (`telegramUrl`, read server-side and validated to `t.me`), else the
- * support mailbox (`NEXT_PUBLIC_SUPPORT_EMAIL`). With neither configured it
+ * support mailbox saved in the same place (`getSupportEmail`). With neither configured it
  * renders nothing rather than a link to nowhere.
  */
-export function AuthSupportLink({ telegramUrl }: { telegramUrl: string | null }) {
-  const contact = supportContact(telegramUrl, SUPPORT_EMAIL);
+export function AuthSupportLink({
+  telegramUrl,
+  supportEmail,
+}: {
+  telegramUrl: string | null;
+  supportEmail: string | null;
+}) {
+  const contact = supportContact(telegramUrl, supportEmail);
   if (!contact) return null;
   const { href, external } = contact;
   return (

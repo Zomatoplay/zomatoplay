@@ -18,7 +18,7 @@ import {
 import { mutate, newId, withReason, type Actor } from "../write";
 
 /**
- * The ONE address Nanotron receives USDT (TRC-20) at.
+ * The ONE address Zomato Play receives USDT (TRC-20) at.
  *
  * Replaces the per-user deposit-address pool. Two sources, one precedence:
  *

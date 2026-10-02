@@ -3,7 +3,7 @@ import type { MetadataRoute } from "next";
 import { APP_DESCRIPTION, APP_NAME } from "@/constants/app";
 
 /**
- * The web app manifest — what makes Nanotron installable.
+ * The web app manifest — what makes Zomato Play installable.
  *
  * `standalone` launches without browser chrome where supported. `start_url`
  * is the home screen, which the app's own gate redirects to sign-in when there

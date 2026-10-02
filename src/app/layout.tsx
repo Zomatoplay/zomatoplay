@@ -4,7 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
 import { NavigationTracer } from "@/components/shared/navigation-tracer";
 import { ServiceWorkerRegistration } from "@/components/shared/service-worker-registration";
-import { APP_DESCRIPTION, APP_NAME, APP_TAGLINE } from "@/constants/app";
+import { APP_DESCRIPTION, APP_NAME, APP_TAGLINE, PUBLIC_ORIGIN } from "@/constants/app";
 
 import "./globals.css";
 
@@ -32,28 +32,22 @@ const geistMono = Geist_Mono({
   display: "swap",
 });
 
-/**
- * The public origin, when the deployment names one (`NEXT_PUBLIC_SITE_URL`).
- * It anchors every relative metadata URL; left undefined rather than guessed,
- * so a preview deployment never advertises itself as the production site.
- */
-const SITE_ORIGIN: URL | undefined = (() => {
-  const value = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (!value) return undefined;
-  try {
-    return new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
-  } catch {
-    return undefined;
-  }
-})();
-
 export const metadata: Metadata = {
-  metadataBase: SITE_ORIGIN,
+  // Anchors every relative metadata URL (Open Graph image, canonical).
+  metadataBase: new URL(PUBLIC_ORIGIN),
   openGraph: {
     type: "website",
     siteName: APP_NAME,
     title: `${APP_NAME} · ${APP_TAGLINE}`,
     description: APP_DESCRIPTION,
+    // The existing brand logo — no separate share image to keep in sync.
+    images: [{ url: "/logo.jpeg", width: 1254, height: 1254, alt: `${APP_NAME} logo` }],
+  },
+  twitter: {
+    card: "summary",
+    title: `${APP_NAME} · ${APP_TAGLINE}`,
+    description: APP_DESCRIPTION,
+    images: ["/logo.jpeg"],
   },
   title: {
     default: `${APP_NAME} · ${APP_TAGLINE}`,

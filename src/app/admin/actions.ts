@@ -7,7 +7,7 @@ import { getDb } from "@/db";
 import * as t from "@/db/schema";
 import { requireSupabaseConfig } from "@/lib/supabase/env";
 import { getSiteUrl } from "@/lib/site-url";
-import { parseTelegramUsername } from "@/lib/support";
+import { parseSupportEmail, parseTelegramUsername } from "@/lib/support";
 import { maskIndianMobile, normalizeIndianMobile } from "@/lib/phone";
 import { sendPasswordRecovery } from "@/lib/supabase/auth-rest";
 import {
@@ -1465,6 +1465,13 @@ export async function updateSettingsAction(input: {
   try {
     const operator = await requirePermission("settings");
 
+    // Shown to customers as where to write for help, so it is held to the same
+    // rule on the way in as on the way out (`getSupportEmail`).
+    const supportEmail = input.settings.platform.supportEmail?.trim() ?? "";
+    if (supportEmail && !parseSupportEmail(supportEmail)) {
+      return { ok: false, message: "Enter a valid support email address, or leave it empty." };
+    }
+
     await mutate(operator.actor, async ({ tx, now, audit }) => {
       const [existing] = await tx
         .select({ id: t.platformSettings.id })
@@ -1478,6 +1485,7 @@ export async function updateSettingsAction(input: {
       // general form can neither clear it nor smuggle in an unvalidated one.
       const platform: StoredPlatformSection = { ...input.settings.platform };
       delete platform.supportTelegram;
+      platform.supportEmail = supportEmail;
 
       // Stored as one jsonb column per section, matching the shape the CRM
       // edits and the services read. Written whole: the form submits the
@@ -1505,7 +1513,8 @@ export async function updateSettingsAction(input: {
       });
     });
 
-    revalidate("/admin/settings", "/admin");
+    revalidateCatalogue();
+    revalidate("/admin/settings", "/admin", "/settings/support");
     return { ok: true, message: "Settings saved." };
   } catch (error) {
     return failed(error, "The settings were not saved.");

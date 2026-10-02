@@ -1,4 +1,4 @@
-# Nanotron
+# Zomato Play
 
 A mobile-first crypto investment platform, plus a Master CRM at `/admin`.
 

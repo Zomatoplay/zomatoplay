@@ -81,7 +81,7 @@ function getVerifierApp(): App {
  * mistake is refused rather than trusted.
  *
  * Revocation is not checked here (that call needs a service-account key). The
- * token is at most five minutes old by the check below, and Nanotron's own
+ * token is at most five minutes old by the check below, and Zomato Play's own
  * sessions are revocable (`users.session_epoch`).
  */
 export async function verifyPhoneIdToken(idToken: string): Promise<DecodedIdToken> {

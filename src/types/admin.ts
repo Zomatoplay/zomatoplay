@@ -1,5 +1,5 @@
 /**
- * Domain types for the Nanotron Master CRM.
+ * Domain types for the Zomato Play Master CRM.
  *
  * These extend — never replace — the user-facing domain in `@/types`. Where a
  * concept already exists there (KycStatus, RiskLevel, VipLevelId, …) it is

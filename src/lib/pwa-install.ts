@@ -1,5 +1,5 @@
 /**
- * When — and how — to offer "Install Nanotron".
+ * When — and how — to offer "Install Zomato Play".
  *
  * Pure functions, so the policy is tested rather than eyeballed
  * (`pwa-install.test.ts`); the component only reads the browser and renders.

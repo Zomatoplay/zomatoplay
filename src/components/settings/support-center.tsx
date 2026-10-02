@@ -12,7 +12,6 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { TelegramSupportButton } from "@/components/shared/telegram-support";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { SUPPORT_EMAIL } from "@/constants/app";
 import { faqs, helpTopics } from "@/data/support";
 import { formatDate } from "@/utils/format";
 import type { SupportTicket, TicketStatus } from "@/types";
@@ -29,11 +28,14 @@ const ticketStatusLabels: Record<
 export function SupportCenter({
   tickets,
   telegramUrl,
+  supportEmail,
 }: {
   /** The account's own conversations. FAQs and help topics stay static copy. */
   tickets: SupportTicket[];
   /** The operator-configured Telegram destination; null when none is set. */
   telegramUrl: string | null;
+  /** The operator-configured support mailbox; null when none is set. */
+  supportEmail: string | null;
 }) {
   return (
     <div className="space-y-6">
@@ -134,15 +136,15 @@ export function SupportCenter({
       */}
       <section className="space-y-3">
         {telegramUrl ? <TelegramSupportButton url={telegramUrl} /> : null}
-        {SUPPORT_EMAIL ? (
+        {supportEmail ? (
           <Button asChild variant={telegramUrl ? "outline" : "brand"} size="lg" block>
-            <a href={`mailto:${SUPPORT_EMAIL}`}>
+            <a href={`mailto:${supportEmail}`}>
               <Mail className="size-4" aria-hidden />
-              Email {SUPPORT_EMAIL}
+              Email {supportEmail}
             </a>
           </Button>
         ) : null}
-        {!telegramUrl && !SUPPORT_EMAIL ? (
+        {!telegramUrl && !supportEmail ? (
           <p className="rounded-xl border border-border bg-secondary/60 p-3.5 text-center text-xs leading-relaxed text-muted-foreground">
             Support contact details are being set up. Please check back shortly.
           </p>

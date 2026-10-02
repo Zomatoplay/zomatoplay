@@ -1,6 +1,28 @@
 # Changelog
 
-Factual record of development on Nanotron. Newest first.
+Factual record of development on Zomato Play (formerly Nanotron). Newest first.
+
+---
+
+## 2026-10-02 (Branding pass, support email, display rate)
+
+- Display USDT→INR rate `83.2` → `96.05` (`MOCK_USDT_INR_RATE`, display-only).
+  **The payout rate (`MOCK_USDT_INR_PAYOUT_RATE`, 82.9) is deliberately
+  unchanged**: it is stored on every withdrawal and sets the net INR owed, so it
+  is a financial figure awaiting a business decision.
+- Support email is now read from Admin → Settings → Platform
+  (`platform_settings.platform.supportEmail`, validated on write and read by
+  `parseSupportEmail`), falling back to `NEXT_PUBLIC_SUPPORT_EMAIL`. Replaces the
+  env-only constant on the support, sign-up, security, withdraw and settings screens.
+- `PUBLIC_ORIGIN` (`@/constants/app`) is the one production-origin fallback:
+  referral links and `metadataBase`; added Open Graph image and Twitter card
+  (existing `public/logo.jpeg`).
+- Removed unused starter SVGs; offline page and service worker carry the brand
+  (service worker sweeps old `nanotron-*` caches).
+- `.perf/cookies.txt` (a Supabase session cookie) untracked and git-ignored.
+- Remaining internal-only identifiers: cookie names, `x-nanotron-*` headers,
+  storage-policy names, `deploy/ec2/nanotron.cron`, `package.json` name, seed
+  operator emails. Renaming cookies would sign every customer out.
 
 ---
 

@@ -1,8 +1,8 @@
-# Nanotron — server interface
+# Zomato Play — server interface
 
 Every way the browser can reach the server, and what each one is allowed to do.
 
-There is no REST API. Nanotron is a Next.js App Router application: reads happen
+There is no REST API. Zomato Play is a Next.js App Router application: reads happen
 in Server Components through the service layer, and writes happen through Server
 Actions. This document is the contract for both.
 

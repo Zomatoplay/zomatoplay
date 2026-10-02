@@ -111,6 +111,17 @@ export async function listVipLevels(db: Database): Promise<VipLevel[]> {
  * Projects the one key rather than the settings row: the customer side needs
  * a contact handle, not the platform's fee and review configuration.
  */
+export async function findSupportEmail(db: Database): Promise<string | null> {
+  const [row] = await db
+    .select({
+      email: sql<string | null>`${schema.platformSettings.platform}->>'supportEmail'`,
+    })
+    .from(schema.platformSettings)
+    .where(eq(schema.platformSettings.id, "default"))
+    .limit(1);
+  return row?.email ?? null;
+}
+
 export async function findSupportTelegram(db: Database): Promise<string | null> {
   const [row] = await db
     .select({

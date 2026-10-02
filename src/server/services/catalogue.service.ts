@@ -9,9 +9,11 @@ import { depositNetworks as seedDepositNetworks } from "@/data/transactions";
 import type { DepositNetwork, Plan, VipLevel } from "@/types";
 
 import { resilientRead } from "../database";
-import { telegramSupportUrl } from "@/lib/support";
+import { SUPPORT_EMAIL } from "@/constants/app";
+import { parseSupportEmail, telegramSupportUrl } from "@/lib/support";
 
 import {
+  findSupportEmail,
   findSupportTelegram,
   listDepositNetworks,
   listPublicPlans,
@@ -144,4 +146,16 @@ export async function getSupportTelegramUrl(): Promise<string | null> {
     () => null,
   );
   return telegramSupportUrl(username);
+}
+
+/**
+ * The support mailbox customers see: the one an operator saved in Admin →
+ * Settings → Platform, else the deployment's `NEXT_PUBLIC_SUPPORT_EMAIL`, else
+ * null (screens then say contact details are being set up). Re-validated on the
+ * way out, like the Telegram handle, so a malformed stored value is ignored
+ * rather than rendered into a `mailto:` link.
+ */
+export async function getSupportEmail(): Promise<string | null> {
+  const stored = await cachedCatalogueRead("support-email", findSupportEmail, () => null);
+  return parseSupportEmail(stored) ?? SUPPORT_EMAIL;
 }

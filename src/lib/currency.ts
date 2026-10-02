@@ -22,7 +22,7 @@ export interface FxRate {
 }
 
 /** Fixed prototype timestamp; avoids hydration mismatches from `new Date()`. */
-const RATE_AS_OF = "2026-08-09T06:00:00.000Z";
+const RATE_AS_OF = "2026-10-02T06:00:00.000Z";
 
 /**
  * Returns the current USDT→INR display rate.

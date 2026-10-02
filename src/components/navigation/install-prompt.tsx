@@ -15,7 +15,7 @@ import {
 import { APP_NAME } from "@/constants/app";
 
 /**
- * "Install Nanotron" — shown after real use, only where installing is real.
+ * "Install Zomato Play" — shown after real use, only where installing is real.
  *
  * Chromium (Android, desktop Chrome/Edge): the browser's own install prompt,
  * captured from `beforeinstallprompt` and triggered by the Install button.

@@ -1,5 +1,5 @@
 /**
- * The rules for attaching a verified phone number to a Nanotron account.
+ * The rules for attaching a verified phone number to a Zomato Play account.
  *
  * Pure functions, deliberately: these decide whether somebody can reach an
  * account holding money, so they are tested exhaustively without a database
@@ -10,7 +10,7 @@
  * THE THREE RULES
  * ---------------
  * 1. **A Firebase uid reaches exactly the account it was linked to.** Never
- *    assumed equal to a Nanotron id, never re-pointed automatically.
+ *    assumed equal to a Zomato Play id, never re-pointed automatically.
  * 2. **Nothing is ever linked by an unverified number.** `users.phone` is
  *    whatever somebody typed on the profile form; a typo there would otherwise
  *    hand one person's balance to the owner of the mistyped number. Only

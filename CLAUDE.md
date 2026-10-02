@@ -1,4 +1,4 @@
-# CLAUDE.md — Nanotron
+# CLAUDE.md — Zomato Play
 
 **Read this file before making any change to this project.**
 

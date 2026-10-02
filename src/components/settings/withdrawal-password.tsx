@@ -9,7 +9,7 @@ import { usePhoneOtp } from "@/components/auth/use-phone-otp";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { APP_NAME, SUPPORT_EMAIL } from "@/constants/app";
+import { APP_NAME } from "@/constants/app";
 import { maskIndianMobile } from "@/lib/phone";
 import { withdrawalPasswordRefusal } from "@/lib/withdrawal-password-rules";
 import { createWithdrawalPasswordAction } from "@/app/(app)/settings/withdrawal-password-actions";
@@ -198,7 +198,13 @@ export function WithdrawalPasswordSetup({
  * withdraw, so a reset is an operator decision (audited). This only tells the
  * person how to reach support.
  */
-export function ForgotWithdrawalPassword({ telegramUrl }: { telegramUrl: string | null }) {
+export function ForgotWithdrawalPassword({
+  telegramUrl,
+  supportEmail,
+}: {
+  telegramUrl: string | null;
+  supportEmail: string | null;
+}) {
   const [open, setOpen] = useState(false);
   if (!open) {
     return (
@@ -226,11 +232,11 @@ export function ForgotWithdrawalPassword({ telegramUrl }: { telegramUrl: string 
             </a>
           </Button>
         ) : null}
-        {SUPPORT_EMAIL ? (
+        {supportEmail ? (
           <Button asChild variant="outline" size="sm">
-            <a href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Withdrawal password reset")}`}>
+            <a href={`mailto:${supportEmail}?subject=${encodeURIComponent("Withdrawal password reset")}`}>
               <Mail className="size-4" aria-hidden />
-              {SUPPORT_EMAIL}
+              {supportEmail}
             </a>
           </Button>
         ) : null}
@@ -244,11 +250,13 @@ export function WithdrawalPasswordSection({
   state,
   phoneE164,
   telegramUrl,
+  supportEmail,
   localTest = null,
 }: {
   state: { isSet: boolean; lockedUntil: string | null };
   phoneE164: string | null;
   telegramUrl: string | null;
+  supportEmail: string | null;
   localTest?: { phoneE164: string } | null;
 }) {
   const [settingUp, setSettingUp] = useState(false);
@@ -278,7 +286,7 @@ export function WithdrawalPasswordSection({
         </div>
 
         {state.isSet ? (
-          <ForgotWithdrawalPassword telegramUrl={telegramUrl} />
+          <ForgotWithdrawalPassword telegramUrl={telegramUrl} supportEmail={supportEmail} />
         ) : !phoneE164 ? (
           <p className="text-xs leading-relaxed text-muted-foreground">
             Verify your mobile number first — the password is confirmed by SMS.

@@ -28,8 +28,8 @@ import { ListGroup, ListRow } from "@/components/shared/list-row";
 import { KycStatusRow } from "@/components/settings/kyc-status-row";
 import { AccountActions } from "@/components/settings/logout-button";
 import { ProfileHeader } from "@/components/settings/profile-header";
-import { APP_NAME, SUPPORT_EMAIL } from "@/constants/app";
-import { getSupportTelegramUrl } from "@/server/services/catalogue.service";
+import { APP_NAME } from "@/constants/app";
+import { getSupportEmail, getSupportTelegramUrl } from "@/server/services/catalogue.service";
 
 export const metadata: Metadata = {
   title: "Settings",
@@ -195,7 +195,7 @@ function ContactSupportPlaceholder() {
  * of linking somewhere that does not exist.
  */
 async function ContactSupportRow() {
-  const url = await getSupportTelegramUrl();
+  const [url, supportEmail] = await Promise.all([getSupportTelegramUrl(), getSupportEmail()]);
   if (!url) {
     return (
       <ListRow
@@ -203,8 +203,8 @@ async function ContactSupportRow() {
         icon={Send}
         title="Contact support"
         description={
-          SUPPORT_EMAIL
-            ? `Telegram support is currently unavailable. Email ${SUPPORT_EMAIL}.`
+          supportEmail
+            ? `Telegram support is currently unavailable. Email ${supportEmail}.`
             : "Telegram support is currently unavailable."
         }
       />

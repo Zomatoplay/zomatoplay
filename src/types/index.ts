@@ -1,5 +1,5 @@
 /**
- * Domain types for the Nanotron frontend.
+ * Domain types for the Zomato Play frontend.
  *
  * These are shaped like the payloads a real API would return, so the mock
  * modules in `@/data` can later be replaced by fetch calls without touching

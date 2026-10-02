@@ -256,7 +256,7 @@ export const deposits = pgTable(
  *
  * WHY THIS TABLE EXISTS
  * ---------------------
- * Nanotron receives every deposit at ONE configured address
+ * Zomato Play receives every deposit at ONE configured address
  * (`deposit_settings`). A transfer to a shared address says nothing about who
  * sent it, and the obvious fix — let the customer paste their transaction hash —
  * is not a fix on its own: the chain is public, so anybody can watch the
@@ -272,7 +272,7 @@ export const deposits = pgTable(
  * customer submits is a *pointer* that lets the server look the transfer up
  * sooner; it is never the thing that decides whose it is.
  *
- * `id` is the customer-facing reference, `DEP-XXXXXXXX`. It is Nanotron's, and
+ * `id` is the customer-facing reference, `DEP-XXXXXXXX`. It is Zomato Play's, and
  * it is deliberately a different shape from a transaction hash (64 hex
  * characters) so the two cannot be confused on screen or in support.
  */
@@ -365,7 +365,7 @@ export const depositRequests = pgTable(
 );
 
 /**
- * The one address Nanotron receives deposits at, per chain and network.
+ * The one address Zomato Play receives deposits at, per chain and network.
  *
  * Replaces the per-user deposit-address pool (`deposit_addresses`, kept for
  * its history). Written only by an operator holding `manage` over `deposits`,

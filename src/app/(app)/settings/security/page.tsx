@@ -11,7 +11,7 @@ import { getSecurityActivity } from "@/server/services/account.service";
 import { getAuthenticatedAccount } from "@/server/auth/account";
 import { maskIndianMobile } from "@/lib/phone";
 import { localTestCustomer } from "@/server/auth/dev-test-gate";
-import { getSupportTelegramUrl } from "@/server/services/catalogue.service";
+import { getSupportEmail, getSupportTelegramUrl } from "@/server/services/catalogue.service";
 import { getWithdrawalPasswordState } from "@/server/services/withdrawal-password.service";
 
 export const metadata: Metadata = {
@@ -19,12 +19,13 @@ export const metadata: Metadata = {
 };
 
 export default async function SecurityPage() {
-  const [activity, slices, account, telegramUrl, localTest] = await Promise.all([
+  const [activity, slices, account, telegramUrl, supportEmail, localTest] = await Promise.all([
     getSecurityActivity(),
     getUserSlices(["profile"] as const),
     // Request-memoised: the layout's gate already resolved it.
     getAuthenticatedAccount(),
     getSupportTelegramUrl(),
+    getSupportEmail(),
     localTestCustomer(),
   ]);
   const withdrawalPassword = account
@@ -50,6 +51,7 @@ export default async function SecurityPage() {
               state={withdrawalPassword}
               phoneE164={account?.phoneE164 ?? null}
               telegramUrl={telegramUrl}
+              supportEmail={supportEmail}
               localTest={
                 localTest && localTest.phoneE164 === account?.phoneE164
                   ? { phoneE164: localTest.phoneE164 }

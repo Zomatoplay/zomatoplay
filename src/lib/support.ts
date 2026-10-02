@@ -29,6 +29,14 @@ export function telegramSupportUrl(raw: string | undefined | null): string | nul
   return username ? `https://t.me/${username}` : null;
 }
 
+/** Address-shaped and nothing else — the same rule the environment value is held to. */
+export function parseSupportEmail(raw: string | undefined | null): string | null {
+  const value = raw?.trim() ?? "";
+  return value.length <= 254 && /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/.test(value)
+    ? value
+    : null;
+}
+
 /**
  * Where a "Contact support" link points: the operator-configured Telegram
  * account (already validated to `t.me`), else the support mailbox, else

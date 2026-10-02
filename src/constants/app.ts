@@ -17,6 +17,16 @@ export const APP_TAGLINE = "Investment Platform";
 export const APP_DESCRIPTION = `${APP_NAME} is a mobile-first investment platform: fund your account in USDT, invest in managed plans, track rewards and refer friends.`;
 
 /**
+ * The public origin: `NEXT_PUBLIC_SITE_URL` when a deployment names one, else
+ * the production domain. The one place the production domain is written —
+ * referral links and absolute metadata URLs both read it, so neither can fall
+ * back to a hosting provider's hostname.
+ */
+export const PUBLIC_ORIGIN = (
+  process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://zomatoplay.com"
+).replace(/\/+$/, "");
+
+/**
  * Where a referral link points.
  *
  * `/login?ref=CODE`: customers register by mobile number on `/login`, so the
@@ -29,9 +39,7 @@ export const APP_DESCRIPTION = `${APP_NAME} is a mobile-first investment platfor
  * it a link copied out of the app falls back to the production domain below,
  * never to the hosting provider's own hostname.
  */
-export const REFERRAL_BASE_URL = `${(
-  process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://zomatoplay.com"
-).replace(/\/+$/, "")}/login`;
+export const REFERRAL_BASE_URL = `${PUBLIC_ORIGIN}/login`;
 
 /**
  * The support mailbox, or null when the deployment has not named one.
@@ -57,7 +65,7 @@ export const SUPPORT_EMAIL: string | null = (() => {
  * At integration time replace `getUsdtInrRate()` in `@/lib/currency` with a
  * call to a real rates service; no component reads this constant directly.
  */
-export const MOCK_USDT_INR_RATE = 83.2;
+export const MOCK_USDT_INR_RATE = 96.05;
 
 /**
  * Rate applied to INR withdrawal payouts. Deliberately different from the

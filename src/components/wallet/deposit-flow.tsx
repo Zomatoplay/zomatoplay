@@ -52,7 +52,7 @@ import { APP_NAME } from "@/constants/app";
  *
  * TWO IDENTIFIERS, NEVER CONFUSED
  * -------------------------------
- *   Deposit Request ID  `DEP-XXXXXXXX` — Nanotron's, generated for you.
+ *   Deposit Request ID  `DEP-XXXXXXXX` — Zomato Play's, generated for you.
  *   Transaction hash    64 hex characters — the blockchain's, from your wallet.
  * The screen labels them separately and only ever asks for the second.
  *

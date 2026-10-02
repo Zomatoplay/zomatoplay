@@ -20,6 +20,21 @@ import { mutate, newId, withReason, SYSTEM_ACTOR, type Actor } from "../write";
  * something that did not happen.
  */
 
+/**
+ * A field the account holder typed that does not pass validation — "that
+ * account number is too short", not a database or transport fault.
+ *
+ * Named so the action layer can tell it apart from an infrastructure failure
+ * (`@/server/errors`'s `SPEAKABLE_ERROR_NAMES`): this message is safe to show
+ * verbatim, and an unnamed `Error` from a failed connection is not.
+ */
+export class AccountValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AccountValidationError";
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Users                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -235,7 +250,7 @@ export async function addBankAccount(
   return mutate(actor, async ({ tx, now, audit }) => {
     const digits = request.accountNumber.replace(/\D/g, "");
     if (digits.length < 6) {
-      throw new Error("That account number is too short.");
+      throw new AccountValidationError("That account number is too short.");
     }
     const masked = `${"•".repeat(Math.max(digits.length - 4, 4))}${digits.slice(-4)}`;
 
@@ -281,7 +296,7 @@ export async function addWalletAddress(
 ): Promise<{ walletAddressId: string }> {
   return mutate(actor, async ({ tx, now, audit }) => {
     const address = request.address.trim();
-    if (address.length < 20) throw new Error("That does not look like an address.");
+    if (address.length < 20) throw new AccountValidationError("That does not look like an address.");
 
     const existing = await tx
       .select({ id: t.walletAddresses.id })

@@ -1,6 +1,7 @@
 "use server";
 
 import { getAuthenticatedAccount } from "@/server/auth/account";
+import { toSafeFailure } from "@/server/errors";
 import { traceAction } from "@/server/trace-action";
 import { recordSecurityEvent } from "@/server/auth/sign-in-record";
 import { revalidate } from "@/server/revalidate";
@@ -31,11 +32,18 @@ export interface SettingsResult {
   message: string;
 }
 
+/**
+ * Turns a thrown value into something the account holder may be shown.
+ *
+ * `toSafeFailure` speaks only for this application's own named error classes
+ * (`AccountValidationError` and its siblings) — "that account number is too
+ * short" reaches the browser, a Postgres connection fault does not. It used
+ * to return `error.message` for any `Error` at all, which meant a transient
+ * database failure (a full connection pool, a dropped connection) was shown
+ * to the customer as raw driver text instead of "try again in a moment".
+ */
 function failure(error: unknown, fallback: string): SettingsResult {
-  return {
-    ok: false,
-    message: error instanceof Error ? error.message : fallback,
-  };
+  return { ok: false, message: toSafeFailure(error, fallback).message };
 }
 
 async function actorForSession(): Promise<

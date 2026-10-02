@@ -2,6 +2,7 @@
 
 import { decimal, MoneyError } from "@/db/money";
 import { getAuthenticatedAccount } from "@/server/auth/account";
+import { toSafeFailure } from "@/server/errors";
 import { trackPipeline } from "@/server/observability";
 import { traceAction } from "@/server/trace-action";
 import { revalidate } from "@/server/revalidate";
@@ -104,11 +105,10 @@ export async function createInvestmentAction(input: {
     } catch (error) {
       return {
         ok: false,
-        message:
-          error instanceof Error ? error.message : "The allocation was not created.",
-        };
-      }
-    },
+        message: toSafeFailure(error, "The allocation was not created.").message,
+      };
+    }
+  },
   );
 }
 
@@ -182,10 +182,7 @@ export async function endAllocationAction(input: {
       } catch (error) {
         return {
           ok: false,
-          message:
-            error instanceof Error
-              ? error.message
-              : "The allocation could not be returned.",
+          message: toSafeFailure(error, "The allocation could not be returned.").message,
         };
       }
     },

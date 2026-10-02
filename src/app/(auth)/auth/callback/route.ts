@@ -4,6 +4,7 @@ import type { EmailOtpType } from "@supabase/supabase-js";
 import { isAuthConfigured } from "@/lib/supabase/env";
 import { ensureAccountForCurrentPrincipal } from "@/server/auth/account";
 import { createSupabaseServerClient } from "@/server/auth/session";
+import { toSafeFailure } from "@/server/errors";
 import { recordSignIn } from "@/server/auth/sign-in-record";
 
 /**
@@ -103,9 +104,13 @@ export async function GET(request: NextRequest) {
       new URL(account.profileComplete ? next : "/complete-profile", request.url),
     );
   } catch (error) {
+    // `AuthError` (an email already linked elsewhere, no database configured)
+    // reaches the visitor verbatim; anything else — a database the account
+    // lookup could not reach, say — is reported as the same generic sentence
+    // rather than the driver's own text (`@/server/errors`).
     return errorRedirect(
       request,
-      error instanceof Error ? error.message : "Could not finish signing you in.",
+      toSafeFailure(error, "Could not finish signing you in.").message,
     );
   }
 }

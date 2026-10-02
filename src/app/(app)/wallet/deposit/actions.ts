@@ -436,8 +436,7 @@ export async function acknowledgeDepositAction(input: {
   } catch (error) {
     return {
       ok: false,
-      message:
-        error instanceof Error ? error.message : "Could not dismiss that.",
+      message: toSafeFailure(error, "Could not dismiss that.").message,
     };
   }
 }

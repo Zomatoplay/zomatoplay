@@ -8,6 +8,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { EmptyState } from "@/components/shared/empty-state";
 import { TelegramSupportButton } from "@/components/shared/telegram-support";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -75,41 +76,54 @@ export function SupportCenter({
         </div>
       </section>
 
-      {/* Tickets — only when the account has any; an empty bordered list
-          reads as a broken screen. */}
-      {tickets.length > 0 ? (
+      {/*
+        Tickets. Always rendered — Settings links here with
+        `/settings/support#tickets`, and an anchor to a section that only
+        sometimes exists in the DOM scrolls nowhere and looks like a dead
+        link. The empty state is as real as the list: there is no path in
+        this application that creates a ticket yet, so most accounts have
+        none, and saying so plainly is the honest answer rather than a
+        section that silently never appears.
+      */}
       <section id="tickets" className="space-y-2 scroll-mt-20">
         <h2 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Your support tickets
         </h2>
-        <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
-          {tickets.map((ticket) => {
-            const status = ticketStatusLabels[ticket.status];
-            return (
-              <li key={ticket.id} className="flex items-start gap-3 px-4 py-3.5">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-foreground">
-                  <MessageSquare className="size-4" aria-hidden />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-foreground">
-                    {ticket.subject}
-                  </p>
-                  <p className="tabular mt-0.5 text-xs text-muted-foreground">
-                    {ticket.id} · {ticket.messages} messages
-                  </p>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <Badge variant={status.variant}>{status.label}</Badge>
-                    <span className="tabular text-[11px] text-muted-foreground">
-                      Updated {formatDate(ticket.updatedAt)}
-                    </span>
+        {tickets.length > 0 ? (
+          <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
+            {tickets.map((ticket) => {
+              const status = ticketStatusLabels[ticket.status];
+              return (
+                <li key={ticket.id} className="flex items-start gap-3 px-4 py-3.5">
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-foreground">
+                    <MessageSquare className="size-4" aria-hidden />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-foreground">
+                      {ticket.subject}
+                    </p>
+                    <p className="tabular mt-0.5 text-xs text-muted-foreground">
+                      {ticket.id} · {ticket.messages} messages
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Badge variant={status.variant}>{status.label}</Badge>
+                      <span className="tabular text-[11px] text-muted-foreground">
+                        Updated {formatDate(ticket.updatedAt)}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <EmptyState
+            icon={MessageSquare}
+            title="No support tickets yet"
+            description="Message us on Telegram or by email below and we'll follow up with you directly."
+          />
+        )}
       </section>
-      ) : null}
 
       {/*
         Contact. These are the channels that reach a person: the Telegram

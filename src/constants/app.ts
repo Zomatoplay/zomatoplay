@@ -12,9 +12,9 @@
  * icon in `@/lib/pwa-icon`. The repository, infrastructure and internal
  * identifiers (cookie names, cache keys) deliberately do not follow it.
  */
-export const APP_NAME = "Nanotron";
-export const APP_TAGLINE = "Crypto investment platform";
-export const APP_DESCRIPTION = `${APP_NAME} is a mobile-first crypto investment platform: fund your account in USDT, invest in managed plans, track rewards and refer friends.`;
+export const APP_NAME = "Zomato Play";
+export const APP_TAGLINE = "Investment Platform";
+export const APP_DESCRIPTION = `${APP_NAME} is a mobile-first investment platform: fund your account in USDT, invest in managed plans, track rewards and refer friends.`;
 
 /**
  * Where a referral link points.
@@ -25,11 +25,12 @@ export const APP_DESCRIPTION = `${APP_NAME} is a mobile-first crypto investment 
  * creation (`resolveReferrer`); the query is only the carrier.
  *
  * INTEGRATION POINT: set `NEXT_PUBLIC_SITE_URL` to the public origin in every
- * deployment. Without it a link copied out of the app falls back to the
- * hosting provider's hostname.
+ * deployment — it is set to `https://zomatoplay.com` in production. Without
+ * it a link copied out of the app falls back to the production domain below,
+ * never to the hosting provider's own hostname.
  */
 export const REFERRAL_BASE_URL = `${(
-  process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://nanotron.vercel.app"
+  process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://zomatoplay.com"
 ).replace(/\/+$/, "")}/login`;
 
 /**

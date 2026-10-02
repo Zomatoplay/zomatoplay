@@ -18,9 +18,9 @@ import {
   ignoreDeposit,
   recordObservedDeposit,
 } from "./services/deposits.service";
-import { createNotification, setKycStatus } from "./services/account-write.service";
+import { createNotification, setKycStatus, setUserStatus } from "./services/account-write.service";
 import { creditWallet, recordInvestmentEarning } from "./services/wallet.service";
-import { newId, type Actor } from "./write";
+import { newId, SYSTEM_ACTOR, type Actor } from "./write";
 
 /**
  * The write layer, against the real database.
@@ -455,5 +455,52 @@ describe("writes", { skip }, () => {
       .where(eq(t.notifications.userId, userId));
     assert.equal(notifications.length, 1);
     assert.equal(notifications[0].read, false);
+  });
+
+  /**
+   * Admin-controlled visibility: an operator blocking or reinstating a
+   * customer from the CRM (§15.4). Verifies what already exists here —
+   * `setUserStatusAction` → `setUserStatus` — rather than adding a second
+   * mechanism: the status lands on the account, inside the same transaction
+   * as an audit entry, and that entry names the operator who made the change
+   * rather than the system actor a cron job or the chain scanner would carry.
+   */
+  test("an admin-originated status change is recorded as the operator's action, not the system's", async () => {
+    const userId = await makeUser();
+
+    await setUserStatus(
+      { userId, status: "blocked", reason: "reported for suspicious activity" },
+      OPERATOR,
+    );
+
+    const [blocked] = await db.select().from(t.users).where(eq(t.users.id, userId));
+    assert.equal(blocked.status, "blocked");
+
+    const [blockedEntry] = await db
+      .select()
+      .from(t.auditLogs)
+      .where(and(eq(t.auditLogs.targetId, userId), eq(t.auditLogs.action, "user_blocked")));
+    assert.ok(blockedEntry, "the block is audited");
+    // The distinguishing fact the requirement asks for: this row names the
+    // operator, never "System" — an automated change (a scanner, a cron job)
+    // would carry `SYSTEM_ACTOR` instead, and an audit reader has to be able
+    // to tell the two apart.
+    assert.equal(blockedEntry.actorId, OPERATOR.id);
+    assert.equal(blockedEntry.actorName, OPERATOR.name);
+    assert.notEqual(blockedEntry.actorName, SYSTEM_ACTOR.name);
+    assert.ok(blockedEntry.details.includes("reported for suspicious activity"));
+
+    // Reversing it is a distinct, separately audited decision.
+    await setUserStatus({ userId, status: "active", reason: "appeal upheld" }, OPERATOR);
+
+    const [reinstated] = await db.select().from(t.users).where(eq(t.users.id, userId));
+    assert.equal(reinstated.status, "active");
+
+    const [reinstatedEntry] = await db
+      .select()
+      .from(t.auditLogs)
+      .where(and(eq(t.auditLogs.targetId, userId), eq(t.auditLogs.action, "user_unblocked")));
+    assert.ok(reinstatedEntry, "reinstatement is audited under its own action");
+    assert.equal(reinstatedEntry.actorId, OPERATOR.id);
   });
 });

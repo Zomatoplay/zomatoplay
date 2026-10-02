@@ -6,7 +6,6 @@ import {
   compare,
   decimal,
   isPositive,
-  MoneyError,
   multiplyByRate,
   subtract,
   type Decimal,
@@ -167,12 +166,7 @@ async function runRequestWithdrawal(input: {
   } catch (error) {
     return {
       ok: false,
-      message:
-        error instanceof MoneyError
-          ? error.message
-          : error instanceof Error
-            ? error.message
-            : "The request was not created.",
+      message: toSafeFailure(error, "The request was not created.").message,
     };
   }
 }

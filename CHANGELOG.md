@@ -4,6 +4,34 @@ Factual record of development on Zomato Play (formerly Nanotron). Newest first.
 
 ---
 
+## 2026-10-03 (Release hardening: admin access gate, first master-admin sign-in, INR display, deposit flow)
+
+No migrations.
+
+- **Admin sign-in fixed.** The seeded `agt_master` had no `phone_e164`, and
+  sign-in matches only on uid or number, so a verified SMS was always refused
+  ("not registered for operator access"). The first sign-in from a number in
+  `ADMIN_LOGIN_MOBILE` now adopts the single unbound master admin and binds the
+  real Firebase uid (§20). Nothing is created or invented.
+- **Admin access-code gate before the SMS:** `ADMIN_LOGIN_MOBILE` +
+  `ADMIN_LOGIN_ACCESS_CODE` (10 alphanumeric), server-only, rate-limited. It
+  fails closed, and sign-in also requires the signed pass it issues (§20).
+- **INR removed from the customer app except the deposit screen**, which shows
+  `1 USDT = ₹<rate>`. The withdrawal quote still shows the payout rate and net
+  INR (§9).
+- Login: the risk sentence was removed from the acknowledgement. Plans: the
+  risk note was removed from the catalogue screen. The invest confirmation and
+  legal pages are unchanged.
+- **Deposit:** "Leave this payment?" now also covers the browser's Back. The
+  "TRON Mainnet" label is gone; a Rate row was added; and there is an explicit
+  "Already paid?" instruction above "Transaction hash / TxID", with a
+  "Confirm payment" button. Matching and amounts are unchanged.
+- **KYC:** an unconfigured S3 store now logs one `kyc.storage.unavailable` line
+  naming the missing settings (never values). The production fix is AWS
+  configuration (runbook §2).
+
+---
+
 ## 2026-10-02 (Launch pass: tickets, configurable rates, branding, restriction enforcement)
 
 Migrations **0023** (ticket thread table, ticket category/created-at, audit and

@@ -13,7 +13,7 @@ import { usePhoneOtp } from "@/components/auth/use-phone-otp";
 import { ADMIN_APP_NAME, ADMIN_APP_SUBTITLE } from "@/constants/admin";
 import { maskIndianMobile, normalizeIndianMobile } from "@/lib/phone";
 
-import { completeOperatorPhoneSignIn } from "@/app/admin/login/actions";
+import { checkAdminAccess, completeOperatorPhoneSignIn } from "@/app/admin/login/actions";
 
 /**
  * Operator sign-in: mobile number → SMS code → operator session.
@@ -45,6 +45,9 @@ export function AdminSignInForm({
   const otp = usePhoneOtp({ purpose: "operator", localTest });
   const [phoneInput, setPhoneInput] = useState("");
   const [code, setCode] = useState("");
+  // Step 2 of 3: the number is authorised; the access code is asked next.
+  const [numberOk, setNumberOk] = useState(false);
+  const [accessCode, setAccessCode] = useState("");
   const [serverError, setServerError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [navigating, startTransition] = useTransition();
@@ -61,6 +64,22 @@ export function AdminSignInForm({
       otp.setError("Enter a valid 10-digit Indian mobile number.");
       return;
     }
+    setSubmitting(true);
+    const gate = await checkAdminAccess({
+      phone: phoneE164,
+      ...(numberOk ? { code: accessCode } : {}),
+    }).catch(() => ({ ok: false, message: "The request did not reach the server. Try again." }));
+    setSubmitting(false);
+    if (!gate.ok) {
+      setServerError(gate.message);
+      return;
+    }
+    // Number accepted: ask for the access code. Code accepted: send the SMS.
+    if (!numberOk) {
+      setNumberOk(true);
+      return;
+    }
+    setAccessCode("");
     if (await otp.send(phoneE164)) setCode("");
   }
 
@@ -83,6 +102,7 @@ export function AdminSignInForm({
       setServerError(result.message);
       // The code has been spent either way; a retry needs a fresh one.
       otp.reset();
+      setNumberOk(false);
       setCode("");
       return;
     }
@@ -160,23 +180,50 @@ export function AdminSignInForm({
                   maxLength={14}
                   className="h-11 text-base tabular"
                   value={phoneInput}
+                  readOnly={numberOk}
                   onChange={(event) => setPhoneInput(event.target.value)}
                   aria-invalid={error ? true : undefined}
                 />
               </div>
             </div>
+            {numberOk ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="operator-access-code">Access code</Label>
+                <Input
+                  id="operator-access-code"
+                  type="password"
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  maxLength={10}
+                  className="h-11 text-base font-mono tracking-widest"
+                  value={accessCode}
+                  onChange={(event) =>
+                    setAccessCode(event.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 10))
+                  }
+                  aria-invalid={error ? true : undefined}
+                  autoFocus
+                />
+              </div>
+            ) : null}
             {error ? (
               <p className="text-sm leading-relaxed text-destructive" role="alert">
                 {error}
               </p>
             ) : null}
-            <Button type="submit" variant="brand" size="lg" className="w-full" disabled={busy}>
-              {otp.sending ? (
+            <Button
+              type="submit"
+              variant="brand"
+              size="lg"
+              className="w-full"
+              disabled={busy || (numberOk && accessCode.length !== 10)}
+            >
+              {otp.sending || submitting ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden />
               ) : (
                 <Smartphone className="size-4" aria-hidden />
               )}
-              {otp.sending ? "Sending OTP…" : "Send OTP"}
+              {otp.sending ? "Sending OTP…" : submitting ? "Checking…" : numberOk ? "Send OTP" : "Continue"}
             </Button>
           </form>
         ) : (
@@ -224,6 +271,7 @@ export function AdminSignInForm({
                 onClick={() => {
                   otp.reset();
                   setServerError(null);
+                  setNumberOk(false);
                   setCode("");
                 }}
               >

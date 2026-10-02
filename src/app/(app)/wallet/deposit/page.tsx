@@ -52,7 +52,6 @@ export default async function DepositPage() {
       <PageContainer className="space-y-5">
         {active || current ? (
           <DepositFlow
-            chainLabel={`TRON ${network.label}`}
             isTestnet={network.isTestnet}
             minimumDeposit={minimumDeposit}
             initialRequest={current}

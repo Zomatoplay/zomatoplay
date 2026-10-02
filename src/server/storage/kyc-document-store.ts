@@ -42,17 +42,43 @@ interface CustomerForStorage {
   signInMethod: "phone" | "email";
 }
 
+let warnedUnavailable = false;
+
+/** Names the missing settings — never their values — once per process. */
+function warnStorageUnavailable(): void {
+  if (warnedUnavailable) return;
+  warnedUnavailable = true;
+  const driver = process.env.KYC_STORAGE_DRIVER?.trim().toLowerCase() ?? "";
+  const missing = [
+    driver === "s3" ? null : "KYC_STORAGE_DRIVER=s3",
+    process.env.KYC_S3_BUCKET?.trim() ? null : "KYC_S3_BUCKET",
+    (process.env.KYC_S3_REGION ?? process.env.AWS_REGION)?.trim() ? null : "KYC_S3_REGION",
+  ].filter(Boolean);
+  console.error(
+    JSON.stringify({
+      level: "error",
+      event: "kyc.storage.unavailable",
+      message: "KYC document upload is off for phone customers; customers see the unavailable notice.",
+      missing,
+    }),
+  );
+}
+
 export function kycUploadModeFor(account: CustomerForStorage): KycUploadMode {
   if (readS3KycConfig()) return "s3";
 
   const driver = process.env.KYC_STORAGE_DRIVER?.trim().toLowerCase();
   // `s3` named but incomplete is a misconfiguration: refuse rather than fall
   // back to a different store the operator did not choose.
-  if (driver === "s3" || driver === "disabled") return "unavailable";
+  if (driver === "s3" || driver === "disabled") {
+    warnStorageUnavailable();
+    return "unavailable";
+  }
 
   if (isAuthConfigured() && account.signInMethod === "email" && account.authUserId) {
     return "supabase";
   }
+  warnStorageUnavailable();
   return "unavailable";
 }
 

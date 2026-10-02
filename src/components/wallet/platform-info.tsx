@@ -37,16 +37,6 @@ export function PlatformInfo({
   return (
     <div className="space-y-4">
       <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
-        <InfoRow
-          label="USDT deposit rate"
-          value={`1 USDT = ₹${finance.depositRate.toFixed(2)}`}
-          hint="Used for the INR value shown on deposits and balances"
-        />
-        <InfoRow
-          label="USDT withdrawal rate"
-          value={`1 USDT = ₹${finance.withdrawalRate.toFixed(2)}`}
-          hint="Locked in when you confirm a withdrawal"
-        />
         <InfoRow label="Withdrawal fee" value={feeText} />
       </div>
 

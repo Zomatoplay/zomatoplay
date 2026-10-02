@@ -1,5 +1,5 @@
 import { Card } from "@/components/ui/card";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import type { EarningsSummary } from "@/types";
 
@@ -37,9 +37,6 @@ export function EarningsBreakdown({
             <p className="tabular mt-1 truncate text-base font-semibold text-positive">
               {formatUsdt(item.value, { withSymbol: false })}
             </p>
-            <p className="tabular truncate text-[11px] text-muted-foreground">
-              {formatUsdtAsInr(item.value)}
-            </p>
           </div>
         ))}
       </div>
@@ -61,9 +58,6 @@ export function EarningsBreakdown({
                 <span className="shrink-0 text-right">
                   <span className="tabular block text-sm font-semibold text-foreground">
                     {formatUsdt(row.amount, { withSymbol: false })}
-                  </span>
-                  <span className="tabular block text-[11px] text-muted-foreground">
-                    {formatUsdtAsInr(row.amount)}
                   </span>
                 </span>
               </div>

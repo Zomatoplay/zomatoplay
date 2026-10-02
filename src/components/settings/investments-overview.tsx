@@ -5,7 +5,7 @@ import { Gift, Layers } from "lucide-react";
 import { InvestmentCard } from "@/components/home/investment-card";
 import { EmptyState } from "@/components/shared/empty-state";
 import { TransactionItem } from "@/components/shared/transaction-item";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
 
 /**
@@ -31,9 +31,6 @@ export function InvestmentsOverview() {
           <p className="tabular mt-1 text-base font-semibold">
             {formatUsdt(balance.lockedInInvestments, { withSymbol: false })}
           </p>
-          <p className="tabular text-[11px] text-muted-foreground">
-            {formatUsdtAsInr(balance.lockedInInvestments)}
-          </p>
         </div>
         <div className="rounded-2xl border border-border bg-card p-4">
           <p className="text-[11px] font-medium text-muted-foreground">
@@ -41,9 +38,6 @@ export function InvestmentsOverview() {
           </p>
           <p className="tabular mt-1 text-base font-semibold text-positive">
             {formatUsdt(balance.totalProfit, { withSymbol: false })}
-          </p>
-          <p className="tabular text-[11px] text-muted-foreground">
-            {formatUsdtAsInr(balance.totalProfit)}
           </p>
         </div>
       </div>

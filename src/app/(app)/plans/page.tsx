@@ -8,7 +8,6 @@ import { ListSkeleton } from "@/components/shared/page-skeleton";
 import { PageContainer } from "@/components/navigation/app-shell";
 import { TopBar } from "@/components/navigation/top-bar";
 import { PlansBrowser } from "@/components/plans/plans-browser";
-import { RateNote, RiskNote } from "@/components/shared/notices";
 import { getPlans } from "@/server/services/catalogue.service";
 import { APP_NAME } from "@/constants/app";
 
@@ -21,9 +20,9 @@ export const metadata: Metadata = {
 /**
  * The catalogue's framing renders immediately; only the plan cards wait.
  *
- * The intro paragraph and the two notices are fixed copy, and `RiskNote` in
- * particular must never be late — it is the disclosure that sits beside the
- * projected returns.
+ * The intro paragraph is fixed copy. The risk and rate notices were removed
+ * from this screen at the client's request (2026-10). The disclosure remains in
+ * the invest sheet's confirmation and on the legal pages.
  */
 export default function PlansPage() {
   return (
@@ -41,8 +40,6 @@ export default function PlansPage() {
           <PlansSection />
         </Suspense>
 
-        <RiskNote />
-        <RateNote />
       </PageContainer>
     </>
   );

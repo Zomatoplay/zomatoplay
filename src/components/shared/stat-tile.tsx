@@ -27,7 +27,7 @@ export function StatTile({
   icon: Icon,
   hint,
   tone = "default",
-  hideInr = false,
+  hideInr = true,
   className,
 }: StatTileProps) {
   return (

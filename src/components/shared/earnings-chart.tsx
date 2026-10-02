@@ -2,7 +2,7 @@
 
 import { useId, useState } from "react";
 
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import type { EarningsPoint } from "@/types";
 
@@ -48,9 +48,6 @@ export function EarningsChart({
           <p className="text-xs font-medium text-muted-foreground">{readoutLabel}</p>
           <p className="tabular text-2xl font-semibold tracking-tight text-foreground">
             {formatUsdt(readoutValue)}
-          </p>
-          <p className="tabular text-xs text-muted-foreground">
-            {formatUsdtAsInr(readoutValue)}
           </p>
         </div>
         {active ? (

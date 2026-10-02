@@ -35,6 +35,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { getUsdtInrRate } from "@/lib/currency";
 import { formatDateTime } from "@/utils/format";
 import type { DepositRequestView } from "@/server/services/deposit-requests.service";
 import {
@@ -90,14 +91,12 @@ const SCAN_INTERVAL_MS = 60_000;
 const OPEN: DepositRequestView["status"][] = ["awaiting_payment", "verifying"];
 
 export function DepositFlow({
-  chainLabel,
   isTestnet,
   minimumDeposit,
   initialRequest,
   initialQrSvg,
   supportTelegramUrl,
 }: {
-  chainLabel: string;
   isTestnet: boolean;
   minimumDeposit: number;
   /** The operator-configured support link, validated server-side; null when unset. */
@@ -112,7 +111,6 @@ export function DepositFlow({
   if (!request) {
     return (
       <AmountStep
-        chainLabel={chainLabel}
         isTestnet={isTestnet}
         minimumDeposit={minimumDeposit}
         onCreated={(created, svg) => {
@@ -128,7 +126,6 @@ export function DepositFlow({
       key={request.id}
       request={request}
       qrSvg={qrSvg}
-      chainLabel={chainLabel}
       isTestnet={isTestnet}
       minimumDeposit={minimumDeposit}
       supportTelegramUrl={supportTelegramUrl}
@@ -152,12 +149,10 @@ export function DepositFlow({
 /* -------------------------------------------------------------------------- */
 
 function AmountStep({
-  chainLabel,
   isTestnet,
   minimumDeposit,
   onCreated,
 }: {
-  chainLabel: string;
   isTestnet: boolean;
   minimumDeposit: number;
   onCreated: (request: DepositRequestView, qrSvg: string | null) => void;
@@ -192,7 +187,7 @@ function AmountStep({
       </div>
 
       <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
-        <InfoRow label="Network" value={chainLabel} />
+        <InfoRow label="Rate" value={`1 USDT = ₹${getUsdtInrRate().rate.toFixed(2)}`} />
         <InfoRow label="Asset" value={TOKEN_LABEL} />
       </div>
 
@@ -250,7 +245,6 @@ const SUPPORT_OUTCOMES: NonNullable<HashSubmissionActionResult["outcome"]>[] = [
 function RequestStep({
   request,
   qrSvg: initialQr,
-  chainLabel,
   isTestnet,
   minimumDeposit,
   supportTelegramUrl,
@@ -260,7 +254,6 @@ function RequestStep({
 }: {
   request: DepositRequestView;
   qrSvg: string | null;
-  chainLabel: string;
   isTestnet: boolean;
   minimumDeposit: number;
   supportTelegramUrl: string | null;
@@ -381,7 +374,6 @@ function RequestStep({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold tracking-tight">Deposit USDT</h2>
-          <p className="text-xs text-muted-foreground">{chainLabel}</p>
         </div>
         <StatusBadge kind="depositRequest" status={request.status} />
       </div>
@@ -427,8 +419,8 @@ function RequestStep({
       </Card>
 
       <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
-        <InfoRow label="Network" value={chainLabel} />
         <InfoRow label="Asset" value={TOKEN_LABEL} />
+        <InfoRow label="Rate" value={`1 USDT = ₹${getUsdtInrRate().rate.toFixed(2)}`} />
         <InfoRow label="Deposit Request ID" value={<span className="font-mono">{request.id}</span>} />
         <InfoRow label="Valid until" value={formatDateTime(request.expiresAt)} />
       </div>
@@ -456,10 +448,11 @@ function RequestStep({
       {canSubmitHash ? (
         <form onSubmit={verify} className="space-y-3" noValidate>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            After completing your payment, enter the blockchain transaction hash below.
+            Already paid? Find your transaction hash / TxID in your wallet or exchange payment
+            details and enter it below to confirm your payment.
           </p>
           <div className="space-y-1.5">
-            <Label htmlFor="tx-hash">Transaction hash</Label>
+            <Label htmlFor="tx-hash">Transaction hash / TxID</Label>
             <Input
               id="tx-hash"
               autoComplete="off"
@@ -472,7 +465,7 @@ function RequestStep({
               aria-describedby="tx-hash-help"
             />
             <p id="tx-hash-help" className="text-xs leading-relaxed text-muted-foreground">
-              Also called the TxID. It is not your Deposit Request ID.
+              This is not your Deposit Request ID.
             </p>
           </div>
           <ScreenshotField />
@@ -500,7 +493,7 @@ function RequestStep({
             ) : (
               <ShieldCheck className="size-4" aria-hidden />
             )}
-            {verifying ? "Verifying on the blockchain…" : "Verify Payment"}
+            {verifying ? "Verifying on the blockchain…" : "Confirm payment"}
           </Button>
         </form>
       ) : null}
@@ -620,15 +613,26 @@ function ChangeAmount({
 }
 
 /**
- * Asks before an in-app link takes somebody away from a request they have not
- * paid against yet, and cancels it if they go.
+ * Asks before the screen is left while a request is still waiting for payment,
+ * and cancels the request (`cancelDepositRequestAction`, which refuses one that
+ * has a submitted hash or a matched deposit) when the person chooses to go.
  *
- * Next's App Router has no navigation-blocking API, so this listens for link
- * clicks in the capture phase — before `<Link>` handles them — and only for
- * same-origin, same-tab navigations to a different page. The browser's own
- * back button and closing the tab are not intercepted, deliberately: they
- * leave the request to expire on its own, and reopening the screen resumes it.
+ * Two ways out are covered:
+ *
+ *  - In-app links, including the header's Back control. Next's App Router has
+ *    no navigation-blocking API, so this listens for link clicks in the capture
+ *    phase — before `<Link>` handles them — for same-origin, same-tab
+ *    navigations to a different page.
+ *  - The browser's Back (button, swipe, history). While active, one sentinel
+ *    entry for this same URL is put on the history stack, so Back pops the
+ *    sentinel instead of leaving; that is the moment to ask. Staying puts the
+ *    sentinel back; leaving cancels, then steps back past it.
+ *
+ * Closing the tab or reloading is not intercepted: the request simply expires,
+ * and reopening the screen resumes it.
  */
+const HISTORY = "history";
+
 function LeaveGuard({ active, requestId }: { active: boolean; requestId: string }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -654,6 +658,35 @@ function LeaveGuard({ active, requestId }: { active: boolean; requestId: string 
     return () => document.removeEventListener("click", onClick, true);
   }, [active, pathname]);
 
+  useEffect(() => {
+    if (!active) return;
+    const marker = "depositLeaveGuard";
+    const pushSentinel = () => {
+      const current = window.history.state as Record<string, unknown> | null;
+      if (current?.[marker]) return;
+      window.history.pushState({ ...(current ?? {}), [marker]: true }, "", window.location.href);
+    };
+    pushSentinel();
+    function onPopState() {
+      // The sentinel was popped and we are still on this URL: ask first.
+      if (window.location.pathname === pathname) setTarget(HISTORY);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [active, pathname]);
+
+  function stay() {
+    if (target === HISTORY) {
+      const current = window.history.state as Record<string, unknown> | null;
+      window.history.pushState(
+        { ...(current ?? {}), depositLeaveGuard: true },
+        "",
+        window.location.href,
+      );
+    }
+    setTarget(null);
+  }
+
   function leave() {
     if (!target) return;
     const destination = target;
@@ -661,27 +694,29 @@ function LeaveGuard({ active, requestId }: { active: boolean; requestId: string 
       const result = await cancelDepositRequestAction({ requestId }).catch(() => null);
       if (result && !result.ok && result.message) toast.message(result.message);
       setTarget(null);
-      router.push(destination);
+      if (destination === HISTORY) window.history.back();
+      else router.push(destination);
     });
   }
 
   return (
-    <Sheet open={target !== null} onOpenChange={(open) => !open && !leaving && setTarget(null)}>
+    <Sheet open={target !== null} onOpenChange={(open) => !open && !leaving && stay()}>
       <SheetContent>
         <SheetHeader>
-          <SheetTitle>Leave this deposit?</SheetTitle>
+          <SheetTitle>Leave this payment?</SheetTitle>
           <SheetDescription>
-            Your deposit request <span className="font-mono">{requestId}</span> will be cancelled.
-            If you have already sent the payment, it will still be detected and credited to you.
+            Your payment request <span className="font-mono">{requestId}</span> is still waiting
+            for payment. If you leave this page, the request will be cancelled. If you have
+            already sent the payment, it will still be detected and credited to you.
           </SheetDescription>
         </SheetHeader>
         <SheetFooter className="flex-col gap-2 sm:flex-col">
-          <Button variant="brand" size="lg" block onClick={() => setTarget(null)} disabled={leaving}>
-            Stay on this page
+          <Button variant="brand" size="lg" block onClick={stay} disabled={leaving}>
+            Stay
           </Button>
           <Button variant="outline" size="lg" block onClick={leave} disabled={leaving}>
             {leaving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-            {leaving ? "Cancelling…" : "Leave and cancel request"}
+            {leaving ? "Cancelling…" : "Leave"}
           </Button>
         </SheetFooter>
       </SheetContent>
@@ -813,9 +848,8 @@ function NetworkWarnings({ isTestnet }: { isTestnet: boolean }) {
         <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
           <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
           <span>
-            This is the <strong className="font-medium text-foreground">TRON main network</strong>.
-            Funds sent here are real, and a blockchain transfer cannot be reversed — check the
-            address before you send.
+            A blockchain transfer cannot be reversed — check the address and the amount before
+            you send.
           </span>
         </p>
       )}

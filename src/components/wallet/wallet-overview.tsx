@@ -10,9 +10,8 @@ import {
   Wallet as WalletIcon,
 } from "lucide-react";
 
-import { RateNote } from "@/components/shared/notices";
 import { StatTile } from "@/components/shared/stat-tile";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
 
 /**
@@ -27,9 +26,6 @@ export function WalletOverview() {
         <p className="text-xs font-medium text-primary-foreground/70">Available</p>
         <p className="tabular mt-2 text-[2.125rem] font-semibold leading-10 tracking-tight">
           {formatUsdt(balance.available)}
-        </p>
-        <p className="tabular mt-1 text-sm text-primary-foreground/70">
-          {formatUsdtAsInr(balance.available)} INR
         </p>
       </div>
 
@@ -74,7 +70,6 @@ export function WalletOverview() {
         />
       </div>
 
-      <RateNote className="px-1" />
     </section>
   );
 }

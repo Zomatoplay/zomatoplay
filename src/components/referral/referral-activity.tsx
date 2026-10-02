@@ -7,7 +7,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { initials, formatDate } from "@/utils/format";
 import type { CommissionEntry, Referral } from "@/types";
 
@@ -89,9 +89,6 @@ export function ReferralActivity({
                   <div className="mt-0.5 flex items-start justify-between gap-3">
                     <p className="min-w-0 truncate text-xs text-muted-foreground">
                       {entry.sourcePlan}
-                    </p>
-                    <p className="tabular shrink-0 text-xs text-muted-foreground">
-                      {formatUsdtAsInr(entry.amount)}
                     </p>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">

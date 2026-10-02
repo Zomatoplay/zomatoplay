@@ -61,10 +61,6 @@ export function AuthLegalLinks() {
       <Link href="/legal/privacy" className={link}>
         Privacy Policy
       </Link>
-      . Investing involves risk and returns are not guaranteed — read the{" "}
-      <Link href="/legal/risk" className={link}>
-        Risk Disclosure
-      </Link>
       .
     </p>
   );

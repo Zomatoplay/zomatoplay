@@ -295,18 +295,17 @@ aesthetics.
 
 ## 9. Currency conventions
 
-- **USDT is primary** — the settlement currency, the larger figure.
-- **INR is secondary** — an *approximate* local equivalent, smaller, prefixed `≈`.
-
-```
-Available Balance
-1,250.00 USDT
-≈ ₹1,04,000 INR
-```
-
+- **USDT is the only currency the customer app shows**, with one exception.
+  The INR equivalent and the rate note were removed from Home, Plans,
+  investments, the wallet, Referral and Settings (client decision, 2026-10):
+  `CurrencyDisplay` and `StatTile` default `hideInr` to `true`, and
+  `<RateNote />` is used only in the CRM.
+- **The deposit screen is that exception**: it shows `1 USDT = ₹<deposit rate>`
+  as a plain "Rate" row and nothing else about conversion.
+- The withdrawal screen still shows the payout rate, every fee and the exact net
+  INR, because that is a quote for INR the customer will be paid, not a display
+  conversion (next point).
 - INR uses the `en-IN` locale (lakh/crore grouping). Intentional.
-- Wherever INR is prominent, render `<RateNote />`. The conversion must never
-  read as a live market quote.
 - Deposits are **USDT only**. Withdrawals pay out in **INR** and must show:
   amount, quoted payout rate, every fee, and the exact net INR received. The
   payout rate is deliberately distinct from the indicative display rate.
@@ -1209,6 +1208,7 @@ property the test owns — never a fact about the physical table.**
 | `lib/withdrawal-password-rules.test.ts` | no | withdrawal password rules |
 | `server/withdrawal-password.integration.test.ts` | yes | hash only, counted failures, lock, support-only reset |
 | `server/admin/operator-phone.test.ts` | no | which operator a verified phone may become |
+| `server/admin/access-gate.test.ts` | no | the admin access gate: fails closed, code shape, number match, exact code |
 
 **`connection.integration.test.ts` fires twenty then forty queries at once** — not
 a benchmark, the regression test for the transaction-pooler stall in §16.1, which
@@ -1490,7 +1490,8 @@ transfer"); **do not make it pass by deleting it.**
 **One request waiting for payment per customer, and cancelling is a state.**
 Changing the amount cancels the waiting request inside the transaction that
 creates the new one (`deposit_requests_one_awaiting_per_user_key` is the
-backstop); leaving the screen through an in-app link asks, then
+backstop); leaving the screen — an in-app link, the header's Back, or the
+browser's Back (a sentinel history entry) — asks "Leave this payment?", then
 `cancelDepositRequest`. Both refuse a request with a submitted hash or a
 matched deposit. **`cancelled` stays in `MATCHABLE_REQUEST_STATUSES` and its
 amount stays reserved until its window closes** — a customer who paid and
@@ -1922,6 +1923,25 @@ project, `sign_in_provider = phone`, `auth_time` < 5 min), then
   sign-in; an `invited` operator becomes `active`);
 - a number bound to a different uid → refused, never silently re-bound;
 - otherwise → not an operator.
+
+**The access-code gate comes first** (`server/admin/access-gate.ts`, tested).
+The number must equal `ADMIN_LOGIN_MOBILE` (comma-separated for several), then
+the 10-character `ADMIN_LOGIN_ACCESS_CODE` must match — both server-only env
+values, never stored, logged or returned. A correct code sets a 15-minute
+signed httpOnly pass bound to that number, and `completeOperatorPhoneSignIn`
+refuses a verified SMS without it, because Firebase sends the SMS from the
+browser and the server cannot stop that call itself. Both refusals say the same
+thing, and both are rate-limited per address and per number. With either value
+unset, operator sign-in is refused (fails closed). **Every operator, agents
+included, needs their number in `ADMIN_LOGIN_MOBILE`.**
+
+**First master-admin sign-in.** The seeded `agt_master` has no `phone_e164`, so
+no verified number could ever match it. That was the production failure. When
+the verified number is in `ADMIN_LOGIN_MOBILE` and no operator row has that
+uid or number, sign-in adopts the **one** `master_admin` row with neither a
+number nor a uid. It writes the number and the real Firebase uid, and audits
+it. Two such rows count as ambiguity and are refused. No row is ever created.
+`npm run db:operator-phone` remains the explicit alternative.
 
 **Matching on the number is safe here and never for customers** because an
 operator's `phone_e164` is an authorization written by a master admin (Admin →

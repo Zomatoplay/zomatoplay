@@ -12,7 +12,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WITHDRAWAL_PROCESSING_WINDOW } from "@/constants/app";
-import { formatInr, formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatInr, formatUsdt } from "@/lib/currency";
 import type { PlatformFinance } from "@/lib/platform-finance";
 import { displayWithdrawalQuote } from "@/lib/withdrawal-quote";
 import { usePrototypeStore } from "@/lib/prototype-store";
@@ -383,9 +383,6 @@ export function WithdrawFlow({
         </p>
         <p className="tabular mt-1 text-2xl font-semibold tracking-tight">
           {formatUsdt(balance.available)}
-        </p>
-        <p className="tabular text-xs text-muted-foreground">
-          {formatUsdtAsInr(balance.available)}
         </p>
       </Card>
 

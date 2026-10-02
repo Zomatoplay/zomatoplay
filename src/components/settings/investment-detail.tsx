@@ -9,13 +9,13 @@ import { toast } from "sonner";
 import { RiskIndicator } from "@/components/plans/risk-indicator";
 import { EmptyState } from "@/components/shared/empty-state";
 import { InfoRow } from "@/components/shared/info-row";
-import { RateNote, RiskNote } from "@/components/shared/notices";
+import { RiskNote } from "@/components/shared/notices";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { rewardFrequencyLabels } from "@/data/plans";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
 import type { Plan } from "@/types";
 import { formatDate, progressPercent } from "@/utils/format";
@@ -78,9 +78,6 @@ export function InvestmentDetail({
         <p className="tabular mt-1 text-[2.125rem] font-semibold leading-10 tracking-tight text-positive">
           {formatUsdt(investment.profit, { signed: true })}
         </p>
-        <p className="tabular mt-1 text-sm text-muted-foreground">
-          {formatUsdtAsInr(investment.profit)}
-        </p>
 
         {!openEnded ? (
           <div className="mt-5 space-y-1.5 border-t border-border pt-4">
@@ -103,12 +100,10 @@ export function InvestmentDetail({
         <InfoRow
           label="Amount invested"
           value={formatUsdt(investment.amount)}
-          hint={formatUsdtAsInr(investment.amount)}
         />
         <InfoRow
           label="Projected profit"
           value={formatUsdt(investment.projectedProfit)}
-          hint={formatUsdtAsInr(investment.projectedProfit)}
         />
         <InfoRow
           label="Reward frequency"
@@ -134,7 +129,6 @@ export function InvestmentDetail({
       </div>
 
       <RiskNote />
-      <RateNote />
 
       {/*
         Returning an open-ended allocation.

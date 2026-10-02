@@ -22,7 +22,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { rewardFrequencyLabels } from "@/data/plans";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
 import { createInvestmentAction } from "@/app/(app)/plans/actions";
 import { cn } from "@/lib/utils";
@@ -262,9 +262,7 @@ export function InvestSheet({
                   )}
                 >
                   {error ??
-                    (valid
-                      ? formatUsdtAsInr(amount)
-                      : `Between ${formatUsdt(plan.minInvestment)} and ${formatUsdt(plan.maxInvestment)}.`)}
+                    `Between ${formatUsdt(plan.minInvestment)} and ${formatUsdt(plan.maxInvestment)}.`}
                 </p>
               </div>
 
@@ -352,7 +350,6 @@ export function InvestSheet({
                 <InfoRow
                   label="Projected profit"
                   value={formatUsdt(projectedProfit)}
-                  hint={formatUsdtAsInr(projectedProfit)}
                 />
                 <InfoRow
                   label="Term"
@@ -401,9 +398,6 @@ export function InvestSheet({
                 <p className="tabular mt-1 text-3xl font-semibold tracking-tight">
                   {formatUsdt(amount)}
                 </p>
-                <p className="tabular text-sm text-muted-foreground">
-                  {formatUsdtAsInr(amount)}
-                </p>
               </div>
 
               <div className="divide-y divide-border rounded-xl border border-border px-4">
@@ -425,7 +419,6 @@ export function InvestSheet({
                 <InfoRow
                   label="Projected profit"
                   value={formatUsdt(projectedProfit)}
-                  hint={formatUsdtAsInr(projectedProfit)}
                 />
                 <InfoRow
                   label="Balance after"
@@ -490,7 +483,6 @@ export function InvestSheet({
                 <InfoRow
                   label="Amount"
                   value={formatUsdt(confirmedAmount)}
-                  hint={formatUsdtAsInr(confirmedAmount)}
                 />
                 {confirmedRate !== null ? (
                   <InfoRow

@@ -5,7 +5,7 @@ import { ArrowDownToLine, BadgeCheck, ShieldAlert } from "lucide-react";
 
 import { InfoRow } from "@/components/shared/info-row";
 import { Button } from "@/components/ui/button";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { usePrototypeStore } from "@/lib/prototype-store";
 
 /**
@@ -31,7 +31,6 @@ export function AllocationReadiness() {
         <InfoRow
           label="Available to allocate"
           value={formatUsdt(balance.available)}
-          hint={formatUsdtAsInr(balance.available)}
         />
         <InfoRow
           label="Verification"

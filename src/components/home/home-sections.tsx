@@ -7,7 +7,6 @@ import { BalanceCard } from "@/components/home/balance-card";
 import { InvestmentCard } from "@/components/home/investment-card";
 import { KycBanner } from "@/components/home/kyc-banner";
 import { EmptyState } from "@/components/shared/empty-state";
-import { RateNote } from "@/components/shared/notices";
 import { SectionHeader } from "@/components/shared/section-header";
 import { StatTile } from "@/components/shared/stat-tile";
 import { TransactionList } from "@/components/shared/transaction-item";
@@ -59,7 +58,6 @@ export function AccountSummaryLive() {
         />
       </div>
 
-      <RateNote className="px-1" />
     </section>
   );
 }

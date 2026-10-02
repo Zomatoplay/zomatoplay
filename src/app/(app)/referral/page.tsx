@@ -6,7 +6,6 @@ import { TopBar } from "@/components/navigation/top-bar";
 import { ReferralActivity } from "@/components/referral/referral-activity";
 import { ReferralLinkCard } from "@/components/referral/referral-link-card";
 import { VipLevels } from "@/components/referral/vip-levels";
-import { RateNote } from "@/components/shared/notices";
 import { SectionHeader } from "@/components/shared/section-header";
 import { StatTile } from "@/components/shared/stat-tile";
 import { APP_NAME, REFERRAL_BASE_URL } from "@/constants/app";
@@ -53,7 +52,6 @@ export default function ReferralPage() {
           >
             <ReferralSummarySection />
           </SectionBoundary>
-          <RateNote className="px-1" />
         </section>
 
         <SectionBoundary

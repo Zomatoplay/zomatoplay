@@ -3,6 +3,14 @@
 import { redirect } from "next/navigation";
 
 import {
+  accessCodeMatches,
+  clearAccessPass,
+  hasAccessPass,
+  isAccessGateConfigured,
+  isAuthorizedAdminMobile,
+  issueAccessPass,
+} from "@/server/admin/access-gate";
+import {
   clearOperatorSessionCookie,
   issueOperatorSession,
   isOperatorSessionConfigured,
@@ -10,6 +18,7 @@ import {
 import { endOperatorSessions, signInOperatorByPhone } from "@/server/admin/operator-sign-in";
 import { getCurrentOperator } from "@/server/admin/session";
 import { FirebaseNotConfiguredError } from "@/server/auth/firebase-admin";
+import { normalizeIndianMobile } from "@/lib/phone";
 import { verifyPhoneProof } from "@/server/auth/phone-proof";
 import { isInfrastructureFailure, toSafeFailure } from "@/server/errors";
 import { describeError, errorDiagnostics, recordPipelineEvent } from "@/server/observability";
@@ -49,6 +58,51 @@ export interface OperatorSignInResult {
 /** Per address: enough for a team on one office connection, tight for a script. */
 const SIGN_IN_LIMIT = { attempts: 15, windowMs: 10 * 60 * 1000 };
 
+/** Per address, counting every gate attempt — failed guesses are the point. */
+const GATE_LIMIT = { attempts: 8, windowMs: 15 * 60 * 1000 };
+/** Per number, so rotating addresses does not multiply the guesses. */
+const GATE_NUMBER_LIMIT = { attempts: 20, windowMs: 60 * 60 * 1000 };
+
+const GATE_REFUSED = "Administrator access could not be confirmed.";
+
+/**
+ * Step 1 of operator sign-in: may this number start it at all?
+ * With `code` absent it only answers that; with a code it checks the access
+ * code and, when right, issues the short-lived pass the sign-in requires. Any
+ * refusal says the same thing — it does not say which part was wrong.
+ */
+export async function checkAdminAccess(input: {
+  phone: string;
+  code?: string;
+}): Promise<{ ok: boolean; message: string }> {
+  const address = await clientAddress();
+  const phoneE164 = normalizeIndianMobile(String(input?.phone ?? ""));
+  const withinLimit =
+    takeToken(`operator-gate:${address}`, GATE_LIMIT.attempts, GATE_LIMIT.windowMs).allowed &&
+    takeToken(`operator-gate-number:${phoneE164 ?? "?"}`, GATE_NUMBER_LIMIT.attempts, GATE_NUMBER_LIMIT.windowMs).allowed;
+  if (!withinLimit) {
+    return { ok: false, message: "Too many attempts. Please wait a few minutes and try again." };
+  }
+  if (!isAccessGateConfigured() || !isOperatorSessionConfigured()) {
+    return { ok: false, message: "Operator sign-in is not configured on this server." };
+  }
+  if (!isAuthorizedAdminMobile(phoneE164) || !phoneE164) {
+    return { ok: false, message: GATE_REFUSED };
+  }
+  if (input.code === undefined) return { ok: true, message: "Enter your access code." };
+  if (!accessCodeMatches(input.code)) {
+    recordPipelineEvent({
+      pipeline: "admin",
+      operation: "admin.access_gate.refused",
+      status: "ok",
+      message: "Operator access code was not accepted",
+    });
+    return { ok: false, message: GATE_REFUSED };
+  }
+  await issueAccessPass(phoneE164);
+  return { ok: true, message: "Access code accepted." };
+}
+
 export async function completeOperatorPhoneSignIn(input: {
   proof: unknown;
 }): Promise<OperatorSignInResult> {
@@ -79,6 +133,10 @@ async function resolveOperatorSignIn(proof: unknown): Promise<OperatorSignInResu
 
   try {
     const verified = await verifyPhoneProof(proof, "operator");
+    // The access code must have been accepted for THIS number first.
+    if (!(await hasAccessPass(verified.phoneE164))) {
+      return { ok: false, retryable: false, message: "Your access check expired. Start again." };
+    }
     const operator = await signInOperatorByPhone(verified);
     await issueOperatorSession({
       firebaseUid: operator.firebaseUid,
@@ -92,6 +150,7 @@ async function resolveOperatorSignIn(proof: unknown): Promise<OperatorSignInResu
       message: "Operator session established by SMS verification",
       actor: { id: operator.agentId, name: operator.name },
     });
+    await clearAccessPass();
     return { ok: true, message: `Signed in as ${operator.name}.` };
   } catch (error) {
     if (error instanceof FirebaseNotConfiguredError) {

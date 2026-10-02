@@ -10,6 +10,7 @@ import {
   decideOperatorPhoneSignIn,
   OPERATOR_REFUSAL_MESSAGES,
 } from "./operator-phone";
+import { isAuthorizedAdminMobile } from "./access-gate";
 import { AdminAuthorizationError } from "./session";
 
 /**
@@ -41,12 +42,37 @@ export async function signInOperatorByPhone(verified: {
       .where(eq(t.adminAgents.firebaseUid, verified.uid))
       .limit(1)
       .for("update");
-    const [byPhone] = await tx
+    let [byPhone] = await tx
       .select(columns)
       .from(t.adminAgents)
       .where(eq(t.adminAgents.phoneE164, verified.phoneE164))
       .limit(1)
       .for("update");
+
+    /*
+     * FIRST MASTER-ADMIN SIGN-IN. The seeded master admin has no number, and
+     * the decision below matches only on uid or number — so no verified
+     * number could ever find it. When the deployment's own configuration
+     * (ADMIN_LOGIN_MOBILE, already proven by the access code and the SMS)
+     * authorises this number, adopt the one master admin that has neither a
+     * number nor a uid. Exactly one, never a created row: two candidates is
+     * ambiguity, and ambiguity is refused.
+     */
+    let adoptNumber = false;
+    if (!byUid && !byPhone && isAuthorizedAdminMobile(verified.phoneE164)) {
+      const candidates = await tx
+        .select(columns)
+        .from(t.adminAgents)
+        .where(
+          sql`${t.adminAgents.role} = 'master_admin' and ${t.adminAgents.phoneE164} is null and ${t.adminAgents.firebaseUid} is null`,
+        )
+        .limit(2)
+        .for("update");
+      if (candidates.length === 1) {
+        byPhone = { ...candidates[0], phoneE164: verified.phoneE164 };
+        adoptNumber = true;
+      }
+    }
 
     const decision = decideOperatorPhoneSignIn({
       uid: verified.uid,
@@ -69,7 +95,11 @@ export async function signInOperatorByPhone(verified: {
       .update(t.adminAgents)
       .set({
         ...(decision.action === "bind"
-          ? { firebaseUid: verified.uid, phoneVerifiedAt: now }
+          ? {
+              firebaseUid: verified.uid,
+              phoneVerifiedAt: now,
+              ...(adoptNumber ? { phoneE164: verified.phoneE164 } : {}),
+            }
           : {}),
         // An invitation is accepted by the first verified sign-in.
         status: sql`case when ${t.adminAgents.status} = 'invited' then 'active'::agent_status else ${t.adminAgents.status} end`,

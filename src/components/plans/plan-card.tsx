@@ -7,7 +7,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { rewardFrequencyLabels } from "@/data/plans";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import type { Plan } from "@/types";
 
@@ -76,7 +76,6 @@ export function PlanCard({ plan, className }: { plan: Plan; className?: string }
         <Metric
           label="From"
           value={formatUsdt(plan.minInvestment, { withSymbol: false })}
-          hint={formatUsdtAsInr(plan.minInvestment)}
         />
         <Metric
           label="Duration"

@@ -5,7 +5,7 @@ import { TrendingDown, TrendingUp } from "lucide-react";
 import { EarningsChart } from "@/components/shared/earnings-chart";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatPercent, formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatPercent, formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import type { EarningsSummary } from "@/types";
 
@@ -88,9 +88,6 @@ export function EarningsCard({
             </dt>
             <dd className="tabular mt-0.5 text-sm font-semibold text-foreground">
               {formatUsdt(item.value, { withSymbol: false })}
-            </dd>
-            <dd className="tabular text-[11px] text-muted-foreground">
-              {formatUsdtAsInr(item.value)}
             </dd>
           </div>
         ))}

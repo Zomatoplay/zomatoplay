@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 
 import { StatusBadge } from "@/components/shared/status-badge";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/utils/format";
 import type { Transaction, TransactionType } from "@/types";
@@ -71,9 +71,6 @@ export function TransactionItem({
         <div className="mt-0.5 flex items-start justify-between gap-3">
           <p className="min-w-0 truncate text-xs text-muted-foreground">
             {transaction.description}
-          </p>
-          <p className="tabular shrink-0 text-xs text-muted-foreground">
-            {formatUsdtAsInr(Math.abs(transaction.amount))}
           </p>
         </div>
 

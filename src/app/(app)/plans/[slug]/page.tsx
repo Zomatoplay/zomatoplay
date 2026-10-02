@@ -10,13 +10,12 @@ import { AllocationReadiness } from "@/components/plans/allocation-readiness";
 import { InvestSheet } from "@/components/plans/invest-sheet";
 import { RiskIndicator } from "@/components/plans/risk-indicator";
 import { InfoRow } from "@/components/shared/info-row";
-import { RateNote } from "@/components/shared/notices";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { rewardFrequencyLabels, riskDescriptions } from "@/data/plans";
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { getPlanBySlug } from "@/server/services/catalogue.service";
 
 /**
@@ -172,12 +171,10 @@ export default async function PlanDetailPage({
               <InfoRow
                 label="Minimum"
                 value={formatUsdt(plan.minInvestment)}
-                hint={formatUsdtAsInr(plan.minInvestment)}
               />
               <InfoRow
                 label="Maximum"
                 value={formatUsdt(plan.maxInvestment)}
-                hint={formatUsdtAsInr(plan.maxInvestment)}
               />
               <InfoRow
                 label="Duration"
@@ -314,7 +311,6 @@ export default async function PlanDetailPage({
             </p>
           </section>
 
-          <RateNote />
 
           {/* Reserves the height of the fixed action bar below, on top of the
               bottom-navigation space `PageContainer` already reserves. */}

@@ -215,8 +215,11 @@ key.
   (`kyc_documents.storage_backend = 'supabase'`) and remain openable while the
   Supabase project exists. Migrating those objects is a separate, deliberate
   job — see FUTURE_TASKS.
-- With S3 unset, a phone-signed-in customer sees no upload controls and can
-  still submit declared details (documents are optional, §23).
+- With S3 unset or incomplete, a phone-signed-in customer sees "Identity
+  verification is temporarily unavailable…" and cannot submit, because the
+  document and selfie are **required** (§23). The server logs one
+  `kyc.storage.unavailable` JSON line on stderr naming the missing variables.
+  On EC2, check with `journalctl -u <service> | grep kyc.storage`.
 
 ---
 
@@ -376,3 +379,26 @@ instance is only reachable from inside the VPC), from the new checkout:
    starts empty).
 5. Restart the service. Existing withdrawals keep the rate and fee they were
    quoted at; only new requests use the configured values.
+
+## Release: admin access gate and first master-admin sign-in
+
+No migrations. **Set these before restarting, or operator sign-in is refused:**
+
+| Variable | Class | Value |
+|---|---|---|
+| `ADMIN_LOGIN_MOBILE` | **server secret** | the admin's mobile, e.g. `98XXXXXXXX` (comma-separate several; every operator who signs in needs to be listed) |
+| `ADMIN_LOGIN_ACCESS_CODE` | **server secret** | exactly 10 letters/digits, e.g. from `openssl rand -base64 24 \| tr -dc 'A-Za-z0-9' \| head -c 10` |
+
+Never prefix them with `NEXT_PUBLIC_`, and never put them in the repository.
+Set them in the service's environment file on EC2.
+
+Then sign in at `/admin/login`: number → access code → SMS code. The first
+successful sign-in binds that number and the verified Firebase uid to the
+existing `agt_master` row (audited). Check it with
+`npm run db:operator-phone -- --list`, which shows `verified` beside the
+master admin.
+
+**KYC is still off until S3 is configured (§2).** On EC2, check that
+`KYC_STORAGE_DRIVER=s3`, `KYC_S3_BUCKET` and `KYC_S3_REGION` are in the
+service's environment, that the instance role has the §2.2 policy, and that the
+bucket CORS allows `PUT` from `https://zomatoplay.com`.

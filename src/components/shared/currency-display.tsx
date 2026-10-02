@@ -55,7 +55,7 @@ export interface CurrencyDisplayProps
   extends VariantProps<typeof primaryVariants> {
   /** Amount in USDT. INR is always derived, never passed in. */
   amount: number;
-  /** Hide the INR line. Default `false`. */
+  /** The INR line is off everywhere by default; the rate belongs to the deposit page only. */
   hideInr?: boolean;
   /** Render on a single line as `1,250.00 USDT · ≈ ₹104,000`. */
   inline?: boolean;
@@ -74,7 +74,7 @@ export function CurrencyDisplay({
   amount,
   size,
   tone,
-  hideInr = false,
+  hideInr = true,
   inline = false,
   signed = false,
   hideSymbol = false,

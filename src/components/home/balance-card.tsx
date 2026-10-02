@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowDownToLine, ArrowUpRight, Plus } from "lucide-react";
 
-import { formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import { formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 
 interface BalanceCardProps {
@@ -33,9 +33,6 @@ export function BalanceCard({ available, className }: BalanceCardProps) {
         </h2>
         <p className="tabular mt-2 text-[2.125rem] font-semibold leading-10 tracking-tight">
           {formatUsdt(available)}
-        </p>
-        <p className="tabular mt-1 text-sm text-primary-foreground/70">
-          {formatUsdtAsInr(available)} INR
         </p>
       </div>
 

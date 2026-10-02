@@ -4,6 +4,34 @@ Factual record of development on Zomato Play (formerly Nanotron). Newest first.
 
 ---
 
+## 2026-10-02 (Launch pass: tickets, configurable rates, branding, restriction enforcement)
+
+Migrations **0023** (ticket thread table, ticket category/created-at, audit and
+pipeline enum values — additive), **0024** (initial USDT rates and withdrawal fee
+on the settings row) and **0025** (retires the stored "Nanotron" name, tagline,
+rate note and support address). Run order and RDS notes: `docs/rollout-…md`.
+
+- **Support tickets** completed: customer create / list / view / reply, console
+  queue and detail with reply and status, audited (§28).
+- **USDT rates and withdrawal fee are administrator-configured** and applied
+  everywhere INR is shown; withdrawals are priced from a fresh read and refuse if
+  the screen's figures went stale (§29).
+- **Restricted accounts are now refused by server actions too** (§30) — previously
+  only page loads were.
+- Support email read from settings; customer Wallet shows rates, fee, deposit
+  address and support channels read-only.
+- Public legal pages at `/legal/*`; legal copy rewritten to describe what the
+  product actually does. Login: welcome copy, legal links, *Need help?*.
+- Admin shows the Zomato Play logo and "Investment Platform"; removed the
+  non-functional withdrawal-security toggles and network preference from
+  Settings → Wallet (they claimed protections that did not exist).
+- Install prompt is a slim in-flow strip with Install / Later.
+- Friendlier connection, session and transaction error messages; deposit status
+  polling failures are now surfaced with a retry.
+- `.perf/cookies.txt` untracked; its refresh token was confirmed already invalid.
+
+---
+
 ## 2026-10-02 (Branding pass, support email, display rate)
 
 - Display USDT→INR rate `83.2` → `96.05` (`MOCK_USDT_INR_RATE`, display-only).

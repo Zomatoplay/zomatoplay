@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 
-import { ADMIN_APP_SUBTITLE } from "@/constants/admin";
 import { APP_NAME } from "@/constants/app";
 
 /**
@@ -21,8 +20,8 @@ import { APP_NAME } from "@/constants/app";
  */
 export const metadata: Metadata = {
   title: {
-    default: ADMIN_APP_SUBTITLE,
-    template: `%s · ${ADMIN_APP_SUBTITLE}`,
+    default: `${APP_NAME} Admin`,
+    template: `%s · ${APP_NAME} Admin`,
   },
   description: `Administrative control panel for the ${APP_NAME} platform.`,
   // An operations console has no business being indexed.

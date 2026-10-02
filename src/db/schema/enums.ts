@@ -278,11 +278,27 @@ export const campaignStatusEnum = pgEnum("campaign_status", [
   "failed",
 ]);
 
+/**
+ * `open` — waiting on support (new, or the customer replied).
+ * `awaiting_reply` — support answered; waiting on the customer.
+ * `resolved` — closed. A customer reply reopens it.
+ */
 export const ticketStatusEnum = pgEnum("ticket_status", [
   "open",
   "awaiting_reply",
   "resolved",
 ]);
+
+export const ticketCategoryEnum = pgEnum("ticket_category", [
+  "deposit",
+  "withdrawal",
+  "investment",
+  "verification",
+  "account",
+  "other",
+]);
+
+export const ticketAuthorEnum = pgEnum("ticket_author", ["customer", "support"]);
 
 /* -------------------------------------------------------------------------- */
 /* Devices & security                                                          */
@@ -328,6 +344,7 @@ export const pipelineEnum = pgEnum("pipeline", [
   "email",
   "database",
   "admin",
+  "support",
 ]);
 
 /**
@@ -457,6 +474,8 @@ export const auditActionEnum = pgEnum("audit_action", [
   "settings_updated",
   "wallet_manual_credit",
   "withdrawal_password_reset",
+  "ticket_replied",
+  "ticket_status_changed",
 ]);
 
 export const auditTargetTypeEnum = pgEnum("audit_target_type", [
@@ -468,6 +487,7 @@ export const auditTargetTypeEnum = pgEnum("audit_target_type", [
   "kyc",
   "notification",
   "settings",
+  "ticket",
 ]);
 
 export const auditOutcomeEnum = pgEnum("audit_outcome", ["success", "failed"]);

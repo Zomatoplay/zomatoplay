@@ -1,7 +1,7 @@
 "use server";
 
 import { decimal, MoneyError } from "@/db/money";
-import { getAuthenticatedAccount } from "@/server/auth/account";
+import { getUsableAccount } from "@/server/auth/account";
 import { toSafeFailure } from "@/server/errors";
 import { trackPipeline } from "@/server/observability";
 import { traceAction } from "@/server/trace-action";
@@ -53,7 +53,7 @@ export async function createInvestmentAction(input: {
   planId: string;
   amount: string;
 }): Promise<InvestResult> {
-  const account = await getAuthenticatedAccount();
+  const account = await getUsableAccount();
   if (!account) return { ok: false, message: "Not signed in." };
 
   let amount;
@@ -105,7 +105,7 @@ export async function createInvestmentAction(input: {
     } catch (error) {
       return {
         ok: false,
-        message: toSafeFailure(error, "The allocation was not created.").message,
+        message: toSafeFailure(error, "We couldn't complete this transaction. Your balance was not changed.").message,
       };
     }
   },
@@ -134,7 +134,7 @@ export interface EndAllocationResult {
 export async function endAllocationAction(input: {
   investmentId: string;
 }): Promise<EndAllocationResult> {
-  const account = await getAuthenticatedAccount();
+  const account = await getUsableAccount();
   if (!account) return { ok: false, message: "Not signed in." };
 
   const actor: Actor = {

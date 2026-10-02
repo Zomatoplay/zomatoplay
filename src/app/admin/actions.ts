@@ -7,7 +7,12 @@ import { getDb } from "@/db";
 import * as t from "@/db/schema";
 import { requireSupabaseConfig } from "@/lib/supabase/env";
 import { getSiteUrl } from "@/lib/site-url";
-import { parseSupportEmail, parseTelegramUsername } from "@/lib/support";
+import {
+  replyToTicketAsSupport,
+  setTicketStatus,
+} from "@/server/services/tickets-write.service";
+import { financeSettingsRefusal } from "@/lib/platform-finance";
+import { parseSupportEmail, parseTelegramUsername, telegramLabel } from "@/lib/support";
 import { maskIndianMobile, normalizeIndianMobile } from "@/lib/phone";
 import { sendPasswordRecovery } from "@/lib/supabase/auth-rest";
 import {
@@ -1472,6 +1477,20 @@ export async function updateSettingsAction(input: {
       return { ok: false, message: "Enter a valid support email address, or leave it empty." };
     }
 
+    // The money settings decide what customers are quoted and paid, so they
+    // are validated here whatever the form allowed.
+    const financeRefusal = financeSettingsRefusal({
+      displayRate: input.settings.currency?.displayRate,
+      payoutRate: input.settings.currency?.payoutRate,
+      flatFeeUsdt: input.settings.withdrawals?.flatFeeUsdt,
+      percentFee: input.settings.withdrawals?.percentFee,
+    });
+    if (financeRefusal) return { ok: false, message: financeRefusal };
+    const minimumWithdrawal = input.settings.withdrawals.minimumUsdt;
+    if (!Number.isFinite(minimumWithdrawal) || minimumWithdrawal <= 0 || minimumWithdrawal > 1_000_000) {
+      return { ok: false, message: "The minimum withdrawal must be a positive amount." };
+    }
+
     await mutate(operator.actor, async ({ tx, now, audit }) => {
       const [existing] = await tx
         .select({ id: t.platformSettings.id })
@@ -1542,7 +1561,7 @@ export async function updateSupportTelegramAction(input: {
       return {
         ok: false,
         message:
-          "Enter a Telegram username (5–32 letters, digits or underscores) or its https://t.me/ link.",
+          "Enter a Telegram link (https://t.me/…), a username (5–32 letters, digits or underscores) or a group invite link.",
       };
     }
 
@@ -1572,8 +1591,8 @@ export async function updateSupportTelegramAction(input: {
         action: "settings_updated",
         target: { type: "settings", id: existing.id, label: "Customer support" },
         details: username
-          ? `Support Telegram set to @${username}${existing.previous ? ` (was @${existing.previous})` : ""}.`
-          : `Support Telegram cleared${existing.previous ? ` (was @${existing.previous})` : ""}.`,
+          ? `Support Telegram set to ${telegramLabel(username)}${existing.previous ? ` (was ${telegramLabel(existing.previous)})` : ""}.`
+          : `Support Telegram cleared${existing.previous ? ` (was ${telegramLabel(existing.previous)})` : ""}.`,
       });
     });
 
@@ -1581,7 +1600,7 @@ export async function updateSupportTelegramAction(input: {
     revalidate("/admin/settings", "/settings", "/settings/support", "/wallet/deposit");
     return {
       ok: true,
-      message: username ? `Customers now reach @${username} on Telegram.` : "Telegram support cleared.",
+      message: username ? `Customers now reach ${telegramLabel(username)} on Telegram.` : "Telegram support cleared.",
     };
   } catch (error) {
     return failed(error, "The support setting was not saved.");
@@ -1864,5 +1883,60 @@ export async function resetWithdrawalPasswordAction(input: {
     };
   } catch (error) {
     return failed(error, "The withdrawal password was not reset.");
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Support tickets                                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Replying to, and changing the status of, a customer's support ticket.
+ *
+ * Gated on `users: manage` (viewing the queue is `users: view`): a ticket is a
+ * customer conversation, and the people who may act on a customer's account are
+ * the people who may answer them. Both are audited in the same transaction as
+ * the change.
+ */
+export async function replyToTicketAsSupportAction(input: {
+  ticketId: string;
+  message: string;
+  resolve?: boolean;
+}): Promise<AdminActionResult> {
+  try {
+    const operator = await requirePermission("users");
+    await replyToTicketAsSupport(
+      {
+        ticketId: String(input?.ticketId ?? ""),
+        message: String(input?.message ?? ""),
+        resolve: input?.resolve === true,
+      },
+      operator.actor,
+    );
+    revalidate("/admin/tickets", `/admin/tickets/${input.ticketId}`, "/settings/support");
+    return { ok: true, message: input.resolve ? "Reply sent and ticket resolved." : "Reply sent." };
+  } catch (error) {
+    return failed(error, "The reply was not sent.");
+  }
+}
+
+export async function setTicketStatusAction(input: {
+  ticketId: string;
+  status: "open" | "awaiting_reply" | "resolved";
+  reason?: string;
+}): Promise<AdminActionResult> {
+  try {
+    const operator = await requirePermission("users");
+    if (!["open", "awaiting_reply", "resolved"].includes(input?.status)) {
+      return { ok: false, message: "Choose a valid status." };
+    }
+    await setTicketStatus(
+      { ticketId: String(input.ticketId ?? ""), status: input.status, reason: input.reason },
+      operator.actor,
+    );
+    revalidate("/admin/tickets", `/admin/tickets/${input.ticketId}`, "/settings/support");
+    return { ok: true, message: "Ticket status updated." };
+  } catch (error) {
+    return failed(error, "The ticket was not updated.");
   }
 }

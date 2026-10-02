@@ -3,6 +3,7 @@ import "server-only";
 import { asc, eq, inArray, ne, sql } from "drizzle-orm";
 
 import { schema, type Database } from "@/db";
+import type { StoredFinanceSections } from "@/lib/platform-finance";
 import type { DepositNetwork, Plan, VipLevel } from "@/types";
 import type { AdminPlan } from "@/types/admin";
 
@@ -111,6 +112,24 @@ export async function listVipLevels(db: Database): Promise<VipLevel[]> {
  * Projects the one key rather than the settings row: the customer side needs
  * a contact handle, not the platform's fee and review configuration.
  */
+/**
+ * The two jsonb sections that hold the administrator's money settings. Read raw
+ * and resolved by `resolvePlatformFinance`, which owns what counts as usable.
+ */
+export async function findFinanceSettings(
+  db: Database,
+): Promise<StoredFinanceSections | null> {
+  const [row] = await db
+    .select({
+      currency: schema.platformSettings.currency,
+      withdrawals: schema.platformSettings.withdrawals,
+    })
+    .from(schema.platformSettings)
+    .where(eq(schema.platformSettings.id, "default"))
+    .limit(1);
+  return row ?? null;
+}
+
 export async function findSupportEmail(db: Database): Promise<string | null> {
   const [row] = await db
     .select({

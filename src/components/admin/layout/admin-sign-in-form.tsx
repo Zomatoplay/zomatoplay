@@ -1,15 +1,16 @@
 "use client";
 
+import Image from "next/image";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, FlaskConical, Loader2, LogIn, ShieldCheck, Smartphone } from "lucide-react";
+import { ArrowLeft, FlaskConical, Loader2, LogIn, Smartphone } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { usePhoneOtp } from "@/components/auth/use-phone-otp";
-import { ADMIN_APP_SUBTITLE } from "@/constants/admin";
+import { ADMIN_APP_NAME, ADMIN_APP_SUBTITLE } from "@/constants/admin";
 import { maskIndianMobile, normalizeIndianMobile } from "@/lib/phone";
 
 import { completeOperatorPhoneSignIn } from "@/app/admin/login/actions";
@@ -95,12 +96,19 @@ export function AdminSignInForm({
     <div className="flex min-h-dvh items-center justify-center bg-background px-4 py-10">
       <div className="w-full max-w-sm space-y-6">
         <div className="space-y-2 text-center">
-          <span className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-brand-soft text-brand">
-            <ShieldCheck className="size-6" aria-hidden />
-          </span>
-          <h1 className="text-xl font-semibold tracking-tight">{ADMIN_APP_SUBTITLE}</h1>
+          <Image
+            src="/logo.jpeg"
+            alt={`${ADMIN_APP_NAME} logo`}
+            width={72}
+            height={72}
+            priority
+            sizes="72px"
+            className="mx-auto size-[4.5rem] rounded-2xl"
+          />
+          <h1 className="text-xl font-semibold tracking-tight">{ADMIN_APP_NAME}</h1>
+          <p className="text-sm font-medium text-muted-foreground">{ADMIN_APP_SUBTITLE}</p>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            Operator sign-in with your registered mobile number. Access is
+            Administrator sign-in with your registered mobile number. Access is
             provisioned by a master admin.
           </p>
         </div>

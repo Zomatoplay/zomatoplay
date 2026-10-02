@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
 import { config as loadEnv } from "dotenv";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt } from "drizzle-orm";
 
 loadEnv({ path: ".env.local", quiet: true });
 loadEnv({ path: ".env", quiet: true });
@@ -262,6 +262,11 @@ describe("new-deposit confirmation", { skip }, () => {
           isNull(t.deposits.acknowledgedAt),
           // Only rows from before this session's work.
           eq(t.deposits.chainNetwork, "mainnet"),
+          // Credited before the backfill migration (0012, 2026-09-14). A deposit
+          // credited since then is legitimately unacknowledged until its owner
+          // dismisses it, so counting those would read a real credit as a
+          // regression.
+          lt(t.deposits.creditedAt, new Date("2026-09-14T00:00:00Z")),
         ),
       );
 

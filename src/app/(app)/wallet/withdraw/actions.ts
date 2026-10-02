@@ -1,25 +1,12 @@
 "use server";
 
-import {
-  add,
-  applyPercent,
-  compare,
-  decimal,
-  isPositive,
-  multiplyByRate,
-  subtract,
-  type Decimal,
-} from "@/db/money";
-import {
-  MIN_WITHDRAWAL_USDT,
-  WITHDRAWAL_FEE_PERCENT,
-  WITHDRAWAL_FEE_USDT,
-} from "@/constants/app";
-import { getUsdtInrPayoutRate } from "@/lib/currency";
-import { getAuthenticatedAccount } from "@/server/auth/account";
+import { compare, decimal, isPositive, type Decimal } from "@/db/money";
+import { getUsableAccount } from "@/server/auth/account";
 import { trackPipeline } from "@/server/observability";
 import { traceAction } from "@/server/trace-action";
 import { revalidate } from "@/server/revalidate";
+import { exactWithdrawalQuote } from "@/server/withdrawal-quote";
+import { getPlatformFinanceFresh } from "@/server/services/catalogue.service";
 import { requestWithdrawal } from "@/server/services/withdrawals-write.service";
 import { checkWithdrawalPassword } from "@/server/services/withdrawal-password.service";
 import { toSafeFailure } from "@/server/errors";
@@ -46,17 +33,23 @@ export interface WithdrawResult {
   ok: boolean;
   message: string;
   withdrawalId?: string;
+  /** The rate or fee changed since the screen loaded; nothing was requested. */
+  quoteChanged?: boolean;
 }
 
-/** INR is stored `numeric(20, 2)`; there is no such thing as a fraction of a paisa. */
-const INR_SCALE = 2;
+/** What the screen displayed. Used only to detect a change — never to price. */
+interface ShownTerms {
+  shownRate?: string;
+  shownFlatFeeUsdt?: string;
+  shownPercentFee?: string;
+}
 
 export async function requestWithdrawalAction(input: {
   amount: string;
   bankAccountId: string;
   /** Checked server-side against the stored hash; never logged or echoed. */
   withdrawalPassword: string;
-}): Promise<WithdrawResult> {
+} & ShownTerms): Promise<WithdrawResult> {
   return traceAction(
     { name: "withdrawal.request", actorType: "user", pipeline: "withdrawal" },
     () => runRequestWithdrawal(input),
@@ -67,9 +60,9 @@ async function runRequestWithdrawal(input: {
   amount: string;
   bankAccountId: string;
   withdrawalPassword: string;
-}): Promise<WithdrawResult> {
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
+} & ShownTerms): Promise<WithdrawResult> {
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
 
   /*
    * EXACT FROM HERE DOWN — NO JAVASCRIPT NUMBER TOUCHES A MONEY VALUE.
@@ -92,23 +85,46 @@ async function runRequestWithdrawal(input: {
     return { ok: false, message: "Enter a valid amount." };
   }
 
-  const minimum = decimal(MIN_WITHDRAWAL_USDT);
-  if (compare(amount, minimum) < 0) {
+  /*
+   * PRICED FROM THE ADMINISTRATOR'S SETTINGS, READ NOW.
+   * The rate, the flat fee and the percentage are read fresh from the database
+   * (`getPlatformFinanceFresh`), never from the request. If what the customer
+   * was looking at no longer matches, the request is refused before anything is
+   * held, so nobody confirms one figure and is charged another.
+   */
+  let finance;
+  try {
+    finance = await getPlatformFinanceFresh();
+  } catch (error) {
+    return { ok: false, message: toSafeFailure(error, "We couldn't complete this request. Your balance was not changed.").message };
+  }
+  const sameNumber = (shown: string | undefined, current: number) =>
+    shown !== undefined && Number(shown) === current;
+  if (
+    !sameNumber(input.shownRate, finance.withdrawalRate) ||
+    !sameNumber(input.shownFlatFeeUsdt, finance.flatFeeUsdt) ||
+    !sameNumber(input.shownPercentFee, finance.percentFee)
+  ) {
     return {
       ok: false,
-      message: `The minimum withdrawal is ${MIN_WITHDRAWAL_USDT} USDT.`,
+      quoteChanged: true,
+      message:
+        "The withdrawal rate or fee was just updated. Please review the new figures and try again.",
     };
   }
 
-  const payoutRate = decimal(getUsdtInrPayoutRate().rate);
-  const flatFee = decimal(WITHDRAWAL_FEE_USDT);
-  const percentFee = applyPercent(amount, decimal(WITHDRAWAL_FEE_PERCENT));
-  const totalFee = add(flatFee, percentFee);
-  const netUsdt = subtract(amount, totalFee);
+  const minimum = decimal(finance.minimumWithdrawalUsdt);
+  if (compare(amount, minimum) < 0) {
+    return {
+      ok: false,
+      message: `The minimum withdrawal is ${finance.minimumWithdrawalUsdt} USDT.`,
+    };
+  }
 
-  // Not `Math.max(…, 0)`: a fee larger than the amount is a refusal, not a
-  // zero. Clamping it would have quoted a payout of ₹0 as if it were valid.
-  if (!isPositive(netUsdt)) {
+  const priced = exactWithdrawalQuote(amount, finance);
+  // A fee larger than the amount is a refusal, not a zero: clamping it would
+  // have quoted a payout of ₹0 as if it were valid.
+  if (!priced) {
     return { ok: false, message: "Fees exceed the amount requested." };
   }
 
@@ -136,12 +152,12 @@ async function runRequestWithdrawal(input: {
 
   try {
     const quote = {
-      amountUsdt: amount,
-      payoutRate,
-      flatFeeUsdt: flatFee,
-      percentFeeUsdt: percentFee,
-      totalFeeUsdt: totalFee,
-      netInr: multiplyByRate(netUsdt, payoutRate, INR_SCALE),
+      amountUsdt: priced.amountUsdt,
+      payoutRate: priced.payoutRate,
+      flatFeeUsdt: priced.flatFeeUsdt,
+      percentFeeUsdt: priced.percentFeeUsdt,
+      totalFeeUsdt: priced.totalFeeUsdt,
+      netInr: priced.netInr,
     };
 
     const { withdrawalId } = await trackPipeline(
@@ -166,7 +182,7 @@ async function runRequestWithdrawal(input: {
   } catch (error) {
     return {
       ok: false,
-      message: toSafeFailure(error, "The request was not created.").message,
+      message: toSafeFailure(error, "We couldn't complete this transaction. Your balance was not changed.").message,
     };
   }
 }

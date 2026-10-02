@@ -1,6 +1,6 @@
 "use server";
 
-import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
+import { getUsableAccount, isAccountLockedOut } from "@/server/auth/account";
 import { FirebaseCredentialError, FirebaseNotConfiguredError } from "@/server/auth/firebase-admin";
 import { verifyPhoneProof } from "@/server/auth/phone-proof";
 import { toSafeFailure } from "@/server/errors";
@@ -41,7 +41,7 @@ export async function createWithdrawalPasswordAction(input: {
   return traceAction(
     { name: "withdrawal_password.create", actorType: "user", pipeline: "withdrawal" },
     async () => {
-      const account = await getAuthenticatedAccount();
+      const account = await getUsableAccount();
       if (!account) return { ok: false, message: "Your session has expired. Sign in again." };
       if (isAccountLockedOut(account.status)) {
         return { ok: false, message: `This account is ${account.status}. Contact support.` };

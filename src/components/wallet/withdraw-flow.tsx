@@ -11,19 +11,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  MIN_WITHDRAWAL_USDT,
-  WITHDRAWAL_FEE_PERCENT,
-  WITHDRAWAL_FEE_USDT,
-  WITHDRAWAL_PROCESSING_WINDOW,
-} from "@/constants/app";
-import {
-  formatInr,
-  formatUsdt,
-  formatUsdtAsInr,
-  getUsdtInrPayoutRate,
-  usdtToInr,
-} from "@/lib/currency";
+import { WITHDRAWAL_PROCESSING_WINDOW } from "@/constants/app";
+import { formatInr, formatUsdt, formatUsdtAsInr } from "@/lib/currency";
+import type { PlatformFinance } from "@/lib/platform-finance";
+import { displayWithdrawalQuote } from "@/lib/withdrawal-quote";
 import { usePrototypeStore } from "@/lib/prototype-store";
 import { requestWithdrawalAction } from "@/app/(app)/wallet/withdraw/actions";
 import { ForgotWithdrawalPassword } from "@/components/settings/withdrawal-password";
@@ -31,22 +22,6 @@ import { cn } from "@/lib/utils";
 import type { BankAccount, WithdrawalQuote } from "@/types";
 
 type Stage = "amount" | "confirm" | "done";
-
-/** Fee model lives in one place so the quote and the receipt cannot disagree. */
-function buildQuote(amountUsdt: number, rate: number): WithdrawalQuote {
-  const percentFeeUsdt = (amountUsdt * WITHDRAWAL_FEE_PERCENT) / 100;
-  const totalFeeUsdt = WITHDRAWAL_FEE_USDT + percentFeeUsdt;
-  const netUsdt = Math.max(amountUsdt - totalFeeUsdt, 0);
-  return {
-    amountUsdt,
-    flatFeeUsdt: WITHDRAWAL_FEE_USDT,
-    percentFeeUsdt,
-    totalFeeUsdt,
-    netUsdt,
-    rate,
-    netInr: netUsdt * rate,
-  };
-}
 
 /**
  * Withdrawal flow: USDT balance out, INR into a registered bank account.
@@ -57,7 +32,7 @@ function buildQuote(amountUsdt: number, rate: number): WithdrawalQuote {
  *
  * THE QUOTE SHOWN HERE IS NOT THE QUOTE STORED
  * --------------------------------------------
- * `buildQuote` exists to show the arithmetic before the person commits. The
+ * `displayWithdrawalQuote` exists to show the arithmetic before the person commits. The
  * figures that are *recorded* are computed again server-side from the same
  * constants, because the fee and the rate decide what the platform owes and a
  * request body is not a place to take that from. The two agree because they
@@ -71,7 +46,10 @@ export function WithdrawFlow({
   withdrawalPassword,
   telegramUrl,
   supportEmail,
+  finance,
 }: {
+  /** The administrator's current rate and fee, read server-side. */
+  finance: PlatformFinance;
   /** Registered INR payout destinations, read server-side. */
   bankAccounts: BankAccount[];
   /** Whether a withdrawal password exists, read server-side. Never the password. */
@@ -82,7 +60,7 @@ export function WithdrawFlow({
 }) {
   const { balance, isVerified } = usePrototypeStore();
   const router = useRouter();
-  const payoutRate = getUsdtInrPayoutRate();
+  const minimumUsdt = finance.minimumWithdrawalUsdt;
 
   const [stage, setStage] = useState<Stage>("amount");
   const [rawAmount, setRawAmount] = useState("");
@@ -103,17 +81,17 @@ export function WithdrawFlow({
   const error = useMemo(() => {
     if (rawAmount.trim() === "") return null;
     if (!Number.isFinite(amount) || amount <= 0) return "Enter a valid amount.";
-    if (amount < MIN_WITHDRAWAL_USDT)
-      return `Minimum withdrawal is ${formatUsdt(MIN_WITHDRAWAL_USDT)}.`;
+    if (amount < minimumUsdt)
+      return `Minimum withdrawal is ${formatUsdt(minimumUsdt)}.`;
     if (amount > balance.available)
       return `You only have ${formatUsdt(balance.available)} available.`;
     return null;
-  }, [rawAmount, amount, balance.available]);
+  }, [rawAmount, amount, balance.available, minimumUsdt]);
 
   const valid = rawAmount.trim() !== "" && error === null;
   const quote = useMemo(
-    () => buildQuote(valid ? amount : 0, payoutRate.rate),
-    [valid, amount, payoutRate.rate],
+    () => displayWithdrawalQuote(valid ? amount : 0, finance),
+    [valid, amount, finance],
   );
 
   function handleConfirm() {
@@ -129,6 +107,11 @@ export function WithdrawFlow({
         amount: rawAmount.trim(),
         bankAccountId: account.id,
         withdrawalPassword: password,
+        // Only so the server can notice the figures changed since this screen
+        // loaded; it prices the request itself from its own settings.
+        shownRate: String(finance.withdrawalRate),
+        shownFlatFeeUsdt: String(finance.flatFeeUsdt),
+        shownPercentFee: String(finance.percentFee),
       });
       // Never kept around after an attempt, right or wrong.
       setPassword("");
@@ -136,6 +119,8 @@ export function WithdrawFlow({
       if (!result.ok) {
         setPasswordError(/withdrawal password|locked/i.test(result.message) ? result.message : null);
         toast.error(result.message);
+        // The settings moved under us: reload the page's figures.
+        if (result.quoteChanged) router.refresh();
         return;
       }
 
@@ -288,16 +273,18 @@ export function WithdrawFlow({
         <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
           <InfoRow label="Withdrawal amount" value={formatUsdt(quote.amountUsdt)} />
           <InfoRow
-            label="Network & processing fee"
+            label="Withdrawal fee"
             value={`− ${formatUsdt(quote.flatFeeUsdt)}`}
           />
-          <InfoRow
-            label={`Service fee (${WITHDRAWAL_FEE_PERCENT}%)`}
-            value={`− ${formatUsdt(quote.percentFeeUsdt)}`}
-          />
+          {finance.percentFee > 0 ? (
+            <InfoRow
+              label={`Service fee (${finance.percentFee}%)`}
+              value={`− ${formatUsdt(quote.percentFeeUsdt)}`}
+            />
+          ) : null}
           <InfoRow label="Net amount" value={formatUsdt(quote.netUsdt)} />
           <InfoRow
-            label="Payout rate"
+            label="Withdrawal rate"
             value={`1 USDT = ₹${quote.rate.toFixed(2)}`}
             hint="Quoted rate, locked for this request"
           />
@@ -409,7 +396,7 @@ export function WithdrawFlow({
           inputMode="decimal"
           type="text"
           autoComplete="off"
-          placeholder={`Min ${MIN_WITHDRAWAL_USDT}`}
+          placeholder={`Min ${minimumUsdt}`}
           value={rawAmount}
           onChange={(event) =>
             setRawAmount(event.target.value.replace(/[^0-9.]/g, ""))
@@ -426,8 +413,8 @@ export function WithdrawFlow({
         >
           {error ??
             (valid
-              ? `You will receive about ${formatInr(usdtToInr(quote.netUsdt, quote.rate), { approximate: false })}`
-              : `Minimum ${formatUsdt(MIN_WITHDRAWAL_USDT)}. Fees apply.`)}
+              ? `You will receive ${formatInr(quote.netInr, { approximate: false, precise: true })}`
+              : `Minimum ${formatUsdt(minimumUsdt)}. Fees apply.`)}
         </p>
         <div className="flex flex-wrap gap-2 pt-1">
           {[0.25, 0.5, 1].map((fraction) => {
@@ -438,7 +425,7 @@ export function WithdrawFlow({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={value < MIN_WITHDRAWAL_USDT}
+                disabled={value < minimumUsdt}
                 onClick={() => setRawAmount(String(value))}
               >
                 {fraction === 1 ? "Max" : `${fraction * 100}%`}
@@ -506,14 +493,18 @@ export function WithdrawFlow({
       {/* Live quote */}
       <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
         <InfoRow
-          label="Payout rate"
-          value={`1 USDT = ₹${payoutRate.rate.toFixed(2)}`}
-          hint={payoutRate.label}
+          label="Withdrawal rate"
+          value={`1 USDT = ₹${finance.withdrawalRate.toFixed(2)}`}
+          hint="Locked in when you confirm"
         />
         <InfoRow
-          label="Fees"
+          label="Withdrawal fee"
           value={
-            valid ? formatUsdt(quote.totalFeeUsdt) : `${WITHDRAWAL_FEE_USDT} + ${WITHDRAWAL_FEE_PERCENT}%`
+            valid
+              ? formatUsdt(quote.totalFeeUsdt)
+              : finance.percentFee > 0
+                ? `${formatUsdt(finance.flatFeeUsdt)} + ${finance.percentFee}%`
+                : formatUsdt(finance.flatFeeUsdt)
           }
         />
         <InfoRow

@@ -254,7 +254,10 @@ export function PhoneOtpForm({
   const heading =
     mode === "link"
       ? { title: "Verify your mobile number", subtitle: `${APP_NAME} now signs you in with your mobile number. Verify it once to keep using your account.` }
-      : { title: "Welcome back", subtitle: "Enter your mobile number" };
+      : {
+          title: `Welcome to ${APP_NAME}`,
+          subtitle: "Sign in with your mobile number to manage your wallet, plans and rewards.",
+        };
 
   return (
     <div className="space-y-6">

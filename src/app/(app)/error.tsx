@@ -6,6 +6,7 @@ import { TriangleAlert } from "lucide-react";
 import { PageContainer } from "@/components/navigation/app-shell";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
+import { useOffline } from "@/hooks/use-offline";
 
 export default function Error({
   error,
@@ -14,6 +15,8 @@ export default function Error({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const offline = useOffline();
+
   useEffect(() => {
     /*
      * The category is not available here.
@@ -32,8 +35,12 @@ export default function Error({
     <PageContainer className="pt-16">
       <EmptyState
         icon={TriangleAlert}
-        title="Something went wrong"
-        description="This screen could not be loaded. Nothing on your account was changed. Try again — and if it keeps happening, quote the reference below to support."
+        title={offline ? "Connection interrupted" : "We couldn't load this right now"}
+        description={
+          offline
+            ? "Please check your internet connection and try again."
+            : "Please try again in a moment. Nothing on your account was changed. If it keeps happening, quote the reference below to support."
+        }
         action={
           <div className="space-y-3">
             <Button variant="brand" size="sm" onClick={reset}>

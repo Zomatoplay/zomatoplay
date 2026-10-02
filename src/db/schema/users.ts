@@ -17,6 +17,8 @@ import {
   kycStepStatusEnum,
   outcomeEnum,
   securityEventTypeEnum,
+  ticketAuthorEnum,
+  ticketCategoryEnum,
   ticketStatusEnum,
   userStatusEnum,
   vipLevelEnum,
@@ -278,7 +280,12 @@ export const userSecurityEvents = pgTable(
   ],
 );
 
-/** Support conversations. The prototype has no helpdesk; these are the stubs. */
+/**
+ * Support conversations. One row per ticket; the conversation itself is
+ * `ticket_messages`. `user_id` is always the signed-in customer's own account
+ * (taken from the session, never from the request), which is what every
+ * customer-side read filters on.
+ */
 export const supportTickets = pgTable(
   "support_tickets",
   {
@@ -287,11 +294,36 @@ export const supportTickets = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     subject: text("subject").notNull(),
+    category: ticketCategoryEnum("category").notNull().default("other"),
     status: ticketStatusEnum("status").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull(),
     messageCount: integer("message_count").notNull().default(0),
   },
-  (table) => [index("support_tickets_user_idx").on(table.userId)],
+  (table) => [
+    index("support_tickets_user_idx").on(table.userId),
+    index("support_tickets_status_updated_idx").on(table.status, table.updatedAt),
+  ],
+);
+
+/**
+ * The messages of a ticket, oldest first. Append-only: nothing edits or deletes
+ * a message, so what a customer was told is what the record says. `author` is
+ * the side that wrote it; for `support`, `author_name` is the operator's name.
+ */
+export const ticketMessages = pgTable(
+  "ticket_messages",
+  {
+    id: text("id").primaryKey(),
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => supportTickets.id, { onDelete: "cascade" }),
+    author: ticketAuthorEnum("author").notNull(),
+    authorName: text("author_name"),
+    body: text("body").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("ticket_messages_ticket_idx").on(table.ticketId, table.createdAt)],
 );
 
 /**

@@ -1,5 +1,6 @@
 "use client";
 
+import { CONNECTION_INTERRUPTED, isOffline } from "@/lib/client-errors";
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -278,6 +279,8 @@ function RequestStep({
   const [verifying, startVerify] = useTransition();
   const [newDeposits, setNewDeposits] = useState<NewDepositView[]>([]);
   const [availableUsdt, setAvailableUsdt] = useState<number | null>(null);
+  /** Consecutive failed status checks; two in a row is worth telling the person. */
+  const [failedChecks, setFailedChecks] = useState(0);
 
   const busy = useRef(false);
   const mounted = useRef(true);
@@ -307,7 +310,12 @@ function RequestStep({
     if (requestScan) lastScanAt.current = now;
     try {
       const result = await checkDepositRequestAction({ requestId: request.id, requestScan });
-      if (!result.ok || !mounted.current) return;
+      if (!mounted.current) return;
+      if (!result.ok) {
+        setFailedChecks((count) => count + 1);
+        return;
+      }
+      setFailedChecks(0);
       if (result.request) {
         onChange(result.request);
         if (result.request.status !== lastStatus.current) {
@@ -319,7 +327,9 @@ function RequestStep({
       setNewDeposits(result.newDeposits);
       setAvailableUsdt(result.availableUsdt);
     } catch {
-      // A failed poll is a delay. The next tick tries again.
+      // A failed poll is a delay and the next tick tries again — but two in a
+      // row is something the person should know, with a way to retry now.
+      if (mounted.current) setFailedChecks((count) => count + 1);
     } finally {
       busy.current = false;
     }
@@ -426,6 +436,22 @@ function RequestStep({
       <NetworkWarnings isTestnet={isTestnet} />
 
       <StatusExplanation request={request} />
+
+      {open && failedChecks >= 2 ? (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-secondary/60 p-3 text-sm leading-relaxed"
+        >
+          <span>
+            {isOffline()
+              ? CONNECTION_INTERRUPTED
+              : "We couldn't load the latest information right now. We'll keep trying."}
+          </span>
+          <Button type="button" variant="outline" size="sm" onClick={() => void check()}>
+            Try again
+          </Button>
+        </div>
+      ) : null}
 
       {canSubmitHash ? (
         <form onSubmit={verify} className="space-y-3" noValidate>

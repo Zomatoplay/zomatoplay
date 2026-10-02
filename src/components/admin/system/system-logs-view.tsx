@@ -107,6 +107,7 @@ const PIPELINE_LABELS: Record<PipelineId, string> = {
   email: "Email",
   database: "Database",
   admin: "Admin actions",
+  support: "Support",
 };
 
 export function SystemLogsView() {

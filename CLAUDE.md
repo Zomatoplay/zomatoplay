@@ -165,8 +165,10 @@ service.**
 `src/constants/app.ts` holds the mock rates; `src/lib/currency.ts` owns
 `getUsdtInrRate()`, conversion and all formatting;
 `components/shared/currency-display.tsx` (`CurrencyDisplay`) is what every screen
-renders an amount with. To integrate a live rates API, change **only**
-`getUsdtInrRate()`.
+renders an amount with. The rates are **administrator-configured** (§29): the
+constants are only the initial values, and `getUsdtInrRate()` returns whatever a
+layout last passed to `setFxRates()`. To integrate a live rates API, change
+**only** where those values come from (`getPlatformFinance`).
 
 ---
 
@@ -800,9 +802,9 @@ show the payout rate stored on the record, quoted at request time.
 2. **KYC provider** — case list, documents and decisions become provider calls;
    `reviewedBy` comes from the session.
 3. **Payout rails** — drive withdrawal status transitions.
-4. **Configuration service** — `/admin/settings` becomes its write side and
-   `getUsdtInrRate()` reads from it. Until then, editing settings in the CRM does
-   **not** move the user application, which still reads `@/constants/app`.
+4. **Configuration service** — done for the USDT rates, the withdrawal fee, the
+   minimum withdrawal and the support contacts (§29); the other settings on
+   `/admin/settings` are still recorded without yet changing the user app.
 
 ---
 
@@ -2253,3 +2255,67 @@ before `requestWithdrawal` runs.
   audit entry); the customer then creates a new one through the SMS step. Do not
   add "OTP → new password": whoever holds an unlocked phone could then withdraw.
 
+
+---
+
+## 28. Support tickets
+
+`support_tickets` (one row per ticket: `user_id`, `subject`, `category`,
+`status`, counters) + `ticket_messages` (append-only thread; `author` is
+`customer` or `support`). Customer UI: Help centre → *Your support tickets*
+(`/settings/support`, `/new`, `/tickets/[id]`; `/support` and `/tickets` redirect
+there). Console: `/admin/tickets` (+ `[id]`), gated on `users` — `view` to read,
+`manage` to reply or change status, checked on the server in the page and in
+`requirePermission` on the action.
+
+- **Ownership is in the SQL.** Every customer read/write names `user_id` from the
+  session in its own `WHERE`; a ticket id that is not yours is "not found". The
+  client never sends a customer id. **There is an integration test for exactly
+  that; do not delete it.**
+- **Status says who moves next:** `open` = support's turn (new, or the customer
+  replied — which also reopens `resolved`), `awaiting_reply` = the customer's,
+  `resolved` = closed. Counters and status change in the message's transaction.
+- Limits: 5 unresolved tickets per customer (advisory-locked, so a burst cannot
+  pass it), 200 messages per ticket, bounded subject/body (`@/lib/ticket-rules`).
+- Operator replies and status changes are audited (`ticket_replied`,
+  `ticket_status_changed`, target `ticket`). Customer messages are not.
+- Not built: attachments, and an in-app notification when support replies — the
+  ticket's status badge in the Help centre is the signal.
+
+## 29. Platform finance settings
+
+USDT deposit rate, USDT withdrawal rate, withdrawal fee (flat + optional
+percentage) and the minimum withdrawal live in `platform_settings.currency` /
+`.withdrawals` and are edited in Admin → Settings (validated server-side by
+`financeSettingsRefusal`). Launch values: ₹100.40 / ₹100.40 / 1.55 USDT / 0 %
+(migration `0024`).
+
+- **`resolvePlatformFinance` (`@/lib/platform-finance`) is the one reader.** Any
+  missing or unusable stored value becomes the initial value — never a zero rate
+  or a negative fee. The constants in `@/constants/app` are those initial values
+  and nothing customer-facing reads them directly.
+- Display: `getPlatformFinance()` (catalogue cache, cleared by
+  `revalidateCatalogue()` on save) → `RatesBoundary` / the console layout →
+  `setFxRates()` on the server **and** `FxRatesProvider` in the browser, before
+  any child formats an INR figure.
+- **A withdrawal is priced from `getPlatformFinanceFresh()` (uncached) inside the
+  action.** The browser sends the figures it *displayed* only so the server can
+  notice they changed and refuse (`quoteChanged`) — they are never used to price.
+  The rate and fees are stored on the withdrawal row, so changing a setting
+  never touches a past record.
+- Support email: `platform.supportEmail` (validated on write by
+  `updateSettingsAction` and on read by `parseSupportEmail`), falling back to
+  `NEXT_PUBLIC_SUPPORT_EMAIL`. Telegram: §2.
+
+## 30. A restricted account is refused everywhere, not only on pages
+
+Blocking, suspending or deactivating a customer in the console takes effect on
+their next request by **any** route. Pages: the `(app)` layout and
+`requireCurrentUserIdForPage` redirect to `/login`, which says the account is
+blocked. **Server actions: every customer action resolves its account through
+`getUsableAccount()` (`@/server/auth/account`), which returns null for a locked
+account** — a server action is a direct POST and never renders a page, so the
+layout's check alone left a still-valid cookie able to withdraw or invest.
+`signOutAction` deliberately uses `getAuthenticatedAccount()` so a restricted
+customer can still end their session. Data and ledger history are untouched, and
+setting the status back to `active` restores access.

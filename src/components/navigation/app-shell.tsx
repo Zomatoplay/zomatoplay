@@ -16,10 +16,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-svh bg-background">
       <DesktopSidebar />
-      <div className="lg:pl-64">{children}</div>
+      <div className="lg:pl-64">
+        {/* Customer app only — the CRM is not an installable product. */}
+        <InstallPrompt />
+        {children}
+      </div>
       <BottomNavigation />
-      {/* Customer app only — the CRM is not an installable product. */}
-      <InstallPrompt />
     </div>
   );
 }

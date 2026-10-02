@@ -2,7 +2,7 @@
 
 import { revalidate } from "@/server/revalidate";
 
-import { getAuthenticatedAccount } from "@/server/auth/account";
+import { getUsableAccount } from "@/server/auth/account";
 import { KycStorageError } from "@/server/storage/kyc-storage";
 import {
   issueKycUploadTarget,
@@ -145,8 +145,8 @@ async function resolveKycSubmission(
 ): Promise<KycActionResult> {
   const correlationId = currentCorrelationId();
 
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in.", correlationId };
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again.", correlationId };
 
   /* ---------------------------------------------------------------- */
   /* Identity fields — required at every policy setting                */
@@ -334,8 +334,8 @@ function reject(message: string, correlationId: string): KycActionResult {
 
 /** Moves an untouched account to `in_progress` when the flow is opened. */
 export async function startKycAction(): Promise<KycActionResult> {
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
 
   return traceAction(
     { name: "kyc.start", actorType: "user", pipeline: "kyc" },
@@ -373,8 +373,8 @@ export async function createKycUploadTargetAction(input: {
   contentType: string;
   byteSize: number;
 }): Promise<KycUploadTargetResult> {
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
   if (input.kind !== "document" && input.kind !== "selfie") {
     return { ok: false, message: "Unknown upload." };
   }

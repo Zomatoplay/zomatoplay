@@ -5,7 +5,7 @@ import { after } from "next/server";
 import { revalidate } from "@/server/revalidate";
 
 import { generateQrSvg } from "@/lib/qr";
-import { getAuthenticatedAccount } from "@/server/auth/account";
+import { getUsableAccount } from "@/server/auth/account";
 import { toSafeFailure } from "@/server/errors";
 import { takeToken } from "@/server/rate-limit";
 import { getWalletBalance } from "@/server/services/account.service";
@@ -33,7 +33,7 @@ import { APP_NAME } from "@/constants/app";
  *
  * WHAT THE BROWSER DECIDES: NOTHING THAT MOVES MONEY
  * --------------------------------------------------
- * The account always comes from the session (`getAuthenticatedAccount`). The
+ * The account always comes from the session (`getUsableAccount`). The
  * browser may send an amount it *wants* to deposit, a request id, and a hash.
  * It never sends — and no action here accepts — a user id, a receiving
  * address, a network, a verified amount or a status. The address is the
@@ -66,8 +66,8 @@ function actorFor(account: { userId: string; fullName: string; email: string }):
 export async function createDepositRequestAction(input: {
   amount: string;
 }): Promise<DepositActionResult> {
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
   if (!takeToken(`deposit-create:${account.userId}`, 10, 10 * 60 * 1000).allowed) {
     return { ok: false, message: "Too many attempts. Please wait a few minutes and try again." };
   }
@@ -100,8 +100,8 @@ export async function createDepositRequestAction(input: {
 export async function getDepositRequestAction(input: {
   requestId: string;
 }): Promise<DepositActionResult> {
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
   const request = await getOwnDepositRequest(account.userId, String(input.requestId ?? ""));
   if (!request) return { ok: false, message: "That deposit request was not found." };
   return { ok: true, request, qrSvg: await generateQrSvg(request.receivingAddress) };
@@ -115,8 +115,8 @@ export async function getDepositRequestAction(input: {
 export async function cancelDepositRequestAction(input: {
   requestId: string;
 }): Promise<DepositActionResult> {
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
   if (!takeToken(`deposit-cancel:${account.userId}`, 20, 10 * 60 * 1000).allowed) {
     return { ok: false, message: "Too many attempts. Please wait a few minutes and try again." };
   }
@@ -184,8 +184,8 @@ export async function submitDepositHashAction(input: {
   requestId: string;
   txHash: string;
 }): Promise<HashSubmissionActionResult> {
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
 
   const { allowed } = takeToken(
     `deposit-verify:${account.userId}`,
@@ -253,9 +253,9 @@ export async function checkDepositRequestAction(input: {
   requestId: string;
   requestScan?: boolean;
 }): Promise<DepositCheckResult> {
-  const account = await getAuthenticatedAccount();
+  const account = await getUsableAccount();
   if (!account) {
-    return { ok: false, message: "Not signed in.", newDeposits: [], availableUsdt: null };
+    return { ok: false, message: "Your session has expired. Please sign in again.", newDeposits: [], availableUsdt: null };
   }
 
   return traceAction(
@@ -365,9 +365,9 @@ export interface NewDepositsResult {
 }
 
 export async function getNewDepositsAction(): Promise<NewDepositsResult> {
-  const account = await getAuthenticatedAccount();
+  const account = await getUsableAccount();
   if (!account) {
-    return { ok: false, message: "Not signed in.", deposits: [], availableUsdt: null };
+    return { ok: false, message: "Your session has expired. Please sign in again.", deposits: [], availableUsdt: null };
   }
 
   try {
@@ -414,8 +414,8 @@ export interface AcknowledgeDepositResult {
 export async function acknowledgeDepositAction(input: {
   depositId: string;
 }): Promise<AcknowledgeDepositResult> {
-  const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
 
   const actor: Actor = {
     kind: "user",

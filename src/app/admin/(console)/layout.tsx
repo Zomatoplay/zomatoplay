@@ -2,7 +2,10 @@ import { redirect } from "next/navigation";
 
 import { AdminShell } from "@/components/admin/layout/admin-shell";
 import { ConsoleUnavailable } from "@/components/admin/layout/console-unavailable";
+import { FxRatesProvider } from "@/components/shared/fx-rates-provider";
 import { AdminStoreProvider } from "@/lib/admin-store";
+import { setFxRates } from "@/lib/currency";
+import { resolvePlatformFinance } from "@/lib/platform-finance";
 import {
   getCurrentOperator,
   toSessionView,
@@ -165,9 +168,23 @@ async function renderConsoleLayout(children: React.ReactNode) {
 
   const shell = await shellPromise;
 
+  // The console's INR figures use the same configured rate as the customer app.
+  const finance = resolvePlatformFinance(shell.settings);
+  setFxRates({
+    depositRate: finance.depositRate,
+    withdrawalRate: finance.withdrawalRate,
+    label: finance.rateLabel,
+  });
+
   return (
     <AdminStoreProvider session={toSessionView(operator)} shell={shell}>
-      <AdminShell>{children}</AdminShell>
+      <FxRatesProvider
+        depositRate={finance.depositRate}
+        withdrawalRate={finance.withdrawalRate}
+        label={finance.rateLabel}
+      >
+        <AdminShell>{children}</AdminShell>
+      </FxRatesProvider>
     </AdminStoreProvider>
   );
 }

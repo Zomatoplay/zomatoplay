@@ -15,10 +15,10 @@ import type {
  * `@/constants/admin-navigation`.
  */
 
-import { APP_NAME } from "./app";
+import { APP_NAME, APP_TAGLINE } from "./app";
 
 export const ADMIN_APP_NAME = APP_NAME;
-export const ADMIN_APP_SUBTITLE = "Master CRM";
+export const ADMIN_APP_SUBTITLE = APP_TAGLINE;
 
 /* -------------------------------------------------------------------------- */
 /* Permissions                                                                 */

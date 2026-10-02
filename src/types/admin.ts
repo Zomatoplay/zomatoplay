@@ -17,6 +17,7 @@ import type {
   KycStatus,
   RewardFrequency,
   RiskLevel,
+  SupportTicket,
   VipLevelId,
 } from "@/types";
 
@@ -620,7 +621,9 @@ export type AuditAction =
   | "notification_sent"
   | "settings_updated"
   | "wallet_manual_credit"
-  | "withdrawal_password_reset";
+  | "withdrawal_password_reset"
+  | "ticket_replied"
+  | "ticket_status_changed";
 
 /**
  * A step the system took, with how long it took and how it went.
@@ -640,7 +643,8 @@ export type PipelineId =
   | "withdrawal"
   | "email"
   | "database"
-  | "admin";
+  | "admin"
+  | "support";
 
 export type PipelineStatus = "started" | "ok" | "failed";
 
@@ -696,7 +700,8 @@ export interface AuditLogEntry {
       | "withdrawal"
       | "kyc"
       | "notification"
-      | "settings";
+      | "settings"
+      | "ticket";
     id: string;
     label: string;
   } | null;
@@ -754,6 +759,15 @@ export interface AdminNotificationCampaign {
   sentBy: string;
   recipientCount: number;
   status: "sent" | "scheduled" | "failed";
+}
+
+/* -------------------------------------------------------------------------- */
+/* Support tickets                                                             */
+/* -------------------------------------------------------------------------- */
+
+/** A ticket as the console lists it: the customer's ticket plus who it belongs to. */
+export interface AdminTicket extends SupportTicket {
+  customer: { id: string; name: string; displayId: string };
 }
 
 /* -------------------------------------------------------------------------- */

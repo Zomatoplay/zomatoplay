@@ -21,31 +21,47 @@ export interface FxRate {
   asOf: string;
 }
 
-/** Fixed prototype timestamp; avoids hydration mismatches from `new Date()`. */
+/** Fixed timestamp; avoids hydration mismatches from `new Date()`. */
 const RATE_AS_OF = "2026-10-02T06:00:00.000Z";
 
-/**
- * Returns the current USDT→INR display rate.
- *
- * INTEGRATION POINT: replace the body with a real rates lookup (server-side
- * fetch, cached). The synchronous signature is intentional — callers render
- * from already-resolved data.
+/*
+ * The active rates. Set from the administrator's settings by the layouts
+ * (`setFxRates`), never by a component: the value is platform-wide, so one
+ * module-level pair is correct on the server and in the browser. Until a
+ * layout sets it, the initial values apply.
  */
-export function getUsdtInrRate(): FxRate {
-  return {
-    rate: MOCK_USDT_INR_RATE,
-    label: MOCK_RATE_LABEL,
-    asOf: RATE_AS_OF,
-  };
+let active = {
+  depositRate: MOCK_USDT_INR_RATE,
+  withdrawalRate: MOCK_USDT_INR_PAYOUT_RATE,
+  label: MOCK_RATE_LABEL,
+};
+
+/** Adopts the configured rates. Unusable numbers are ignored, never applied. */
+export function setFxRates(next: {
+  depositRate: number;
+  withdrawalRate: number;
+  label?: string;
+}) {
+  if (Number.isFinite(next.depositRate) && next.depositRate > 0) {
+    active = { ...active, depositRate: next.depositRate };
+  }
+  if (Number.isFinite(next.withdrawalRate) && next.withdrawalRate > 0) {
+    active = { ...active, withdrawalRate: next.withdrawalRate };
+  }
+  if (next.label) active = { ...active, label: next.label };
 }
 
-/** Rate used when quoting an INR withdrawal payout. */
+/**
+ * The USDT→INR rate for deposits and for every INR figure the application
+ * shows. Administrator-configured (Admin → Settings).
+ */
+export function getUsdtInrRate(): FxRate {
+  return { rate: active.depositRate, label: active.label, asOf: RATE_AS_OF };
+}
+
+/** The rate an INR withdrawal is quoted at. Administrator-configured. */
 export function getUsdtInrPayoutRate(): FxRate {
-  return {
-    rate: MOCK_USDT_INR_PAYOUT_RATE,
-    label: "Quoted payout rate",
-    asOf: RATE_AS_OF,
-  };
+  return { rate: active.withdrawalRate, label: "Withdrawal rate", asOf: RATE_AS_OF };
 }
 
 export function usdtToInr(usdt: number, rate: number = getUsdtInrRate().rate) {

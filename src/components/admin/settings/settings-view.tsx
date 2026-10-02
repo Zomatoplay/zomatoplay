@@ -29,10 +29,9 @@ import type { PlatformSettings } from "@/types/admin";
  * into the rest of the CRM. Saving writes the whole settings object plus one
  * audit entry summarising what changed.
  *
- * INTEGRATION POINT: these controls become the write side of a configuration
- * service. Note that changing the display rate here does not move the *user*
- * application in this prototype — that app reads `@/constants/app` directly,
- * and only a real config service can join the two.
+ * The USDT rates and the withdrawal fee saved here are the live values: the
+ * customer app reads them back (`getPlatformFinance`), and a withdrawal is
+ * priced from them at the moment it is requested. Existing records never change.
  */
 
 export function SettingsView({
@@ -89,10 +88,10 @@ export function SettingsForm({
   return (
     <AdminSection className="space-y-4">
       <PrototypeNote>
-        Saving records these values and an audit entry. Fees, rates and limits
-        shown to customers are still read from the application&rsquo;s own
-        configuration, so changing them here does not change them for
-        customers yet. Customer support (below) does take effect immediately.
+        Saving records these values and an audit entry. The USDT rates, the
+        withdrawal fee and the minimum withdrawal apply to customers straight
+        away, to new activity only — existing withdrawals keep the figures they
+        were quoted at. Customer support (below) also takes effect immediately.
       </PrototypeNote>
 
       <div className="grid gap-3 xl:grid-cols-2">
@@ -162,14 +161,14 @@ export function SettingsForm({
 
         {/* --------------------------------------------------- Currency */}
         <DetailCard
-          title="Currency"
-          description="USDT is the settlement currency; INR figures are derived from these rates."
+          title="USDT rates"
+          description="USDT is the settlement currency; every INR figure in the customer app uses these rates. Changes apply to new activity only — existing withdrawals keep the rate they were quoted at."
         >
           <div className="space-y-4">
             <NumberField
               id="currency-display"
-              label="Display rate (1 USDT in ₹)"
-              hint="Used for the approximate INR figures shown alongside USDT."
+              label="USDT deposit rate (₹ per 1 USDT)"
+              hint="Used to show the INR value of deposits, balances and every other amount."
               value={draft.currency.displayRate}
               step={0.01}
               disabled={!allowed}
@@ -177,8 +176,8 @@ export function SettingsForm({
             />
             <NumberField
               id="currency-payout"
-              label="Payout rate (1 USDT in ₹)"
-              hint="Quoted when an INR withdrawal is priced. Deliberately distinct from the display rate."
+              label="USDT withdrawal rate (₹ per 1 USDT)"
+              hint="The rate an INR withdrawal is priced at. Locked in on each request when the customer confirms."
               value={draft.currency.payoutRate}
               step={0.01}
               disabled={!allowed}
@@ -186,8 +185,8 @@ export function SettingsForm({
             />
             <TextField
               id="currency-label"
-              label="Rate label"
-              hint="Shown next to every conversion so it never reads as a live market quote."
+              label="Rate note"
+              hint="Shown next to INR figures so they are not mistaken for a live market quote."
               value={draft.currency.rateLabel}
               disabled={!allowed}
               onChange={(value) => update("currency", { rateLabel: value })}
@@ -211,7 +210,8 @@ export function SettingsForm({
             />
             <NumberField
               id="withdraw-flat"
-              label="Flat fee (USDT)"
+              label="Withdrawal fee (USDT)"
+              hint="A flat fee charged on every withdrawal and shown to the customer before they confirm."
               value={draft.withdrawals.flatFeeUsdt}
               step={0.1}
               disabled={!allowed}
@@ -219,7 +219,8 @@ export function SettingsForm({
             />
             <NumberField
               id="withdraw-percent"
-              label="Percentage fee (%)"
+              label="Additional percentage fee (%)"
+              hint="Optional, on top of the flat fee. Leave at 0 for the flat fee only."
               value={draft.withdrawals.percentFee}
               step={0.1}
               disabled={!allowed}
@@ -403,7 +404,7 @@ export function SettingsForm({
             />
             <ToggleField
               id="security-allowlist"
-              label="Restrict CRM access to an IP allowlist"
+              label="Restrict admin access to an IP allowlist"
               checked={draft.security.ipAllowlistEnabled}
               disabled={!allowed}
               onChange={(value) =>

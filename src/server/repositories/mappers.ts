@@ -323,7 +323,9 @@ export function toSupportTicket(ticket: SupportTicketRow): SupportTicket {
   return {
     id: ticket.id,
     subject: ticket.subject,
+    category: ticket.category,
     status: ticket.status,
+    createdAt: iso(ticket.createdAt),
     updatedAt: iso(ticket.updatedAt),
     messages: ticket.messageCount,
   };

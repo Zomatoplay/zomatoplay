@@ -1,6 +1,7 @@
 "use client";
 
-import { Mail, MessageSquare } from "lucide-react";
+import Link from "next/link";
+import { ChevronRight, Mail, MessageSquare, Plus } from "lucide-react";
 
 import {
   Accordion,
@@ -13,17 +14,9 @@ import { TelegramSupportButton } from "@/components/shared/telegram-support";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { faqs, helpTopics } from "@/data/support";
+import { TICKET_STATUS_BADGES } from "@/lib/ticket-rules";
 import { formatDate } from "@/utils/format";
-import type { SupportTicket, TicketStatus } from "@/types";
-
-const ticketStatusLabels: Record<
-  TicketStatus,
-  { label: string; variant: React.ComponentProps<typeof Badge>["variant"] }
-> = {
-  open: { label: "Open", variant: "info" },
-  awaiting_reply: { label: "Awaiting reply", variant: "warning" },
-  resolved: { label: "Resolved", variant: "positive" },
-};
+import type { SupportTicket } from "@/types";
 
 export function SupportCenter({
   tickets,
@@ -78,42 +71,48 @@ export function SupportCenter({
         </div>
       </section>
 
-      {/*
-        Tickets. Always rendered — Settings links here with
-        `/settings/support#tickets`, and an anchor to a section that only
-        sometimes exists in the DOM scrolls nowhere and looks like a dead
-        link. The empty state is as real as the list: there is no path in
-        this application that creates a ticket yet, so most accounts have
-        none, and saying so plainly is the honest answer rather than a
-        section that silently never appears.
-      */}
+      {/* Tickets. Always rendered: Settings links here with #tickets. */}
       <section id="tickets" className="space-y-2 scroll-mt-20">
-        <h2 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Your support tickets
-        </h2>
+        <div className="flex items-center justify-between gap-3 px-1">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Your support tickets
+          </h2>
+          <Button asChild variant="outline" size="sm">
+            <Link href="/settings/support/new">
+              <Plus className="size-4" aria-hidden />
+              New ticket
+            </Link>
+          </Button>
+        </div>
         {tickets.length > 0 ? (
           <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
             {tickets.map((ticket) => {
-              const status = ticketStatusLabels[ticket.status];
+              const status = TICKET_STATUS_BADGES[ticket.status];
               return (
-                <li key={ticket.id} className="flex items-start gap-3 px-4 py-3.5">
-                  <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-foreground">
-                    <MessageSquare className="size-4" aria-hidden />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-foreground">
-                      {ticket.subject}
-                    </p>
-                    <p className="tabular mt-0.5 text-xs text-muted-foreground">
-                      {ticket.id} · {ticket.messages} messages
-                    </p>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <Badge variant={status.variant}>{status.label}</Badge>
-                      <span className="tabular text-[11px] text-muted-foreground">
-                        Updated {formatDate(ticket.updatedAt)}
-                      </span>
+                <li key={ticket.id}>
+                  <Link
+                    href={`/settings/support/tickets/${ticket.id}`}
+                    className="flex items-start gap-3 px-4 py-3.5 transition-colors hover:bg-secondary/60 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+                  >
+                    <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-foreground">
+                      <MessageSquare className="size-4" aria-hidden />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-sm font-medium text-foreground">
+                        {ticket.subject}
+                      </p>
+                      <p className="tabular mt-0.5 text-xs text-muted-foreground">
+                        {ticket.id} · {ticket.messages} {ticket.messages === 1 ? "message" : "messages"}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Badge variant={status.variant}>{status.label}</Badge>
+                        <span className="tabular text-[11px] text-muted-foreground">
+                          Updated {formatDate(ticket.updatedAt)}
+                        </span>
+                      </div>
                     </div>
-                  </div>
+                    <ChevronRight className="mt-2 size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  </Link>
                 </li>
               );
             })}
@@ -122,7 +121,7 @@ export function SupportCenter({
           <EmptyState
             icon={MessageSquare}
             title="No support tickets yet"
-            description="Message us on Telegram or by email below and we'll follow up with you directly."
+            description="Open a ticket and our team will reply here. You can also reach us on Telegram or by email below."
           />
         )}
       </section>
@@ -135,6 +134,16 @@ export function SupportCenter({
         than one who is shown where to write.
       */}
       <section className="space-y-3">
+        <div className="space-y-1 px-1">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Contact us
+          </h2>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            Open a ticket above, message us on Telegram, or email us. Tell us your member ID and what
+            happened — for a deposit or withdrawal, include the amount, the date and its reference.
+            Never share your one-time code or withdrawal password; we will never ask for them.
+          </p>
+        </div>
         {telegramUrl ? <TelegramSupportButton url={telegramUrl} /> : null}
         {supportEmail ? (
           <Button asChild variant={telegramUrl ? "outline" : "brand"} size="lg" block>

@@ -1,12 +1,18 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
-import { AuthFooterLink, AuthLogo } from "@/components/auth/auth-shared";
+import {
+  AuthFooterLink,
+  AuthLegalLinks,
+  AuthLogo,
+  AuthNeedHelp,
+} from "@/components/auth/auth-shared";
 import { PhoneOtpForm } from "@/components/auth/phone-otp-form";
 import { getAuthenticatedAccount, isAccountLockedOut } from "@/server/auth/account";
 import { localTestCustomer } from "@/server/auth/dev-test-gate";
 import { isLegacyEmailSignInEnabled, isPhoneSignInLive } from "@/server/auth/phone-sign-in";
 import { APP_NAME } from "@/constants/app";
+import { getSupportEmail, getSupportTelegramUrl } from "@/server/services/catalogue.service";
 
 export const metadata: Metadata = {
   title: "Sign in",
@@ -42,6 +48,12 @@ export default async function LoginPage({
   const legacyEmail = isLegacyEmailSignInEnabled();
   // Development build on localhost with DEV_TEST_AUTH=true only; null otherwise.
   const localTest = await localTestCustomer();
+  // Optional and deadline-bound, like the lookup above: this page must render
+  // while the database is down.
+  const [telegramUrl, supportEmail] = await Promise.all([
+    convenienceLookup(() => getSupportTelegramUrl()),
+    convenienceLookup(() => getSupportEmail()),
+  ]);
 
   return (
     <div className="space-y-6">
@@ -72,6 +84,9 @@ export default async function LoginPage({
           </p>
         </div>
       )}
+
+      <AuthLegalLinks />
+      <AuthNeedHelp telegramUrl={telegramUrl} supportEmail={supportEmail} />
 
       {legacyEmail ? (
         <AuthFooterLink

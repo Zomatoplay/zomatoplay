@@ -1,7 +1,9 @@
 import Image from "next/image";
 import Link from "next/link";
 
-import { APP_NAME } from "@/constants/app";
+import { LifeBuoy, Mail, Send } from "lucide-react";
+
+import { APP_NAME, APP_TAGLINE } from "@/constants/app";
 import { supportContact } from "@/lib/support";
 
 /**
@@ -22,17 +24,97 @@ import { supportContact } from "@/lib/support";
  */
 export function AuthLogo() {
   return (
-    <div className="flex justify-center">
+    <div className="flex flex-col items-center gap-3">
       <Image
         src="/logo.jpeg"
-        alt="Zomato Play logo"
+        alt={`${APP_NAME} logo`}
         width={112}
         height={112}
         priority
         sizes="112px"
         className="size-28 rounded-3xl"
       />
+      <p className="text-center">
+        <span className="block text-base font-semibold tracking-tight text-foreground">{APP_NAME}</span>
+        <span className="block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {APP_TAGLINE}
+        </span>
+      </p>
     </div>
+  );
+}
+
+/**
+ * The legal footer of the sign-in screen: consent wording and links to the
+ * documents, which are public (`/legal/*`) so they open without an account.
+ */
+export function AuthLegalLinks() {
+  const link =
+    "font-medium text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
+  return (
+    <p className="text-center text-xs leading-relaxed text-muted-foreground">
+      By continuing you agree to our{" "}
+      <Link href="/legal/terms" className={link}>
+        Terms &amp; Conditions
+      </Link>{" "}
+      and{" "}
+      <Link href="/legal/privacy" className={link}>
+        Privacy Policy
+      </Link>
+      . Investing involves risk and returns are not guaranteed — read the{" "}
+      <Link href="/legal/risk" className={link}>
+        Risk Disclosure
+      </Link>
+      .
+    </p>
+  );
+}
+
+/**
+ * "Need help?" — a disclosure with the support channels an administrator has
+ * configured (Telegram, email). It opens without JavaScript. With none
+ * configured it says so instead of linking nowhere.
+ */
+export function AuthNeedHelp({
+  telegramUrl,
+  supportEmail,
+}: {
+  telegramUrl: string | null;
+  supportEmail: string | null;
+}) {
+  const row =
+    "flex min-h-11 items-center gap-2.5 rounded-xl border border-border bg-card px-3.5 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
+  return (
+    <details className="group rounded-2xl border border-border bg-card/60">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-center gap-2 px-4 text-sm font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+        <LifeBuoy className="size-4 text-brand" aria-hidden />
+        Need help?
+      </summary>
+      <div className="space-y-2 px-4 pb-4 pt-1">
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Trouble signing in or with your account? Reach our support team. We will never ask for your
+          one-time code or withdrawal password.
+        </p>
+        {telegramUrl ? (
+          <a href={telegramUrl} target="_blank" rel="noopener noreferrer" className={row}>
+            <Send className="size-4 shrink-0 text-brand" aria-hidden />
+            Chat with support on Telegram
+            <span className="sr-only"> (opens Telegram)</span>
+          </a>
+        ) : null}
+        {supportEmail ? (
+          <a href={`mailto:${supportEmail}`} className={row}>
+            <Mail className="size-4 shrink-0 text-brand" aria-hidden />
+            <span className="min-w-0 break-all">{supportEmail}</span>
+          </a>
+        ) : null}
+        {!telegramUrl && !supportEmail ? (
+          <p className="rounded-xl bg-secondary/60 p-3 text-xs leading-relaxed text-muted-foreground">
+            Support contact details are being set up. Please check back shortly.
+          </p>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -91,22 +173,10 @@ export function AuthHeading({
  */
 export function AuthUnconfigured() {
   return (
-    <div className="space-y-4 rounded-2xl border border-border bg-card p-6 text-center">
-      <h1 className="text-lg font-semibold tracking-tight">
-        Sign-in is not configured
-      </h1>
+    <div className="space-y-3 rounded-2xl border border-border bg-card p-6 text-center">
+      <h1 className="text-lg font-semibold tracking-tight">Sign-in is unavailable</h1>
       <p className="text-sm leading-relaxed text-muted-foreground">
-        This deployment of {APP_NAME} has no Supabase Auth configuration, so no
-        account can be signed in. Set{" "}
-        <code className="font-mono text-xs">NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
-        <code className="font-mono text-xs">
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-        </code>
-        .
-      </p>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        No demo account is signed in instead — that would show you someone
-        else&rsquo;s balance.
+        Signing in to {APP_NAME} isn&rsquo;t available right now. Please try again in a little while.
       </p>
     </div>
   );

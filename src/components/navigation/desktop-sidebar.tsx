@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -21,9 +22,14 @@ export function DesktopSidebar() {
         href="/"
         className="mb-8 flex items-center gap-2.5 rounded-xl px-2 py-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
       >
-        <span className="flex size-9 items-center justify-center rounded-xl bg-brand text-sm font-bold text-brand-foreground">
-          N
-        </span>
+        <Image
+          src="/logo.jpeg"
+          alt=""
+          width={36}
+          height={36}
+          sizes="36px"
+          className="size-9 shrink-0 rounded-xl"
+        />
         <span className="min-w-0">
           <span className="block truncate text-sm font-semibold leading-tight">
             {APP_NAME}

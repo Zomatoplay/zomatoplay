@@ -246,8 +246,8 @@ function NotificationsWorkspace() {
   return (
     <AdminSection className="space-y-4">
       <PrototypeNote>
-        No messaging service is connected. Sending records the message and an
-        audit entry; nothing is delivered to anyone.
+        Messages are delivered in the app. Email and push delivery are not
+        connected yet; sending records the campaign and an audit entry.
       </PrototypeNote>
 
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_22rem]">
@@ -464,7 +464,7 @@ function NotificationsWorkspace() {
           rows={filteredCampaigns}
           columns={columns}
           getRowKey={(campaign) => campaign.id}
-          caption="Notifications sent from the CRM"
+          caption="Notifications sent from the admin panel"
           pageSize={ADMIN_PAGE_SIZE}
           resetKey={query}
           empty={

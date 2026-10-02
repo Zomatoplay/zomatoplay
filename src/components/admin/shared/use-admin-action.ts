@@ -1,5 +1,6 @@
 "use client";
 
+import { friendlyClientError } from "@/lib/client-errors";
 import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -39,9 +40,10 @@ export function useAdminAction() {
         // redeploy mid-flight. Reported as a failure, because the caller
         // genuinely does not know whether the write landed.
         toast.error(
-          error instanceof Error
-            ? error.message
-            : "The request did not reach the server.",
+          friendlyClientError(
+            error,
+            "The request did not complete. Check the result before trying again.",
+          ),
         );
         return;
       }

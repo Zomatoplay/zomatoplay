@@ -1,6 +1,6 @@
 "use server";
 
-import { getAuthenticatedAccount } from "@/server/auth/account";
+import { getUsableAccount } from "@/server/auth/account";
 import { toSafeFailure } from "@/server/errors";
 import { traceAction } from "@/server/trace-action";
 import { recordSecurityEvent } from "@/server/auth/sign-in-record";
@@ -49,7 +49,7 @@ function failure(error: unknown, fallback: string): SettingsResult {
 async function actorForSession(): Promise<
   { actor: Actor; userId: string } | null
 > {
-  const account = await getAuthenticatedAccount();
+  const account = await getUsableAccount();
   if (!account) return null;
   return {
     userId: account.userId,
@@ -88,11 +88,11 @@ export async function updateProfileAction(input: {
     { name: "updateProfile", actorType: "user", pipeline: "auth" },
     async () => {
       const session = await actorForSession();
-      if (!session) return { ok: false, message: "Not signed in." };
+      if (!session) return { ok: false, message: "Your session has expired. Please sign in again." };
 
       const fullName = input.fullName.trim();
       const phone = input.phone.trim();
-      const account = await getAuthenticatedAccount();
+      const account = await getUsableAccount();
       const phoneLocked = Boolean(account?.phoneE164);
 
       if (fullName.length < 2) return { ok: false, message: "Enter your full name." };
@@ -129,7 +129,7 @@ export async function setSecondFactorAction(input: {
     { name: "setSecondFactor", actorType: "user", pipeline: "auth" },
     async () => {
       const session = await actorForSession();
-      if (!session) return { ok: false, message: "Not signed in." };
+      if (!session) return { ok: false, message: "Your session has expired. Please sign in again." };
 
       try {
         await setSecondFactorPreference(
@@ -165,7 +165,7 @@ export async function recordPasswordChangeAction(): Promise<SettingsResult> {
     { name: "recordPasswordChange", actorType: "user", pipeline: "auth" },
     async () => {
       const session = await actorForSession();
-      if (!session) return { ok: false, message: "Not signed in." };
+      if (!session) return { ok: false, message: "Your session has expired. Please sign in again." };
 
       await recordSecurityEvent({
         userId: session.userId,
@@ -190,7 +190,7 @@ export async function setNotificationPreferenceAction(input: {
     { name: "setNotificationPreference", actorType: "user", pipeline: "admin" },
     async () => {
       const session = await actorForSession();
-      if (!session) return { ok: false, message: "Not signed in." };
+      if (!session) return { ok: false, message: "Your session has expired. Please sign in again." };
 
       try {
         await setNotificationPreference(
@@ -221,7 +221,7 @@ export async function addBankAccountAction(input: {
     { name: "addBankAccount", actorType: "user", pipeline: "withdrawal" },
     async () => {
       const session = await actorForSession();
-      if (!session) return { ok: false, message: "Not signed in." };
+      if (!session) return { ok: false, message: "Your session has expired. Please sign in again." };
 
       if (!input.bankName.trim()) return { ok: false, message: "Enter the bank name." };
       if (!input.holderName.trim()) {
@@ -251,7 +251,7 @@ export async function addWalletAddressAction(input: {
     { name: "addWalletAddress", actorType: "user", pipeline: "deposit" },
     async () => {
       const session = await actorForSession();
-      if (!session) return { ok: false, message: "Not signed in." };
+      if (!session) return { ok: false, message: "Your session has expired. Please sign in again." };
 
       try {
         await addWalletAddress({ userId: session.userId, ...input }, session.actor);

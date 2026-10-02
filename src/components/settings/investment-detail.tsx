@@ -44,7 +44,7 @@ export function InvestmentDetail({
       <EmptyState
         icon={Layers}
         title="Investment not found"
-        description="This allocation no longer exists, or the demo data was reset."
+        description="We couldn't find this allocation. It may have been removed."
         action={
           <Button asChild size="sm" variant="brand">
             <Link href="/settings/investments">Back to investments</Link>

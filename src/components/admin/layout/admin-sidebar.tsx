@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ArrowUpRight } from "lucide-react";
@@ -76,9 +77,14 @@ export function AdminBrand({ onNavigate }: { onNavigate?: () => void }) {
       onClick={onNavigate}
       className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
     >
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-sm font-bold text-primary-foreground">
-        N
-      </span>
+      <Image
+        src="/logo.jpeg"
+        alt=""
+        width={36}
+        height={36}
+        sizes="36px"
+        className="size-9 shrink-0 rounded-xl"
+      />
       <span className="min-w-0">
         <span className="block truncate text-sm font-semibold leading-tight">
           {ADMIN_APP_NAME}

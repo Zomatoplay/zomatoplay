@@ -1,5 +1,8 @@
 import "server-only";
 
+import { countTicketsByStatus, findAdminTicket, listAdminTickets } from "../repositories/tickets.repository";
+import type { TicketStatus } from "@/types";
+
 import {
   adminAgents as seedAgents,
   adminDeposits as seedDeposits,
@@ -37,6 +40,7 @@ import type {
   AdminWithdrawalsSummary,
   AuditLogEntry,
   KycSubmission,
+  AdminTicket,
   PlatformSettings,
   UserDeviceSession,
   UserSecurityEvent,
@@ -798,4 +802,29 @@ function seedDashboardMetrics(): AdminDashboardMetrics {
       ["blocked", "suspended"].includes(user.status),
     ).length,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Support tickets                                                             */
+/* -------------------------------------------------------------------------- */
+
+/** No seed fallback: a ticket queue is real conversations or nothing. */
+export async function getAdminTickets(status?: TicketStatus) {
+  return fromDatabase(
+    async (db) => ({
+      tickets: await listAdminTickets(db, status),
+      counts: await countTicketsByStatus(db),
+    }),
+    () => ({
+      tickets: [] as AdminTicket[],
+      counts: { open: 0, awaiting_reply: 0, resolved: 0 } as Record<TicketStatus, number>,
+    }),
+  );
+}
+
+export async function getAdminTicket(ticketId: string) {
+  return fromDatabase(
+    (db) => findAdminTicket(db, ticketId),
+    () => null,
+  );
 }

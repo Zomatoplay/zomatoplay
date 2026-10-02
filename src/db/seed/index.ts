@@ -224,6 +224,7 @@ async function clear(db: Database) {
   await db.delete(t.investments);
   await db.delete(t.notifications);
   await db.delete(t.userNotificationPreferences);
+  await db.delete(t.ticketMessages);
   await db.delete(t.supportTickets);
   await db.delete(t.userSecurityEvents);
   await db.delete(t.userDeviceSessions);
@@ -500,9 +501,40 @@ export async function seedDatabase(db: Database): Promise<SeedReport> {
       userId: DEMO_USER_ID,
       subject: ticket.subject,
       status: ticket.status,
+      category: "other" as const,
+      createdAt: date(ticket.updatedAt),
       updatedAt: date(ticket.updatedAt),
-      messageCount: ticket.messages,
+      messageCount: 1 + (ticket.status === "open" ? 0 : 1),
     })),
+  );
+
+  // Development fixtures only: one customer message per sample ticket, and a
+  // support reply on the two that are not waiting on support.
+  report.ticket_messages = await insertAll(
+    db,
+    t.ticketMessages,
+    userSupportTickets.flatMap((ticket) => [
+      {
+        id: `${ticket.id}-m1`,
+        ticketId: ticket.id,
+        author: "customer" as const,
+        authorName: null,
+        body: ticket.subject,
+        createdAt: date(ticket.updatedAt),
+      },
+      ...(ticket.status === "open"
+        ? []
+        : [
+            {
+              id: `${ticket.id}-m2`,
+              ticketId: ticket.id,
+              author: "support" as const,
+              authorName: "Support",
+              body: "Thanks for getting in touch. We are looking into this.",
+              createdAt: date(ticket.updatedAt),
+            },
+          ]),
+    ]),
   );
 
   report.user_notification_preferences = await insertAll(

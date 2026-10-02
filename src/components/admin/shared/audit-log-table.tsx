@@ -44,6 +44,8 @@ function targetHref(target: AuditLogEntry["target"]): string | null {
       return "/admin/notifications";
     case "settings":
       return "/admin/settings";
+    case "ticket":
+      return `/admin/tickets/${target.id}`;
   }
 }
 

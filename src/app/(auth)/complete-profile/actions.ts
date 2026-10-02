@@ -20,7 +20,7 @@ export async function saveProfile(input: {
   country?: string;
 }): Promise<{ ok: boolean; message: string }> {
   const account = await getAuthenticatedAccount();
-  if (!account) return { ok: false, message: "Not signed in." };
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
 
   const fullName = input.fullName.trim();
   // A verified number is never overwritten by a typed one: the profile form

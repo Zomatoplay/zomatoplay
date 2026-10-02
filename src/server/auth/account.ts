@@ -70,6 +70,27 @@ export function isAccountLockedOut(
 }
 
 /**
+ * The signed-in account for a **server action** — or null when there is no
+ * session, no record, or the account has been blocked, suspended or
+ * deactivated by an operator.
+ *
+ * WHY ACTIONS NEED THEIR OWN CHECK
+ * --------------------------------
+ * The `(app)` layout and `requireCurrentUserIdForPage` turn a restricted
+ * account away when a *page* renders. A server action is a direct POST: it
+ * never renders a page, so a customer holding a still-valid session cookie
+ * could keep withdrawing, investing or depositing after an operator had
+ * disabled them. Every customer action resolves its account here, so the
+ * operator's decision binds the next request whatever route it arrives by.
+ * Nothing is read from the client; the status is the database's.
+ */
+export async function getUsableAccount(): Promise<AuthenticatedAccount | null> {
+  const account = await getAuthenticatedAccount();
+  if (account && isAccountLockedOut(account.status)) return null;
+  return account;
+}
+
+/**
  * The signed-in account, or null when there is no session or no record yet.
  *
  * Memoised per request for the same reason `getAuthPrincipal` is: it adds a

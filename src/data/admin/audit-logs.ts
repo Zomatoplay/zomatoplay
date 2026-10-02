@@ -358,6 +358,8 @@ export const auditActionLabels: Record<AuditAction, string> = {
   settings_updated: "Settings updated",
   wallet_manual_credit: "Manual USDT credit",
   withdrawal_password_reset: "Withdrawal password reset",
+  ticket_replied: "Support ticket reply",
+  ticket_status_changed: "Support ticket status changed",
 };
 
 /** Groupings used by the audit-log filter bar. */
@@ -385,6 +387,8 @@ export const auditActionGroups: { label: string; actions: AuditAction[] }[] = [
       "device_logged_out",
       "all_devices_logged_out",
       "withdrawal_password_reset",
+      "ticket_replied",
+      "ticket_status_changed",
     ],
   },
   {

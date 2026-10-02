@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { WithdrawFlow } from "@/components/wallet/withdraw-flow";
 import { getBankAccounts } from "@/server/services/account.service";
 import { getAuthenticatedAccount } from "@/server/auth/account";
-import { getSupportEmail, getSupportTelegramUrl } from "@/server/services/catalogue.service";
+import { getPlatformFinanceFresh, getSupportEmail, getSupportTelegramUrl } from "@/server/services/catalogue.service";
 import { getWithdrawalPasswordState } from "@/server/services/withdrawal-password.service";
 
 export const metadata: Metadata = {
@@ -17,13 +17,16 @@ export const metadata: Metadata = {
 };
 
 export default async function WithdrawPage() {
-  const [bankAccounts, slices, account, telegramUrl, supportEmail] = await Promise.all([
+  const [bankAccounts, slices, account, telegramUrl, supportEmail, finance] = await Promise.all([
     getBankAccounts(),
     getUserSlices(["profile", "balance"] as const),
     // Request-memoised: the layout's gate already resolved it.
     getAuthenticatedAccount(),
     getSupportTelegramUrl(),
     getSupportEmail(),
+    // Uncached: the request is priced from a fresh read, and the figures shown
+    // must be the ones it will be compared against.
+    getPlatformFinanceFresh(),
   ]);
   const withdrawalPassword = account
     ? await getWithdrawalPasswordState(account.userId)
@@ -40,6 +43,7 @@ export default async function WithdrawPage() {
             withdrawalPassword={withdrawalPassword}
             telegramUrl={telegramUrl}
             supportEmail={supportEmail}
+            finance={finance}
           />
         </PageContainer>
       </>

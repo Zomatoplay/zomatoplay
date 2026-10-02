@@ -162,6 +162,27 @@
       "when": 1790838483638,
       "tag": "0022_launch_operator_phone_manual_credit_withdrawal_password",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790962353070,
+      "tag": "0023_tense_juggernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790962355348,
+      "tag": "0024_initial_usdt_rates_and_withdrawal_fee",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790963652551,
+      "tag": "0025_zomato_play_platform_identity",
+      "breakpoints": true
     }
   ]
 }

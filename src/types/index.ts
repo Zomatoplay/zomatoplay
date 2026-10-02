@@ -407,12 +407,37 @@ export interface SecurityActivity {
 
 export type TicketStatus = "open" | "awaiting_reply" | "resolved";
 
+export type TicketCategory =
+  | "deposit"
+  | "withdrawal"
+  | "investment"
+  | "verification"
+  | "account"
+  | "other";
+
 export interface SupportTicket {
   id: string;
   subject: string;
+  category: TicketCategory;
   status: TicketStatus;
+  createdAt: string;
   updatedAt: string;
   messages: number;
+}
+
+export interface TicketMessage {
+  id: string;
+  /** `customer` is the ticket's owner; `support` is an operator. */
+  author: "customer" | "support";
+  /** The operator's display name for `support`; null for the customer. */
+  authorName: string | null;
+  body: string;
+  createdAt: string;
+}
+
+export interface TicketDetail {
+  ticket: SupportTicket;
+  messages: TicketMessage[];
 }
 
 export interface FaqItem {

@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useOffline } from "@/hooks/use-offline";
 
 /**
  * The boundary for failures in a *layout*.
@@ -33,6 +34,8 @@ export default function RootError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const offline = useOffline();
+
   useEffect(() => {
     // Next strips the message before it reaches a client boundary in
     // production, leaving only `digest`. Classification happens server-side
@@ -50,7 +53,7 @@ export default function RootError({
 
         <div className="space-y-2">
           <h1 className="text-lg font-semibold tracking-tight text-foreground">
-            Unable to load this information
+            {offline ? "Connection interrupted" : "We couldn't load this right now"}
           </h1>
           {/*
             No stack trace, no SQL, no connection string — only what a person can
@@ -59,8 +62,9 @@ export default function RootError({
             and saying so stops a retry feeling risky.
           */}
           <p className="text-sm leading-relaxed text-muted-foreground">
-            This is usually temporary and nothing on your account was changed.
-            Try again in a moment.
+            {offline
+              ? "Please check your internet connection and try again."
+              : "This is usually temporary and nothing on your account was changed. Please try again in a moment."}
           </p>
         </div>
 

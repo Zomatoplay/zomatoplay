@@ -119,7 +119,7 @@ function AdminNavDrawer() {
         <SheetHeader className="px-3 pb-4 pt-0">
           <SheetTitle className="sr-only">Admin navigation</SheetTitle>
           <SheetDescription className="sr-only">
-            Jump to a section of the Master CRM.
+            Jump to a section of the admin panel.
           </SheetDescription>
           <AdminBrand onNavigate={() => setOpen(false)} />
         </SheetHeader>

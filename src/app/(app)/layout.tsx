@@ -1,3 +1,4 @@
+import { RatesBoundary } from "@/components/shared/rates-boundary";
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 
@@ -218,7 +219,9 @@ async function renderAppLayout(children: React.ReactNode) {
         <Suspense fallback={null}>
           <AccountGate />
         </Suspense>
-        {children}
+        <Suspense fallback={null}>
+          <RatesBoundary>{children}</RatesBoundary>
+        </Suspense>
       </AppShell>
     </PrototypeStoreProvider>
   );

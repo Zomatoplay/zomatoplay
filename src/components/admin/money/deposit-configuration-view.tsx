@@ -64,7 +64,7 @@ export function DepositConfigurationView({
 
   const sourceLabel =
     configuration.source === "configured"
-      ? "Saved in the CRM"
+      ? "Saved by an administrator"
       : configuration.source === "environment"
         ? "Deployment default (TRON_PLATFORM_DEPOSIT_ADDRESS)"
         : "Not set";
@@ -150,7 +150,7 @@ export function DepositConfigurationView({
       <DetailCard title="Change history" description="From the audit log, newest first.">
         {configuration.history.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No changes recorded. The address above has not been changed in the CRM.
+            No changes recorded. The address above has not been changed by an administrator.
           </p>
         ) : (
           <ul className="divide-y divide-border">

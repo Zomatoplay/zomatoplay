@@ -1,5 +1,6 @@
 "use client";
 
+import { friendlyClientError } from "@/lib/client-errors";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -140,9 +141,7 @@ export function KycCasePanel({
         toast.error(result.message);
       }
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "The action did not complete.",
-      );
+      toast.error(friendlyClientError(error, "The action did not complete."));
     } finally {
       setWorking(false);
     }

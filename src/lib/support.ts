@@ -16,12 +16,28 @@
 /** Telegram's own rule: 5–32 characters, letters, digits and underscores, starting with a letter. */
 const USERNAME = /^[A-Za-z][A-Za-z0-9_]{4,31}$/;
 
+/**
+ * A private group or channel is reached by an invite link, which has no
+ * username: `t.me/+AbCd…` (current) or `t.me/joinchat/AbCd…` (older).
+ */
+const INVITE = /^(?:\+|joinchat\/)[A-Za-z0-9_-]{8,64}$/;
+
+/**
+ * The part of a Telegram destination that is stored: a public username, or an
+ * invite code. Everything else about the link is rebuilt on `t.me`, so only
+ * those two shapes — never a host, query string or arbitrary path — can pass.
+ */
 export function parseTelegramUsername(raw: string | undefined | null): string | null {
   if (!raw) return null;
   let value = raw.trim();
   value = value.replace(/^https?:\/\//i, "").replace(/^(www\.)?(t\.me|telegram\.me)\//i, "");
   value = value.replace(/^@/, "").replace(/\/+$/, "");
-  return USERNAME.test(value) ? value : null;
+  return USERNAME.test(value) || INVITE.test(value) ? value : null;
+}
+
+/** How a stored destination reads to an operator: `@name`, or "an invite link". */
+export function telegramLabel(stored: string): string {
+  return INVITE.test(stored) ? "an invite link" : `@${stored}`;
 }
 
 export function telegramSupportUrl(raw: string | undefined | null): string | null {

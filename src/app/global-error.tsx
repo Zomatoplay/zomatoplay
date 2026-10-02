@@ -43,7 +43,7 @@ export default function GlobalError({
       >
         <div style={{ maxWidth: "22rem", textAlign: "center" }}>
           <h1 style={{ fontSize: "1.125rem", fontWeight: 600, margin: "0 0 0.5rem" }}>
-            Unable to load this information
+            We couldn&rsquo;t load this right now
           </h1>
           <p
             style={{
@@ -53,8 +53,8 @@ export default function GlobalError({
               margin: "0 0 1.25rem",
             }}
           >
-            Something went wrong loading the app. Nothing on your account was
-            changed. Try again in a moment.
+            This is usually temporary. Nothing on your account was changed —
+            please try again in a moment.
           </p>
           <button
             type="button"

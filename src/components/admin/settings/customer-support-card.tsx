@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { canManage } from "@/lib/admin-permissions";
 import { useAdminStore } from "@/lib/admin-store";
-import { parseTelegramUsername } from "@/lib/support";
+import { parseTelegramUsername, telegramLabel } from "@/lib/support";
 
 import { updateSupportTelegramAction } from "@/app/admin/actions";
 
@@ -48,7 +48,7 @@ export function CustomerSupportCard({ currentUrl }: { currentUrl: string | null 
         }}
       >
         <div className="space-y-2">
-          <Label htmlFor="support-telegram">Customer Support Telegram URL</Label>
+          <Label htmlFor="support-telegram">Customer support Telegram URL</Label>
           <Input
             id="support-telegram"
             inputMode="url"
@@ -65,8 +65,8 @@ export function CustomerSupportCard({ currentUrl }: { currentUrl: string | null 
             className={invalid ? "text-xs leading-relaxed text-destructive" : "text-xs leading-relaxed text-muted-foreground"}
           >
             {invalid
-              ? "Only a Telegram username or its https://t.me/ link is accepted."
-              : "A t.me link or @username. Leave empty to show customers that Telegram support is unavailable."}
+              ? "Only a t.me link (account, channel or group invite) or a Telegram @username is accepted."
+              : "The link customers open to reach you on Telegram, e.g. https://t.me/your_support_account. Leave empty to show customers that Telegram support is unavailable."}
           </p>
         </div>
 
@@ -80,7 +80,7 @@ export function CustomerSupportCard({ currentUrl }: { currentUrl: string | null 
                 className="inline-flex items-center gap-1 underline-offset-2 hover:underline"
               >
                 <Send className="size-3.5" aria-hidden />
-                Live: @{current}
+                Live: {telegramLabel(current)}
                 <ExternalLink className="size-3" aria-hidden />
                 <span className="sr-only"> (opens Telegram)</span>
               </a>

@@ -1,5 +1,6 @@
 "use client";
 
+import { friendlyClientError } from "@/lib/client-errors";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -151,9 +152,7 @@ export function DepositsBrowser({
         });
       }
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "The deposit was not changed.",
-      );
+      toast.error(friendlyClientError(error, "The deposit was not changed."));
     } finally {
       setPending(null);
     }

@@ -12,7 +12,7 @@ import {
   History,
   KeyRound,
   LifeBuoy,
-  Network,
+  Percent,
   ScrollText,
   Send,
   ShieldAlert,
@@ -94,10 +94,10 @@ export default function SettingsPage() {
               description="Where INR withdrawals are paid"
             />
             <ListRow
-              href="/settings/wallet#preferences"
-              icon={Network}
-              title="Withdrawal preferences"
-              description="Default network and confirmation settings"
+              href="/wallet"
+              icon={Percent}
+              title="Rates & fees"
+              description="USDT deposit and withdrawal rates, withdrawal fee"
             />
           </ListGroup>
 

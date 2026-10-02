@@ -56,26 +56,26 @@ export const SUPPORT_EMAIL: string | null = (() => {
 
 /**
  * ---------------------------------------------------------------------------
- * Currency configuration
+ * Currency configuration — INITIAL VALUES
  * ---------------------------------------------------------------------------
- * USDT is the platform's primary/settlement currency. INR is displayed
- * alongside it as an approximate local equivalent.
+ * USDT is the platform's primary/settlement currency; INR is shown alongside
+ * as an approximate local equivalent.
  *
- * `MOCK_USDT_INR_RATE` is a static prototype value — NOT a live market rate.
- * At integration time replace `getUsdtInrRate()` in `@/lib/currency` with a
- * call to a real rates service; no component reads this constant directly.
+ * These are the values the platform starts with, and the fallback if the
+ * stored settings are missing or unusable. The live values are set by an
+ * administrator in Admin → Settings (`platform_settings.currency` and
+ * `.withdrawals`) and resolved by `@/lib/platform-finance`; nothing
+ * customer-facing reads these constants directly. The `MOCK_` names are kept
+ * so existing seed data still imports them.
  */
-export const MOCK_USDT_INR_RATE = 96.05;
+/** Rate used for INR figures on deposits, balances and every display. */
+export const MOCK_USDT_INR_RATE = 100.4;
 
-/**
- * Rate applied to INR withdrawal payouts. Deliberately different from the
- * display rate so the UI can show an explicit, quoted "payout rate".
- * Prototype value only.
- */
-export const MOCK_USDT_INR_PAYOUT_RATE = 82.9;
+/** Rate an INR withdrawal payout is priced at. */
+export const MOCK_USDT_INR_PAYOUT_RATE = 100.4;
 
-/** Timestamp shown next to the rate so it never reads as a live quote. */
-export const MOCK_RATE_LABEL = "Indicative rate · updated daily";
+/** Label shown beside INR figures so they never read as a live market quote. */
+export const MOCK_RATE_LABEL = "Platform rate set by Zomato Play";
 
 export const CURRENCY = {
   primary: "USDT",
@@ -90,10 +90,10 @@ export const CURRENCY = {
 export const MIN_DEPOSIT_USDT = 10;
 export const MIN_WITHDRAWAL_USDT = 20;
 
-/** Flat network/processing fee applied to withdrawals in the prototype. */
-export const WITHDRAWAL_FEE_USDT = 1.5;
+/** Initial withdrawal fee, in USDT. Administrator-configurable. */
+export const WITHDRAWAL_FEE_USDT = 1.55;
 
-/** Percentage fee applied on top of the flat fee. */
-export const WITHDRAWAL_FEE_PERCENT = 0.5;
+/** Initial percentage fee on top of the flat fee — none. Administrator-configurable. */
+export const WITHDRAWAL_FEE_PERCENT = 0;
 
 export const WITHDRAWAL_PROCESSING_WINDOW = "Usually within 2–4 hours";

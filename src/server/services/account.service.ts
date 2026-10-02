@@ -1,5 +1,7 @@
 import "server-only";
 
+import { findTicketForUser } from "../repositories/tickets.repository";
+
 import { cache } from "react";
 import { unstable_noStore as noStore } from "next/cache";
 
@@ -13,6 +15,7 @@ import type {
   SavedWalletAddress,
   SecurityActivity,
   SupportTicket,
+  TicketDetail,
   Transaction,
   UserProfile,
   WalletBalance,
@@ -194,6 +197,16 @@ export async function getSecurityActivity(
 export async function getSupportTickets(userId?: string): Promise<SupportTicket[]> {
   const id = await resolveUserIdForPage(userId);
   return cachedSupportTickets(id);
+}
+
+/**
+ * One of the signed-in customer's own tickets with its conversation, or null.
+ * Page-render use: no session redirects to sign-in. The owner is the session's
+ * account — the id in the URL only selects among that account's tickets.
+ */
+export async function getTicketDetail(ticketId: string): Promise<TicketDetail | null> {
+  const id = await resolveUserIdForPage();
+  return read((db) => findTicketForUser(db, id, ticketId));
 }
 
 export async function getInvestments(userId?: string): Promise<Investment[]> {

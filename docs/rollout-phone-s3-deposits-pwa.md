@@ -348,3 +348,31 @@ shows the headers the app relies on (`X-Real-IP`, and no caching of `/sw.js`).
 - EC2 crontab and Nginx (§5); DNS is untouched by this change.
 - Moving existing Supabase-stored KYC objects to S3 (FUTURE_TASKS).
 - A shared rate-limit store if the app runs on more than one instance.
+
+---
+
+## Release: support tickets, configurable USDT rates, platform identity
+
+Migrations `0023`–`0025`. **All three are additive or narrowly scoped data
+updates; nothing is dropped or rewritten.** Run on the EC2 host (the RDS
+instance is only reachable from inside the VPC), from the new checkout:
+
+1. `npm run db:verify` — read-only. Note the counts and that it names RDS.
+2. `npm run db:migrate`
+   - `0023_tense_juggernaut` — `ticket_messages` table; `support_tickets`
+     gains `category` and `created_at` (defaults, so existing rows stay valid);
+     new enum values for ticket audit actions and the `support` pipeline.
+   - `0024_initial_usdt_rates_and_withdrawal_fee` — sets, on the single
+     `platform_settings` row only, the USDT deposit rate ₹100.40, withdrawal
+     rate ₹100.40 and withdrawal fee 1.55 USDT (percentage fee 0). Administrators
+     change them afterwards in Admin → Settings.
+   - `0025_zomato_play_platform_identity` — replaces the old stored name,
+     tagline, rate note and `@nanotron.app` support address in that row, only
+     where the exact old value is still there. **The support email is left
+     empty**: set the real address in Admin → Settings → Platform (until then the
+     app uses `NEXT_PUBLIC_SUPPORT_EMAIL` if set).
+3. Skip `npm run db:secure` on RDS (Supabase-only).
+4. `npm run db:verify` again: 0 pending, row counts unchanged (the new table
+   starts empty).
+5. Restart the service. Existing withdrawals keep the rate and fee they were
+   quoted at; only new requests use the configured values.

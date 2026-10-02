@@ -10,9 +10,12 @@ import type { DepositNetwork, Plan, VipLevel } from "@/types";
 
 import { resilientRead } from "../database";
 import { SUPPORT_EMAIL } from "@/constants/app";
+import { resolvePlatformFinance, type PlatformFinance } from "@/lib/platform-finance";
+import { setFxRates } from "@/lib/currency";
 import { parseSupportEmail, telegramSupportUrl } from "@/lib/support";
 
 import {
+  findFinanceSettings,
   findSupportEmail,
   findSupportTelegram,
   listDepositNetworks,
@@ -158,4 +161,41 @@ export async function getSupportTelegramUrl(): Promise<string | null> {
 export async function getSupportEmail(): Promise<string | null> {
   const stored = await cachedCatalogueRead("support-email", findSupportEmail, () => null);
   return parseSupportEmail(stored) ?? SUPPORT_EMAIL;
+}
+
+/**
+ * The administrator's money settings — rates and withdrawal fee — for display.
+ * Cached across requests with the catalogue (identical for everyone, owned by
+ * no one) and cleared by `revalidateCatalogue()` when an operator saves.
+ * Quotes that decide what is owed use `getPlatformFinanceFresh` instead.
+ */
+export async function getPlatformFinance(): Promise<PlatformFinance> {
+  const stored = await cachedCatalogueRead("platform-finance", findFinanceSettings, () => null);
+  return resolvePlatformFinance(stored);
+}
+
+/**
+ * The same settings read straight from the database, uncached. A withdrawal is
+ * priced from this, so the figure stored on the request is the figure in force
+ * at that instant, not one from up to five minutes ago.
+ */
+export async function getPlatformFinanceFresh(): Promise<PlatformFinance> {
+  if (!isDatabaseConfigured()) return resolvePlatformFinance(null);
+  const stored = await resilientRead(() => findFinanceSettings(getDb()));
+  return resolvePlatformFinance(stored);
+}
+
+/**
+ * Makes the configured rates the ones every INR figure rendered on the server
+ * uses (`@/lib/currency`). Awaited by the layouts before their children render;
+ * a failure leaves the initial rates in place rather than breaking the page.
+ */
+export async function applyPlatformRates(): Promise<PlatformFinance> {
+  const finance = await getPlatformFinance();
+  setFxRates({
+    depositRate: finance.depositRate,
+    withdrawalRate: finance.withdrawalRate,
+    label: finance.rateLabel,
+  });
+  return finance;
 }

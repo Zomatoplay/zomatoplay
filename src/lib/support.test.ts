@@ -23,7 +23,7 @@ describe("the Telegram support destination", () => {
   });
 
   test("nothing but the username survives — no path, query or fragment rides along", () => {
-    for (const raw of ["https://t.me/Support_Desk?start=x", "https://t.me/Support_Desk/12", "https://t.me/Support_Desk#x", "t.me/+invitehash"]) {
+    for (const raw of ["https://t.me/Support_Desk?start=x", "https://t.me/Support_Desk/12", "https://t.me/Support_Desk#x"]) {
       assert.equal(telegramSupportUrl(raw), null, raw);
     }
   });
@@ -46,6 +46,19 @@ describe("supportContact", () => {
 
   test("links nowhere when nothing is configured", () => {
     assert.equal(supportContact(null, null), null);
+  });
+});
+
+describe("Telegram invite links", () => {
+  test("a private group or channel invite is accepted and rebuilt on t.me", () => {
+    assert.equal(telegramSupportUrl("https://t.me/+AbCdEfGhIjKl"), "https://t.me/+AbCdEfGhIjKl");
+    assert.equal(telegramSupportUrl("t.me/joinchat/AbCdEfGhIjKl"), "https://t.me/joinchat/AbCdEfGhIjKl");
+  });
+
+  test("anything that is not exactly an invite code is still refused", () => {
+    for (const raw of ["https://t.me/+short", "https://t.me/+AbCdEfGh/../x", "https://evil.example/+AbCdEfGhIjKl", "+AbCd EfGhIjKl", "https://t.me/+AbCdEfGhIjKl?x=1"]) {
+      assert.equal(telegramSupportUrl(raw), null, raw);
+    }
   });
 });
 

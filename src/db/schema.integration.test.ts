@@ -110,7 +110,7 @@ describe("schema", { skip }, () => {
     `);
     const live = new Map(rows.map((row) => [row.name, row.labels]));
 
-    assert.equal(enums.length, 44, "the schema should declare 44 enums");
+    assert.equal(enums.length, 46, "the schema should declare 46 enums");
 
     for (const declared of enums) {
       const labels = live.get(declared.enumName);

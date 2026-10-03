@@ -63,7 +63,7 @@ const DOCUMENT_TYPE_LABELS: Record<KycDocumentType, string> = {
  * somebody approves an identity from. Unknown flags fall through unchanged, so
  * a provider integration adding its own does not need this map edited first.
  */
-const RISK_FLAG_LABELS: Record<string, string> = {
+export const RISK_FLAG_LABELS: Record<string, string> = {
   liveness_not_verified: "No automated liveness check",
   documents_not_provided: "No documents attached",
   no_document_uploaded: "No identity document uploaded",

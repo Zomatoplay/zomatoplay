@@ -194,7 +194,8 @@ export function CompleteProfileForm({
         <div className="space-y-1.5 text-center">
           <h1 className="text-2xl font-semibold tracking-tight">Set up your profile</h1>
           <p className="text-sm text-muted-foreground">
-            Welcome to {APP_NAME}. Signed in as {signedInAs}.
+            Welcome to {APP_NAME}. Signed in as{" "}
+            <span className="whitespace-nowrap">{signedInAs}</span>.
           </p>
         </div>
       </div>

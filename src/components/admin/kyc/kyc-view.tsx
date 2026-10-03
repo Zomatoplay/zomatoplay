@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { BadgeCheck, ChevronLeft } from "lucide-react";
 
-import { KycCasePanel } from "@/components/admin/kyc/kyc-case-panel";
+import { KycCasePanel, RISK_FLAG_LABELS } from "@/components/admin/kyc/kyc-case-panel";
 import { AdminSection } from "@/components/admin/layout/admin-shell";
 import { AdminStatusBadge } from "@/components/admin/shared/admin-status-badge";
 import {
@@ -140,7 +140,7 @@ export function KycQueue({
           <span className="flex flex-wrap gap-1">
             {submission.riskFlags.map((flag) => (
               <Badge key={flag} variant="warning">
-                {flag}
+                {RISK_FLAG_LABELS[flag] ?? flag}
               </Badge>
             ))}
           </span>
@@ -233,7 +233,7 @@ export function KycQueue({
                 <div className="flex flex-wrap gap-1">
                   {submission.riskFlags.map((flag) => (
                     <Badge key={flag} variant="warning">
-                      {flag}
+                      {RISK_FLAG_LABELS[flag] ?? flag}
                     </Badge>
                   ))}
                 </div>

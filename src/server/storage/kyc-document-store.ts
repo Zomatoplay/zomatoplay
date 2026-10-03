@@ -58,7 +58,7 @@ function warnStorageUnavailable(): void {
     JSON.stringify({
       level: "error",
       event: "kyc.storage.unavailable",
-      message: "KYC document upload is off for phone customers; customers see the unavailable notice.",
+      message: "KYC document upload is off for phone customers; uploads are hidden and details are submitted without files.",
       missing,
     }),
   );

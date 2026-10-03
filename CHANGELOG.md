@@ -40,6 +40,12 @@ nullable/defaulted columns on `users`, `investments`, `manual_credits`; one new
   versioned URLs and the cache is now `v2`.
 - FAQ: the "USDT and INR amounts" answer no longer describes INR display that
   was removed.
+- From the browser checks: the CRM's KYC list shows readable flag names; a
+  duplicate operator email now says so instead of "The operator was not
+  created."; the masked number on onboarding no longer wraps mid-number; the
+  `kyc.storage.unavailable` log line no longer claims uploads block KYC.
+- Removed `devdb-tmp.ts`, a local dev-database helper that went into
+  `82e82aa` by mistake (no credentials in it).
 
 ---
 

@@ -1140,11 +1140,16 @@ function operatorPhone(raw: string | undefined): string {
   return phone;
 }
 
-/** A unique-index violation on `admin_agents.phone_e164`, said plainly. */
+/** A unique-index violation on an operator's phone or email, said plainly. */
 function rethrowPhoneConflict(error: unknown): never {
   const text = describeError(error);
   if (/admin_agents_phone_e164_key/.test(text)) {
     throw Object.assign(new Error("That mobile number is already registered to another operator."), {
+      name: "AdminValidationError",
+    });
+  }
+  if (/admin_agents_email_unique/.test(text)) {
+    throw Object.assign(new Error("That email address is already used by another operator."), {
       name: "AdminValidationError",
     });
   }

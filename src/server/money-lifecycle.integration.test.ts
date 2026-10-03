@@ -89,7 +89,21 @@ describe("money lifecycle", { skip }, () => {
        */
       .orderBy(asc(t.plans.minInvestment), asc(t.plans.id));
 
-    const fixed = plans.find((plan) => plan.durationDays > 0);
+    /*
+     * Only plans sold on their own single term. A plan with active duration
+     * rates (§10e) refuses an allocation without a chosen term — correctly —
+     * and its schedule is covered by `plan-durations.integration.test.ts`.
+     * This file exercises the original path, so it must not pick one.
+     */
+    const withDurations = new Set(
+      (
+        await db
+          .select({ planId: t.planDurationRates.planId })
+          .from(t.planDurationRates)
+          .where(eq(t.planDurationRates.active, true))
+      ).map((row) => row.planId),
+    );
+    const fixed = plans.find((plan) => plan.durationDays > 0 && !withDurations.has(plan.id));
     assert.ok(fixed, "the catalogue has at least one open fixed-term plan");
     /*
      * Fail here, once and legibly, rather than five times downstream.
@@ -105,7 +119,8 @@ describe("money lifecycle", { skip }, () => {
         `(${fixed.id}) has a minimum of ${fixed.minInvestment}`,
     );
     planId = fixed.id;
-    openEndedPlanId = plans.find((plan) => plan.durationDays === 0)?.id ?? null;
+    openEndedPlanId =
+      plans.find((plan) => plan.durationDays === 0 && !withDurations.has(plan.id))?.id ?? null;
   });
 
   after(async () => {

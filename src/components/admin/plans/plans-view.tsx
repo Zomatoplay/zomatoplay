@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Layers, PencilLine, Plus, Power, PowerOff, SlidersHorizontal } from "lucide-react";
+import { CalendarDays, Layers, PencilLine, Plus, Power, PowerOff, SlidersHorizontal } from "lucide-react";
 
 import { AdminHeader } from "@/components/admin/layout/admin-header";
 import { AdminPage, AdminSection } from "@/components/admin/layout/admin-shell";
@@ -10,6 +10,7 @@ import { ConfirmActionDialog } from "@/components/admin/shared/confirm-action-di
 import { PermissionGate } from "@/components/admin/shared/permission-gate";
 import { PlanFormSheet } from "@/components/admin/plans/plan-form-sheet";
 import { PlanTiersSheet } from "@/components/admin/plans/plan-tiers-sheet";
+import { PlanDurationsSheet } from "@/components/admin/plans/plan-durations-sheet";
 import { EmptyState } from "@/components/shared/empty-state";
 import { RiskNote } from "@/components/shared/notices";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ import { useAdminAction } from "@/components/admin/shared/use-admin-action";
 import {
   createPlanAction,
   savePlanTiersAction,
+  savePlanDurationRatesAction,
   setPlanDisabledAction,
   updatePlanAction,
 } from "@/app/admin/actions";
@@ -60,6 +62,7 @@ function PlansManager() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<AdminPlan | null>(null);
   const [tiering, setTiering] = useState<AdminPlan | null>(null);
+  const [durationing, setDurationing] = useState<AdminPlan | null>(null);
   const [toggling, setToggling] = useState<AdminPlan | null>(null);
 
   /*
@@ -71,6 +74,9 @@ function PlansManager() {
    */
   const tieringPlan = tiering
     ? (store.plans.find((plan) => plan.id === tiering.id) ?? tiering)
+    : undefined;
+  const durationPlan = durationing
+    ? (store.plans.find((plan) => plan.id === durationing.id) ?? durationing)
     : undefined;
 
   const allowed = canManage(store.session, "plans");
@@ -111,6 +117,7 @@ function PlansManager() {
                 allowed={allowed}
                 onEdit={() => setEditing(plan)}
                 onTiers={() => setTiering(plan)}
+                onDurations={() => setDurationing(plan)}
                 onToggle={() => setToggling(plan)}
               />
             </li>
@@ -149,6 +156,19 @@ function PlansManager() {
           if (!tiering) return;
           run(() => savePlanTiersAction({ planId: tiering.id, tiers, reason }), {
             onSuccess: () => setTiering(null),
+          });
+        }}
+      />
+
+      <PlanDurationsSheet
+        plan={durationPlan}
+        open={durationing !== null}
+        onOpenChange={(open) => !open && setDurationing(null)}
+        pending={pending}
+        onSubmit={({ rates, reason }) => {
+          if (!durationing) return;
+          run(() => savePlanDurationRatesAction({ planId: durationing.id, rates, reason }), {
+            onSuccess: () => setDurationing(null),
           });
         }}
       />
@@ -213,12 +233,14 @@ function PlanCard({
   allowed,
   onEdit,
   onTiers,
+  onDurations,
   onToggle,
 }: {
   plan: AdminPlan;
   allowed: boolean;
   onEdit: () => void;
   onTiers: () => void;
+  onDurations: () => void;
   onToggle: () => void;
 }) {
   const disabled = plan.status === "disabled";
@@ -252,9 +274,9 @@ function PlanCard({
         <Field label="Term">
           {plan.durationDays === 0 ? "No lock-in" : `${plan.durationDays} days`}
         </Field>
-        <Field label="Projected return">
-          {plan.estimatedReturnRange[0]}% – {plan.estimatedReturnRange[1]}%
-          <span className="ml-1 font-normal text-muted-foreground">est.</span>
+        <Field label="Return">
+          {plan.estimatedReturnPercent}%
+          <span className="ml-1 font-normal text-muted-foreground">over the term</span>
         </Field>
         <Field label="Rewards">
           {rewardFrequencyLabels[plan.rewardFrequency]}
@@ -282,6 +304,30 @@ function PlanCard({
         one. Inactive bands are shown too, marked — they are configuration that
         still exists.
       */}
+      <div className="mt-3 border-t border-border pt-3">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          Duration returns
+        </p>
+        {plan.durationRates.some((row) => row.active) ? (
+          <ul className="mt-1.5 flex flex-wrap gap-1.5">
+            {plan.durationRates
+              .filter((row) => row.active)
+              .map((row) => (
+                <li
+                  key={row.id}
+                  className="tabular rounded-full border border-border px-2 py-0.5 text-xs"
+                >
+                  {row.durationDays}d · <span className="font-medium">{row.ratePercent}%</span>
+                </li>
+              ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-xs text-muted-foreground">
+            None set — customers can only choose the plan&apos;s own {plan.durationDays}-day term.
+          </p>
+        )}
+      </div>
+
       <div className="mt-3 border-t border-border pt-3">
         <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Rate tiers
@@ -364,6 +410,16 @@ function PlanCard({
         >
           <SlidersHorizontal className="size-4" />
           Tiers
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="flex-1"
+          disabled={!allowed}
+          onClick={onDurations}
+        >
+          <CalendarDays className="size-4" />
+          Durations
         </Button>
         <Button
           variant={disabled ? "brand" : "ghost"}

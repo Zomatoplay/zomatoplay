@@ -10,6 +10,7 @@ import type { AdminPlan } from "@/types/admin";
 import { toAdminPlan, toDepositNetwork, toPlan, toVipLevel } from "./mappers";
 
 type PlanRateTierRow = typeof schema.planRateTiers.$inferSelect;
+type PlanDurationRateRow = typeof schema.planDurationRates.$inferSelect;
 
 /**
  * Catalogue content: plans, deposit networks and VIP levels.
@@ -32,8 +33,14 @@ export async function listPublicPlans(db: Database): Promise<Plan[]> {
     .from(schema.plans)
     .where(ne(schema.plans.status, "disabled"))
     .orderBy(asc(schema.plans.sortOrder));
-  const tiers = await tiersByPlan(db, rows.map((row) => row.id));
-  return rows.map((row) => toPlan(row, tiers.get(row.id) ?? []));
+  const ids = rows.map((row) => row.id);
+  const [tiers, durations] = await Promise.all([
+    tiersByPlan(db, ids),
+    durationRatesByPlan(db, ids),
+  ]);
+  return rows.map((row) =>
+    toPlan(row, tiers.get(row.id) ?? [], durations.get(row.id) ?? []),
+  );
 }
 
 /**
@@ -66,6 +73,29 @@ async function tiersByPlan(
   return grouped;
 }
 
+/**
+ * Every plan's per-duration rates, shortest term first, in one query. Run
+ * beside `tiersByPlan`, not after it, so it costs no extra round trip.
+ */
+async function durationRatesByPlan(
+  db: Database,
+  planIds: string[],
+): Promise<Map<string, PlanDurationRateRow[]>> {
+  const grouped = new Map<string, PlanDurationRateRow[]>();
+  if (planIds.length === 0) return grouped;
+  const rows = await db
+    .select()
+    .from(schema.planDurationRates)
+    .where(inArray(schema.planDurationRates.planId, planIds))
+    .orderBy(asc(schema.planDurationRates.durationDays));
+  for (const row of rows) {
+    const existing = grouped.get(row.planId);
+    if (existing) existing.push(row);
+    else grouped.set(row.planId, [row]);
+  }
+  return grouped;
+}
+
 /** The ladder for one plan, lowest band first. Used by the CRM's editor. */
 export async function listPlanRateTiers(
   db: Database,
@@ -84,8 +114,14 @@ export async function listAdminPlans(db: Database): Promise<AdminPlan[]> {
     .select()
     .from(schema.plans)
     .orderBy(asc(schema.plans.sortOrder));
-  const tiers = await tiersByPlan(db, rows.map((row) => row.id));
-  return rows.map((row) => toAdminPlan(row, tiers.get(row.id) ?? []));
+  const ids = rows.map((row) => row.id);
+  const [tiers, durations] = await Promise.all([
+    tiersByPlan(db, ids),
+    durationRatesByPlan(db, ids),
+  ]);
+  return rows.map((row) =>
+    toAdminPlan(row, tiers.get(row.id) ?? [], durations.get(row.id) ?? []),
+  );
 }
 
 export async function listDepositNetworks(

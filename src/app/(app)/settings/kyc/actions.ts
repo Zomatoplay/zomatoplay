@@ -20,7 +20,7 @@ import { toSafeFailure } from "@/server/errors";
 import { traceAction } from "@/server/trace-action";
 import {
   kycFileRefusal,
-  missingKycFilesRefusal,
+  kycFileReferencesRefusal,
 } from "@/server/services/kyc-policy";
 import {
   startKyc,
@@ -167,15 +167,22 @@ async function resolveKycSubmission(
     return reject("Enter your document number.", correlationId);
   }
 
+  // The mobile number is required, and it must be the one verified by OTP.
+  if (!account.phoneE164) {
+    return reject("Verify your mobile number before submitting.", correlationId);
+  }
+
   /* ---------------------------------------------------------------- */
-  /* Files — an identity document and a live photo, both required      */
+  /* Files — each optional, but a referenced file must be a real upload */
   /* ---------------------------------------------------------------- */
-  const missing = missingKycFilesRefusal(input);
-  if (missing) return reject(missing, correlationId);
+  const malformed = kycFileReferencesRefusal(input);
+  if (malformed) return reject(malformed, correlationId);
+  const hasDocument = Boolean(input.documentPath?.trim());
+  const hasSelfie = Boolean(input.selfiePath?.trim());
 
   // The browser's own figures, refused early when they are already wrong.
   // The authoritative numbers come back from storage below.
-  if (input.documentByteSize !== undefined || input.documentMimeType !== undefined) {
+  if (hasDocument && (input.documentByteSize !== undefined || input.documentMimeType !== undefined)) {
     const claimed = kycFileRefusal("document", {
       contentType: String(input.documentMimeType ?? ""),
       byteSize: Number(input.documentByteSize),
@@ -190,32 +197,37 @@ async function resolveKycSubmission(
    * and be a type and size the policy accepts — as storage recorded them, not
    * as the file picker reported. A failure refuses the whole submission.
    */
-  let document: KycUploadedDocument;
-  let selfie: KycUploadedDocument;
+  let document: KycUploadedDocument | null = null;
+  let selfie: KycUploadedDocument | null = null;
   try {
     const [documentObject, selfieObject] = await Promise.all([
-      verifyOwnKycUpload(account, String(input.documentPath), "document"),
-      verifyOwnKycUpload(account, String(input.selfiePath), "selfie"),
+      hasDocument ? verifyOwnKycUpload(account, String(input.documentPath), "document") : null,
+      hasSelfie ? verifyOwnKycUpload(account, String(input.selfiePath), "selfie") : null,
     ]);
 
     const refusal =
-      kycFileRefusal("document", documentObject) ?? kycFileRefusal("selfie", selfieObject);
+      (documentObject ? kycFileRefusal("document", documentObject) : null) ??
+      (selfieObject ? kycFileRefusal("selfie", selfieObject) : null);
     if (refusal) return reject(refusal, correlationId);
 
-    document = {
-      fileName: safeFileName(input.documentFileName ?? "", "document"),
-      path: documentObject.path,
-      byteSize: documentObject.byteSize,
-      mimeType: documentObject.contentType,
-      storageBackend: documentObject.backend,
-    };
-    selfie = {
-      fileName: safeFileName(input.selfieFileName ?? "", "selfie"),
-      path: selfieObject.path,
-      byteSize: selfieObject.byteSize,
-      mimeType: selfieObject.contentType,
-      storageBackend: selfieObject.backend,
-    };
+    if (documentObject) {
+      document = {
+        fileName: safeFileName(input.documentFileName ?? "", "document"),
+        path: documentObject.path,
+        byteSize: documentObject.byteSize,
+        mimeType: documentObject.contentType,
+        storageBackend: documentObject.backend,
+      };
+    }
+    if (selfieObject) {
+      selfie = {
+        fileName: safeFileName(input.selfieFileName ?? "", "selfie"),
+        path: selfieObject.path,
+        byteSize: selfieObject.byteSize,
+        mimeType: selfieObject.contentType,
+        storageBackend: selfieObject.backend,
+      };
+    }
   } catch (error) {
     recordPipelineEvent({
       pipeline: "kyc",
@@ -254,9 +266,9 @@ async function resolveKycSubmission(
         // metadata is free-form jsonb an operator browses (CLAUDE.md §22.2).
         metadata: {
           documentType: input.documentType,
-          documentBackend: document.storageBackend,
-          documentBytes: document.byteSize,
-          selfieBytes: selfie.byteSize,
+          documentBackend: document?.storageBackend ?? "none",
+          documentBytes: document?.byteSize ?? 0,
+          selfieBytes: selfie?.byteSize ?? 0,
         },
       },
       () =>

@@ -81,6 +81,17 @@ export async function signInOperatorByPhone(verified: {
       byPhone: byPhone ?? null,
     });
     if (decision.action === "refuse") {
+      /*
+       * The access gate (environment) and the operator record (database) are
+       * two separate authorisations, and both are needed. A number that passed
+       * the gate but belongs to no operator row is told exactly that, so the
+       * fix — a master admin adding it in Admin → Agents — is obvious.
+       */
+      if (decision.reason === "not_operator" && isAuthorizedAdminMobile(verified.phoneE164)) {
+        throw new AdminAuthorizationError(
+          "This number passed the access check but is not assigned to an operator account yet. A master admin must add it in Admin → Agents.",
+        );
+      }
       throw new AdminAuthorizationError(OPERATOR_REFUSAL_MESSAGES[decision.reason]);
     }
 

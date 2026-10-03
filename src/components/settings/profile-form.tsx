@@ -2,10 +2,11 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Camera, Loader2, Lock } from "lucide-react";
+import { Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
 
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { genderLabel } from "@/lib/profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -50,25 +51,12 @@ export function ProfileForm() {
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="flex flex-col items-center gap-3">
-        <div className="relative">
-          <Avatar className="size-20">
-            <AvatarFallback className="text-xl">
-              {initials(fullName || profile.fullName)}
-            </AvatarFallback>
-          </Avatar>
-          <button
-            type="button"
-            onClick={() =>
-              toast("Photo upload is not part of this build", {
-                description: "The control is here to show where it will live.",
-              })
-            }
-            aria-label="Change profile photo"
-            className="absolute -bottom-1 -right-1 flex size-8 items-center justify-center rounded-full border-2 border-background bg-primary text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            <Camera className="size-3.5" aria-hidden />
-          </button>
-        </div>
+        <Avatar className="size-20">
+          {profile.avatarUrl ? <AvatarImage src={profile.avatarUrl} alt="" /> : null}
+          <AvatarFallback className="text-xl">
+            {initials(fullName || profile.fullName)}
+          </AvatarFallback>
+        </Avatar>
         <p className="text-xs text-muted-foreground">
           Member since {formatDate(profile.memberSince)}
         </p>
@@ -107,9 +95,16 @@ export function ProfileForm() {
             </div>
             <p className="text-xs text-muted-foreground">
               {profile.phoneVerified
-                ? "Kept on file from your earlier email sign-in. It cannot be changed here."
+                ? "Your registered contact email. Contact support to change it."
                 : "Your email is your sign-in and cannot be changed here."}
             </p>
+          </div>
+        ) : null}
+
+        {genderLabel(profile.gender) ? (
+          <div className="space-y-1.5">
+            <Label htmlFor="profile-gender">Gender</Label>
+            <Input id="profile-gender" value={genderLabel(profile.gender) ?? ""} readOnly disabled />
           </div>
         ) : null}
 

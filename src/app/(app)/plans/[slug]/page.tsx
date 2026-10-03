@@ -101,7 +101,20 @@ export default async function PlanDetailPage({
   ]);
   if (!plan) notFound();
 
-  const [low, high] = plan.estimatedReturnRange;
+  const durations = plan.durationRates.filter((row) => row.active);
+  // With selectable durations the stored "Term"/"Rewards" highlights describe
+  // the old single term, so the figures shown come from the durations instead.
+  const highlights =
+    durations.length > 0
+      ? [
+          {
+            label: "Term",
+            value: `${durations[0].durationDays}–${durations[durations.length - 1].durationDays} days`,
+          },
+          { label: "Rewards", value: "Weekly" },
+          { label: "From", value: formatUsdt(plan.minInvestment) },
+        ]
+      : plan.highlights;
 
 
   return (
@@ -121,21 +134,42 @@ export default async function PlanDetailPage({
             </p>
           </section>
 
-          {/* Headline projection */}
+          {/* Headline return — one figure per term, never a range. */}
           <Card className="p-5">
-            <p className="text-xs font-medium text-muted-foreground">
-              Estimated total return over the term
-            </p>
-            <p className="tabular mt-1 text-[2.125rem] font-semibold leading-10 tracking-tight text-positive">
-              {plan.estimatedReturnPercent}%
-            </p>
-            <p className="tabular mt-1 text-xs text-muted-foreground">
-              Projected range {low}%–{high}%. These are estimates based on strategy
-              modelling and are not guaranteed.
-            </p>
+            {durations.length > 0 ? (
+              <>
+                <p className="text-xs font-medium text-muted-foreground">
+                  Estimated total return by duration
+                </p>
+                <ul className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
+                  {durations.map((row) => (
+                    <li key={row.id} className="rounded-xl bg-secondary/60 px-2 py-2.5 text-center">
+                      <p className="text-[11px] text-muted-foreground">{row.durationDays} days</p>
+                      <p className="tabular text-lg font-semibold text-positive">
+                        {row.ratePercent}%
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                  Each figure is the total return over that term, paid weekly. A
+                  term that isn&rsquo;t a whole number of weeks pays its final
+                  part-week, pro rata by days, at maturity.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-xs font-medium text-muted-foreground">
+                  Estimated total return over the term
+                </p>
+                <p className="tabular mt-1 text-[2.125rem] font-semibold leading-10 tracking-tight text-positive">
+                  {plan.estimatedReturnPercent}%
+                </p>
+              </>
+            )}
 
             <div className="mt-4 grid grid-cols-3 gap-3 border-t border-border pt-4">
-              {plan.highlights.map((highlight) => (
+              {highlights.map((highlight) => (
                 <div key={highlight.label} className="min-w-0">
                   <p className="truncate text-[11px] font-medium text-muted-foreground">
                     {highlight.label}
@@ -179,14 +213,16 @@ export default async function PlanDetailPage({
               <InfoRow
                 label="Duration"
                 value={
-                  plan.durationDays === 0
-                    ? "No lock-in"
-                    : `${plan.durationDays} days`
+                  durations.length > 0
+                    ? durations.map((row) => row.durationDays).join(" / ") + " days"
+                    : plan.durationDays === 0
+                      ? "No lock-in"
+                      : `${plan.durationDays} days`
                 }
               />
               <InfoRow
                 label="Reward frequency"
-                value={rewardFrequencyLabels[plan.rewardFrequency]}
+                value={durations.length > 0 ? "Weekly" : rewardFrequencyLabels[plan.rewardFrequency]}
               />
               <InfoRow label="Early exit" value={plan.earlyExit} />
             </div>
@@ -196,7 +232,7 @@ export default async function PlanDetailPage({
           <AllocationReadiness />
 
           {/* Rate tiers */}
-          {plan.rateTiers.length > 0 ? (
+          {durations.length === 0 && plan.rateTiers.length > 0 ? (
             <section className="space-y-3">
               <h2 className="text-base font-semibold tracking-tight">
                 Rate by allocation amount
@@ -208,8 +244,8 @@ export default async function PlanDetailPage({
                 {formatUsdt(plan.rateTiers[0].maxAmountUsdt ?? plan.minInvestment, {
                   withSymbol: false,
                 })}{" "}
-                USDT falls into the next band up. Every figure is an estimated
-                total return over the plan&rsquo;s term and is not guaranteed.
+                USDT falls into the next band up. Every figure is the estimated
+                total return over the plan&rsquo;s term.
               </p>
               {/*
                 A real table, inside its own horizontal scroll container. Three

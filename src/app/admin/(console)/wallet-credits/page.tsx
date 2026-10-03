@@ -5,7 +5,7 @@ import { PermissionGate } from "@/components/admin/shared/permission-gate";
 import { AdminAuthorizationError, requirePermission } from "@/server/admin/session";
 import { listRecentManualCredits } from "@/server/services/manual-credit.service";
 
-export const metadata = { title: "Manual credits" };
+export const metadata = { title: "Manual Funds" };
 
 /**
  * Manual USDT credits: the form, and the recent history.
@@ -26,8 +26,8 @@ export default async function Page() {
   return (
     <>
       <AdminHeader
-        title="Manual credits"
-        description="Credit USDT to a customer's wallet through the ledger."
+        title="Manual Funds"
+        description="Credit or debit USDT on a customer's wallet through the ledger."
       />
       <AdminPage>
         <PermissionGate permission="wallet_credits">

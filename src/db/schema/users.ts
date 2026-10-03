@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   integer,
   pgTable,
@@ -105,6 +107,20 @@ export const users = pgTable(
     sessionEpoch: integer("session_epoch").notNull().default(0),
     country: text("country").notNull().default("India"),
     avatarUrl: text("avatar_url"),
+    /**
+     * Private S3 key of the customer's own profile photo
+     * (`avatars/{userId}/{uuid}`), set by first-time onboarding. Never a public
+     * URL: the photo is shown through a short-lived presigned GET. Null when
+     * the customer skipped it — the photo is optional.
+     */
+    avatarStorageKey: text("avatar_storage_key"),
+    /** `male`, `female` or `not_sure`, as the customer chose at onboarding. */
+    gender: text("gender"),
+    /**
+     * When first-time onboarding (name, gender, email) was completed. Null
+     * means the app asks for whatever is still missing before anything else.
+     */
+    profileCompletedAt: ts("profile_completed_at"),
     registeredAt: ts("registered_at").notNull(),
     lastActiveAt: ts("last_active_at").notNull(),
     status: userStatusEnum("status").notNull().default("active"),
@@ -134,6 +150,10 @@ export const users = pgTable(
   },
   (table) => [
     uniqueIndex("users_auth_user_id_key").on(table.authUserId),
+    check(
+      "users_gender_known",
+      sql`${table.gender} is null or ${table.gender} in ('male', 'female', 'not_sure')`,
+    ),
     uniqueIndex("users_firebase_uid_key").on(table.firebaseUid),
     uniqueIndex("users_phone_e164_key").on(table.phoneE164),
     uniqueIndex("users_email_key").on(table.email),

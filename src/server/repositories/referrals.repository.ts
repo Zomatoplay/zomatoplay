@@ -34,6 +34,86 @@ export async function listReferralsForUser(
   return rows.map(toReferral);
 }
 
+/** How far down a network the referral screen looks. A safety bound, not a rule. */
+export const MAX_REFERRAL_DEPTH = 10;
+
+/**
+ * Everyone below this account in the referral tree, with their DEPTH from it:
+ * a direct referral is depth 1 (VIP 1), their referrals depth 2 (VIP 2), and
+ * so on. Depth is a property of the path from the viewer, never of how many
+ * people anybody referred or invested — 500 direct referrals are 500 × VIP 1.
+ *
+ * Walked with a recursive CTE over the attribution the account-creation
+ * transaction wrote (`users.referred_by_code` → `users.referral_code`), so it
+ * reaches depth 3 and beyond, which the `referrals` table (two tiers, written
+ * for commission) never recorded. That table is joined only to carry what it
+ * does know for depths 1–2: status, amount invested and commission earned.
+ * Bounded at `MAX_REFERRAL_DEPTH` levels and 500 rows. One round trip.
+ */
+export async function listReferralNetwork(
+  db: Pick<Database, "execute">,
+  userId: string,
+): Promise<Referral[]> {
+  const rows = (await db.execute(sql`
+    with recursive network as (
+      select u.id, u.full_name, u.referral_code, u.registered_at, 1 as depth
+        from users u
+        join users viewer on viewer.id = ${userId}
+       where u.referred_by_code = viewer.referral_code
+         and u.id <> viewer.id
+      union all
+      select u.id, u.full_name, u.referral_code, u.registered_at, n.depth + 1
+        from users u
+        join network n on u.referred_by_code = n.referral_code
+       where n.depth < ${MAX_REFERRAL_DEPTH}
+         and u.id <> ${userId}
+    )
+    select n.id as user_id,
+           n.full_name,
+           n.registered_at,
+           min(n.depth) as depth,
+           r.id as referral_id,
+           r.status::text as status,
+           r.masked_email,
+           r.invested_amount::text as invested_amount,
+           r.earned_from_referral::text as earned_from_referral,
+           r.tier
+      from network n
+      left join referrals r
+        on r.referrer_user_id = ${userId} and r.referred_user_id = n.id
+     group by n.id, n.full_name, n.registered_at, r.id
+     order by min(n.depth), n.registered_at desc
+     limit 500
+  `)) as unknown as Array<{
+    user_id: string;
+    full_name: string;
+    registered_at: Date | string;
+    depth: number | string;
+    referral_id: string | null;
+    status: string | null;
+    masked_email: string | null;
+    invested_amount: string | null;
+    earned_from_referral: string | null;
+    tier: number | null;
+  }>;
+
+  return rows.map((row) => {
+    const depth = Number(row.depth);
+    return {
+      id: row.referral_id ?? `net_${row.user_id}`,
+      name: row.full_name,
+      maskedEmail: row.masked_email ?? "",
+      joinedDate: new Date(row.registered_at).toISOString(),
+      status:
+        row.status === "active" || row.status === "inactive" ? row.status : "registered",
+      investedAmount: Number(row.invested_amount ?? 0),
+      earnedFromReferral: Number(row.earned_from_referral ?? 0),
+      tier: row.tier === 2 ? 2 : 1,
+      depth,
+    } satisfies Referral;
+  });
+}
+
 export async function listCommissionsForUser(
   db: Database,
   userId: string,

@@ -61,6 +61,7 @@ export const adminPlans: AdminPlan[] = plans.map((plan) => ({
   // The same bands the public catalogue carries — one ladder, two projections
   // of it, so the CRM can never show a rate a customer was not offered.
   rateTiers: plan.rateTiers,
+  durationRates: plan.durationRates,
   rewardFrequency: plan.rewardFrequency,
   risk: plan.risk,
   status: plan.status as AdminPlanStatus,

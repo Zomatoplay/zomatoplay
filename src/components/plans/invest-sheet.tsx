@@ -62,6 +62,21 @@ export function InvestSheet({
   const [confirmedRate, setConfirmedRate] = useState<number | null>(null);
   const [pending, startTransition] = useTransition();
 
+  /*
+   * The terms an operator configured for this plan (7/15/30/60/90 days). When
+   * there are any, the customer must choose one and its rate is the rate —
+   * the amount-band ladder does not apply. The rate shown is display only:
+   * the action sends the plan, the amount and the term, and the server reads
+   * the rate from `plan_duration_rates` itself.
+   */
+  const durations = plan.durationRates.filter((row) => row.active);
+  const choosesDuration = durations.length > 0;
+  const [durationDays, setDurationDays] = useState<number | null>(
+    durations.length === 1 ? durations[0].durationDays : null,
+  );
+  const chosenDuration = durations.find((row) => row.durationDays === durationDays) ?? null;
+  const termDays = choosesDuration ? (chosenDuration?.durationDays ?? null) : plan.durationDays;
+
   const amount = Number.parseFloat(rawAmount);
   const maxAllowed = Math.min(plan.maxInvestment, balance.available);
 
@@ -88,9 +103,16 @@ export function InvestSheet({
     );
   }, [amount, plan.rateTiers]);
 
-  const hasLadder = plan.rateTiers.some((candidate) => candidate.active);
-  // No ladder → the plan's own headline rate, exactly as the server resolves it.
-  const applicableRate = tier ? tier.ratePercent : hasLadder ? null : plan.estimatedReturnPercent;
+  // A chosen duration prices the allocation; otherwise the ladder or the
+  // plan's own rate, exactly as the server resolves it.
+  const hasLadder = !choosesDuration && plan.rateTiers.some((candidate) => candidate.active);
+  const applicableRate = choosesDuration
+    ? (chosenDuration?.ratePercent ?? null)
+    : tier
+      ? tier.ratePercent
+      : hasLadder
+        ? null
+        : plan.estimatedReturnPercent;
 
   /**
    * Not enough funds, specifically — kept apart from the other errors because
@@ -125,22 +147,30 @@ export function InvestSheet({
     tier,
   ]);
 
-  const valid = rawAmount.trim() !== "" && error === null;
+  const valid =
+    rawAmount.trim() !== "" && error === null && (!choosesDuration || chosenDuration !== null);
   const projectedProfit =
     valid && applicableRate !== null ? (amount * applicableRate) / 100 : 0;
 
   const maturity = useMemo(() => {
-    if (plan.durationDays === 0) return null;
+    if (!termDays) return null;
     const date = new Date();
-    date.setUTCDate(date.getUTCDate() + plan.durationDays);
+    date.setUTCDate(date.getUTCDate() + termDays);
     return date.toISOString();
-  }, [plan.durationDays]);
+  }, [termDays]);
+
+  const termLabel =
+    termDays === null ? "Choose a duration" : termDays === 0 ? "No lock-in" : `${termDays} days`;
+  const rewardsLabel = choosesDuration
+    ? "Weekly, final part-week at maturity"
+    : rewardFrequencyLabels[plan.rewardFrequency];
 
   function reset() {
     setStage("amount");
     setRawAmount("");
     setConfirmedAmount(0);
     setConfirmedRate(null);
+    setDurationDays(durations.length === 1 ? durations[0].durationDays : null);
   }
 
   function handleOpenChange(next: boolean) {
@@ -158,6 +188,7 @@ export function InvestSheet({
       const result = await createInvestmentAction({
         planId: plan.id,
         amount: rawAmount.trim(),
+        durationDays: chosenDuration?.durationDays,
       });
 
       if (!result.ok) {
@@ -237,6 +268,36 @@ export function InvestSheet({
             </SheetHeader>
 
             <SheetBody className="space-y-4">
+              {choosesDuration ? (
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-medium">Duration</legend>
+                  <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                    {durations.map((row) => {
+                      const selected = row.durationDays === durationDays;
+                      return (
+                        <button
+                          key={row.id}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => setDurationDays(row.durationDays)}
+                          className={cn(
+                            "flex min-h-14 flex-col items-center justify-center rounded-xl border px-2 py-2 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            selected
+                              ? "border-brand bg-brand-soft text-foreground"
+                              : "border-border hover:bg-secondary/60",
+                          )}
+                        >
+                          <span className="text-sm font-semibold">{row.durationDays} days</span>
+                          <span className="tabular text-xs text-muted-foreground">
+                            {row.ratePercent}%
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </fieldset>
+              ) : null}
+
               <div className="space-y-2">
                 <Label htmlFor="invest-amount">Amount (USDT)</Label>
                 <Input
@@ -338,32 +399,20 @@ export function InvestSheet({
                   />
                 ) : null}
                 <InfoRow
-                  label={hasLadder ? "Rate for this amount" : "Estimated return"}
+                  label={hasLadder ? "Return for this amount" : "Estimated total return"}
                   value={applicableRate !== null ? `${applicableRate}%` : "—"}
-                  hint={
-                    // The projected range stays adjacent to every rate figure:
-                    // a single percentage with no range beside it reads as a
-                    // promise, which is exactly what CLAUDE.md §10 forbids.
-                    `Estimated total return over the term · range ${plan.estimatedReturnRange[0]}%–${plan.estimatedReturnRange[1]}%`
-                  }
+                  hint={termDays ? `Over ${termDays} days` : undefined}
                 />
                 <InfoRow
-                  label="Projected profit"
+                  label="Estimated profit"
                   value={formatUsdt(projectedProfit)}
                 />
                 <InfoRow
                   label="Term"
-                  value={
-                    plan.durationDays === 0
-                      ? "No lock-in"
-                      : `${plan.durationDays} days`
-                  }
+                  value={termLabel}
                   hint={maturity ? `Matures ${formatDate(maturity)}` : undefined}
                 />
-                <InfoRow
-                  label="Rewards"
-                  value={rewardFrequencyLabels[plan.rewardFrequency]}
-                />
+                <InfoRow label="Rewards" value={rewardsLabel} />
               </div>
 
               <RiskNote />
@@ -404,20 +453,13 @@ export function InvestSheet({
                 <InfoRow label="Plan" value={plan.name} />
                 {tier ? <InfoRow label="Applicable tier" value={describeTier(tier)} /> : null}
                 <InfoRow
-                  label="Rate"
+                  label="Estimated total return"
                   value={applicableRate !== null ? `${applicableRate}%` : "—"}
-                  hint={`Estimated, not guaranteed · range ${plan.estimatedReturnRange[0]}%–${plan.estimatedReturnRange[1]}%`}
                 />
+                <InfoRow label="Term" value={termLabel} />
+                <InfoRow label="Rewards" value={rewardsLabel} />
                 <InfoRow
-                  label="Term"
-                  value={
-                    plan.durationDays === 0
-                      ? "No lock-in"
-                      : `${plan.durationDays} days`
-                  }
-                />
-                <InfoRow
-                  label="Projected profit"
+                  label="Estimated profit"
                   value={formatUsdt(projectedProfit)}
                 />
                 <InfoRow
@@ -486,9 +528,9 @@ export function InvestSheet({
                 />
                 {confirmedRate !== null ? (
                   <InfoRow
-                    label="Rate applied"
+                    label="Return applied"
                     value={`${confirmedRate}%`}
-                    hint="Estimated total return over the term, not guaranteed"
+                    hint={termDays ? `Total over ${termDays} days` : undefined}
                   />
                 ) : null}
                 {maturity ? (

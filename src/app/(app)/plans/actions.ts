@@ -52,6 +52,8 @@ export interface InvestResult {
 export async function createInvestmentAction(input: {
   planId: string;
   amount: string;
+  /** The term chosen in the sheet; its rate is read server-side. */
+  durationDays?: number;
 }): Promise<InvestResult> {
   const account = await getUsableAccount();
   if (!account) return { ok: false, message: "Not signed in." };
@@ -87,11 +89,17 @@ export async function createInvestmentAction(input: {
           userId: account.userId,
           actor,
           subject: { type: "plan", id: input.planId },
-          metadata: { amountUsdt: amount },
+          metadata: { amountUsdt: amount, durationDays: input.durationDays ?? 0 },
         },
         () =>
           createInvestment(
-            { userId: account.userId, planId: input.planId, amount },
+            {
+              userId: account.userId,
+              planId: input.planId,
+              amount,
+              durationDays:
+                typeof input.durationDays === "number" ? input.durationDays : undefined,
+            },
             actor,
           ),
       );

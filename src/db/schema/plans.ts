@@ -250,3 +250,38 @@ export const planRateTiers = pgTable(
     check("plan_rate_tiers_rate_positive", sql`${table.ratePercent} > 0`),
   ],
 );
+
+/**
+ * A plan's return for each term a customer can choose — 7, 15, 30, 60 or 90
+ * days. One row per (plan, duration); the rate means what
+ * `plans.estimated_return_percent` means: the TOTAL return over that term,
+ * paid weekly and pro rata by days (schedule version 2).
+ *
+ * Every rate is entered by an operator. Nothing derives one duration's rate
+ * from another's: a duration without an active row is simply not offered,
+ * and `createInvestment` refuses it. Edited as a whole set per plan, in one
+ * audited transaction; rows are updated in place, never deleted, so an
+ * allocation's `applied_duration_rate_id` keeps pointing at something.
+ */
+export const planDurationRates = pgTable(
+  "plan_duration_rates",
+  {
+    id: text("id").primaryKey(),
+    planId: text("plan_id")
+      .notNull()
+      .references(() => plans.id, { onDelete: "cascade" }),
+    durationDays: integer("duration_days").notNull(),
+    ratePercent: percent("rate_percent").notNull(),
+    active: boolean("active").notNull().default(true),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("plan_duration_rates_plan_duration_key").on(table.planId, table.durationDays),
+    check(
+      "plan_duration_rates_duration_allowed",
+      sql`${table.durationDays} in (7, 15, 30, 60, 90)`,
+    ),
+    check("plan_duration_rates_rate_positive", sql`${table.ratePercent} > 0`),
+  ],
+);

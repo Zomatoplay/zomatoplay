@@ -36,6 +36,9 @@ export default async function KycPage() {
           <KycFlow
             reviewerNote={kycCase?.rejectionReason ?? null}
             uploadMode={uploadMode}
+            submittedFiles={
+              kycCase ? { hasDocument: kycCase.hasDocument, hasSelfie: kycCase.hasSelfie } : null
+            }
           />
         </PageContainer>
       </>

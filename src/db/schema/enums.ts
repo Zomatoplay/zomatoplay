@@ -473,6 +473,7 @@ export const auditActionEnum = pgEnum("audit_action", [
   "notification_sent",
   "settings_updated",
   "wallet_manual_credit",
+  "wallet_manual_debit",
   "withdrawal_password_reset",
   "ticket_replied",
   "ticket_status_changed",

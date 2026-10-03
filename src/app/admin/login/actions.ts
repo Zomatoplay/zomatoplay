@@ -90,7 +90,7 @@ export async function checkAdminAccess(input: {
     return { ok: false, message: GATE_REFUSED };
   }
   if (input.code === undefined) return { ok: true, message: "Enter your access code." };
-  if (!accessCodeMatches(input.code)) {
+  if (!accessCodeMatches(phoneE164, input.code)) {
     recordPipelineEvent({
       pipeline: "admin",
       operation: "admin.access_gate.refused",

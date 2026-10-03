@@ -176,10 +176,13 @@ the AWS SDK reads the role through IMDSv2 — require IMDSv2 on the instance):
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "KycObjects",
+      "Sid": "KycObjectsAndProfilePhotos",
       "Effect": "Allow",
       "Action": ["s3:PutObject", "s3:GetObject"],
-      "Resource": "arn:aws:s3:::YOUR-BUCKET/kyc/*"
+      "Resource": [
+        "arn:aws:s3:::YOUR-BUCKET/kyc/*",
+        "arn:aws:s3:::YOUR-BUCKET/avatars/*"
+      ]
     }
   ]
 }
@@ -402,3 +405,67 @@ master admin.
 `KYC_STORAGE_DRIVER=s3`, `KYC_S3_BUCKET` and `KYC_S3_REGION` are in the
 service's environment, that the instance role has the §2.2 policy, and that the
 bucket CORS allows `PUT` from `https://zomatoplay.com`.
+
+## Release: selectable durations, multi-admin, onboarding, optional KYC uploads, Manual Funds
+
+**Migrations 0026 and 0027 — both additive** (a new `plan_duration_rates` table;
+nullable/defaulted columns on `users`, `investments` and `manual_credits`; one
+new `audit_action` value). No existing row is rewritten: every existing
+allocation gets `schedule_version = 1` and keeps its exact payout split. Apply
+them on EC2 (RDS is VPC-only), then run `npm run db:secure` because 0026 adds
+a table:
+
+```bash
+npm run db:verify        # read-only: target + pending migrations
+npm run db:migrate
+npm run db:secure
+```
+
+Rollback: the new table and columns can be dropped without touching any
+pre-existing data, but rolling back the code after customers have chosen a
+duration would leave those allocations paid by the old rule — roll forward.
+
+### Administrators — several numbers, each with its own code
+
+| Variable | Class | Value |
+|---|---|---|
+| `ADMIN_LOGIN_ACCOUNTS` | **server secret** | `mobile:code,mobile:code` — e.g. `98XXXXXXXX:XXXXXXXXXX,97XXXXXXXX:YYYYYYYYYY` |
+
+`ADMIN_LOGIN_MOBILE` + `ADMIN_LOGIN_ACCESS_CODE` still work and merge with it.
+A number listed twice with different codes is refused.
+
+**The env gate is only the first check.** After the SMS code, the number must
+belong to an operator row:
+
+- the master admin: already bound by its first sign-in (or `npm run
+  db:operator-phone`);
+- anyone else: the master admin adds them in **Admin → Agents** with that
+  mobile number and the permissions they need. Their first SMS sign-in binds
+  their real Firebase uid. A number in the env file but not in Agents is told
+  exactly that.
+
+**The running process must receive the change.** Editing a shell's
+environment changes nothing for the systemd service:
+
+```bash
+systemctl cat <service>                 # find EnvironmentFile=
+sudoedit <that file>                    # add ADMIN_LOGIN_ACCOUNTS=...
+sudo systemctl restart <service>
+# confirm the running process has it, without printing the value:
+sudo tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value <service>)/environ \
+  | grep -c '^ADMIN_LOGIN_ACCOUNTS='    # prints 1
+```
+
+### Plan durations
+
+Every plan offers 7/15/30/60/90 days **once an operator sets the return for
+each** in Admin → Plans → *Durations*. Nothing is filled in automatically: until
+then a plan is sold on its own single term exactly as before. A term left blank
+is not offered and is refused server-side.
+
+### Profile photos and KYC
+
+Profile photos use the KYC bucket under `avatars/` — add that prefix to the
+instance role (the §2.2 policy above already lists it). KYC document and live
+photo uploads are optional now; without S3 the customer can still submit
+details for review. Both still need the S3 settings in §2 to upload anything.

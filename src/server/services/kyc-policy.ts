@@ -3,13 +3,16 @@ import "server-only";
 /**
  * What a verification submission must carry.
  *
- * BOTH FILES ARE REQUIRED
- * -----------------------
- * A submission is an identity document **and** a live photo of the person,
- * and nothing less reaches the review queue. This used to be a switch
- * (`KYC_REQUIRE_DOCUMENTS`, off) so that a deployment without a document store
- * could still accept declared details; production has the S3 store, and a
- * case a reviewer cannot compare against a face is not a reviewable case.
+ * UPLOADS ARE OPTIONAL (client decision, 2026-10)
+ * -----------------------------------------------
+ * A submission is the person's declared details (name, date of birth, the
+ * document type and the last four characters of its number) from an account
+ * with a verified mobile number. The identity-document photo/PDF and the live
+ * photo are each OPTIONAL. What is NOT optional is honesty about them: a file
+ * that is referenced must be a real upload — a key and a filename, distinct
+ * from the other file, verified in storage — and a case without files is
+ * labelled as such to the reviewer and to the customer. Submitting never
+ * verifies anybody; only a reviewer's approval does.
  *
  * The rules are pure functions so they are tested directly
  * (`kyc-policy.test.ts`), and they are applied twice: by the server action,
@@ -68,24 +71,28 @@ export function kycFileRefusal(kind: KycFileKind, file: KycFileFacts): string | 
 }
 
 /**
- * Why a submission's file references are incomplete, or null.
+ * Why a submission's (optional) file references are malformed, or null.
  *
- * A reference is a storage key plus a filename; either missing means the file
- * was never uploaded, whatever the screen showed.
+ * Each file is optional, but a reference is a storage key PLUS a filename:
+ * half of one means a file the screen showed and nothing uploaded, which is
+ * refused rather than silently dropped. One object can never stand in for
+ * both files.
  */
-export function missingKycFilesRefusal(input: {
+export function kycFileReferencesRefusal(input: {
   documentPath?: string | null;
   documentFileName?: string | null;
   selfiePath?: string | null;
   selfieFileName?: string | null;
 }): string | null {
-  if (!input.documentPath?.trim() || !input.documentFileName?.trim()) {
-    return "Upload a photo of your identity document.";
+  const documentKey = input.documentPath?.trim() ?? "";
+  const selfieKey = input.selfiePath?.trim() ?? "";
+  if (Boolean(documentKey) !== Boolean(input.documentFileName?.trim())) {
+    return "Your identity document did not finish uploading. Upload it again or remove it.";
   }
-  if (!input.selfiePath?.trim() || !input.selfieFileName?.trim()) {
-    return "Take a live photo of yourself.";
+  if (Boolean(selfieKey) !== Boolean(input.selfieFileName?.trim())) {
+    return "Your live photo did not finish uploading. Take it again or remove it.";
   }
-  if (input.documentPath.trim() === input.selfiePath.trim()) {
+  if (documentKey && documentKey === selfieKey) {
     return "Your live photo must be a separate photo from your document.";
   }
   return null;

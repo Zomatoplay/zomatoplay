@@ -356,7 +356,16 @@ aesthetics.
   `maxTiers` are honoured by `accrueReferralCommission`; `maxTiers` is clamped to
   2 because the VIP table defines exactly two commission columns.
 
-  **VIP level advances on its own, and only upward** — the highest level meeting
+  **VIP as the customer sees it is referral DEPTH** (2026-10): someone you
+  referred is VIP 1 to you, their referrals VIP 2, and so on
+  (`listReferralNetwork`, a recursive CTE over `users.referred_by_code`, capped
+  at 10 levels). It never depends on counts or amounts. Commission is
+  unchanged: two tiers, VIP 1 and VIP 2, at the rates below — depth 3+ earns
+  none, and **no third rate may be invented**. The account-level `vip_level`
+  below still decides those two rates and is shown to customers only as
+  "Commission rate", never as their VIP.
+
+  **The account-level commission level advances on its own, and only upward** — the highest level meeting
   both `required_active_referrals` and `required_team_volume_usdt`, applied after
   the commission so an allocation pays at the rate held when it was made. There
   is deliberately no demotion.
@@ -394,6 +403,15 @@ makes a later edit to the plan's rate reach only allocations made after it
 3. **Refreshes the display schedule** — `next_reward_at` and
    `next_reward_amount`, recomputed from `started_at` and the credited-period
    cursor rather than incremented, so a missed run cannot drift.
+
+**Two schedule versions, stored on the row** (`investments.schedule_version`).
+Version 1 — every allocation made before selectable durations — is the rule
+below, unchanged. Version 2 (a duration the customer chose, §10e) pays weekly,
+the last period shorter when the term is not whole weeks, split **pro rata by
+days** with `splitByWeights` (15 days → 7/15, 7/15, 1/15, the last at maturity).
+A version is never changed after creation, so a rule change cannot reprice an
+allocation already sold. **There is a test of all five durations; do not
+loosen it.**
 
 **Non-compounding, exactly.** Every period is a fixed share of the *original*
 `projected_profit`, split by `splitEvenly()` using integer arithmetic on the
@@ -483,6 +501,23 @@ band must not take the evidence with it, or block its own deletion.
 publishes. `npm run db:backfill-tiers` applies that to an already-migrated
 database — idempotent, and it **never touches a plan that already has a band**.
 
+### 10e Selectable durations — 7, 15, 30, 60, 90 days
+
+`plan_duration_rates`: one operator-entered TOTAL return per (plan, term),
+edited as a set in Admin → Plans → *Durations* (`savePlanDurationRates`,
+`plans: manage`, audited, rows updated in place and deactivated rather than
+deleted). **No rate is ever derived from another term's** — a blank term is not
+offered and `createInvestment` refuses it.
+
+- A plan with any active duration rate is sold ONLY on one of them: the term
+  becomes `duration_days`, the rate `applied_rate_percent`
+  (`applied_duration_rate_id` is the breadcrumb, not a FK), the frequency
+  `weekly`, `schedule_version` 2. The amount-band ladder (§10c) does not price
+  these allocations.
+- A plan with none keeps the original single-term path, unchanged — which is
+  what production does until an operator enters rates.
+- The client never sends a rate: the action sends plan, amount and term.
+
 ### 10d The business calendar
 
 `src/lib/business-time.ts` — `Asia/Kolkata`, UTC+05:30, **no daylight saving**.
@@ -508,8 +543,13 @@ let them.
 ### Language discipline (important)
 
 Returns are **never** presented as guaranteed. Always *estimated*, *projected* or
-*potential*; always show the projected range; keep risk disclosure adjacent
-(`RiskNote`). Screens that look like they move money carry a `PrototypeNote`.
+*potential*; keep risk disclosure adjacent (`RiskNote`). **Each plan shows ONE
+return figure per term — no projected range, no minimum/maximum** (client
+decision, 2026-10); the stored `estimated_return_low/high` columns now mirror
+the rate. The client has asked for "guaranteed return" wording; it has **not**
+been adopted because the Terms, Risk Disclosure and FAQ in `@/data/support`
+state that no return is promised. Change that only together with the signed
+legal text, never by editing a UI string. Screens that look like they move money carry a `PrototypeNote`.
 **Do not remove these** — investment UIs implying guaranteed returns create real
 regulatory exposure.
 
@@ -987,6 +1027,10 @@ in Postgres.
   Credentials come from the SDK's default chain — **the EC2 instance role**; no
   key is read by this code. No ACL is ever set: the bucket stays private under
   Block Public Access. Runbook: `docs/rollout-phone-s3-deposits-pwa.md` §2.
+- **Profile photos** (`server/storage/avatar-store.ts`) use the same bucket and
+  config under `avatars/{userId}/{uuid}`, with the same presigned-PUT, own-key
+  and HeadObject rules, and a 15-minute presigned GET for display. Optional:
+  onboarding hides the control when S3 is off.
 - **`supabase` — the original bucket, legacy.** Described below. It authorises
   by the uploader's *Supabase* session, so only an email-signed-in customer can
   use it; a phone-signed-in customer with S3 unset sees no upload controls
@@ -1208,7 +1252,10 @@ property the test owns — never a fact about the physical table.**
 | `lib/withdrawal-password-rules.test.ts` | no | withdrawal password rules |
 | `server/withdrawal-password.integration.test.ts` | yes | hash only, counted failures, lock, support-only reset |
 | `server/admin/operator-phone.test.ts` | no | which operator a verified phone may become |
-| `server/admin/access-gate.test.ts` | no | the admin access gate: fails closed, code shape, number match, exact code |
+| `server/admin/access-gate.test.ts` | no | the admin access gate: fails closed, code shape, per-admin codes, merged forms, ambiguity |
+| `server/services/investment-schedule.test.ts` | no | version-2 schedule for 7/15/30/60/90 days: pro rata, exact sums, nothing after maturity; version 1 unchanged |
+| `server/plan-durations.integration.test.ts` | yes | duration rates saved/validated/audited; duration required; 15 days paid 7/15, 7/15, 1/15 and matured once |
+| `server/referral-depth.integration.test.ts` | yes | VIP = depth: A→B→C→D seen from each viewer; many directs stay VIP 1 |
 
 **`connection.integration.test.ts` fires twenty then forty queries at once** — not
 a benchmark, the regression test for the transaction-pooler stall in §16.1, which
@@ -1925,15 +1972,19 @@ project, `sign_in_provider = phone`, `auth_time` < 5 min), then
 - otherwise → not an operator.
 
 **The access-code gate comes first** (`server/admin/access-gate.ts`, tested).
-The number must equal `ADMIN_LOGIN_MOBILE` (comma-separated for several), then
-the 10-character `ADMIN_LOGIN_ACCESS_CODE` must match — both server-only env
-values, never stored, logged or returned. A correct code sets a 15-minute
+The number must be configured in `ADMIN_LOGIN_ACCOUNTS` (`mobile:code,…`, each
+administrator with their OWN 10-character code) or in the original
+`ADMIN_LOGIN_MOBILE` + shared `ADMIN_LOGIN_ACCESS_CODE`; the forms merge, a
+number with two different codes is dropped, and the typed code is compared
+against THAT number's code only. Server-only env values, read per call (a
+restart picks up a change), never stored, logged or returned. A correct code sets a 15-minute
 signed httpOnly pass bound to that number, and `completeOperatorPhoneSignIn`
 refuses a verified SMS without it, because Firebase sends the SMS from the
 browser and the server cannot stop that call itself. Both refusals say the same
 thing, and both are rate-limited per address and per number. With either value
 unset, operator sign-in is refused (fails closed). **Every operator, agents
-included, needs their number in `ADMIN_LOGIN_MOBILE`.**
+included, needs their number in the gate AND an operator row** (Admin → Agents);
+a gate-authorised number with no row is told so after the SMS code.
 
 **First master-admin sign-in.** The seeded `agt_master` has no `phone_e164`, so
 no verified number could ever match it. That was the production failure. When
@@ -2150,11 +2201,15 @@ for weeks. Every level goes through `redact()`.
   document number and **only its last four characters leave the browser**; the
   server composes the mask.
 
-  **An identity document AND a live photo are both REQUIRED** — in the form, in
-  the server action and again in `submitKyc` (`@/server/services/kyc-policy`,
-  pure and tested). Each storage key is bound to its kind (a document's key
-  cannot be submitted as the selfie), a selfie must be an image, and sizes and
-  types are taken from storage after upload, not from the browser. Photos are
+  **Uploads are OPTIONAL (client decision, 2026-10)** — a submission needs a
+  verified mobile number, the onboarding profile, date of birth and the
+  document type + last four characters; the document photo/PDF and the live
+  photo are each optional (`kycFileReferencesRefusal`, pure and tested). A file
+  that IS referenced must be a whole, verified upload: each storage key is
+  bound to its kind, a selfie must be an image, and sizes and types are taken
+  from storage after upload. A case without files carries `no_document_uploaded`
+  / `no_live_photo` flags, the customer sees "Document: not provided", and
+  **only a reviewer's approval verifies anybody** — never the submission. Photos are
   resized on the device before upload (`@/lib/image-compress`: 2400 px documents,
   1600 px selfies, JPEG 0.85; PDFs and undecodable images kept as chosen). With
   no document store configured the flow says verification is unavailable. Older
@@ -2237,11 +2292,16 @@ The customer app installs to a home screen; the CRM is not offered for install.
 
 ---
 
-## 26. Manual USDT credits
+## 26. Manual Funds (credit and debit)
 
-`/admin/wallet-credits`, gated on `wallet_credits` (§15.3). An operator enters a
-member id (or account id), an amount and an optional internal note; the review
-step shows who that id is, as the server resolved it; confirming credits once.
+`/admin/wallet-credits` ("Manual Funds"), gated on `wallet_credits` (§15.3).
+An operator chooses **Manual Credit** or **Manual Debit**, enters a member id
+(or account id), an amount and a reason (required for a debit); the review step
+shows who that id is, as the server resolved it; confirming applies it once.
+A debit is the same path with the sign flipped and is refused by the ledger's
+own `available + delta >= 0` when it would overdraw. Each row records
+`direction` and `balance_after_usdt`; the audit action is
+`wallet_manual_credit` / `wallet_manual_debit`.
 
 - **Money moves only through `applyLedgerEntry`**: one `transactions` row of type
   `adjustment` ("Account credit" to the customer), in one transaction with the

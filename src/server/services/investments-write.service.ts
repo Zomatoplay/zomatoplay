@@ -8,7 +8,13 @@ import { getDb } from "@/db";
 
 import { applyLedgerEntry, readBalance } from "../repositories/wallet.repository";
 import { accrueReferralCommission } from "./referrals-write.service";
-import { elapsedDaysFor, isOpenEnded, rewardScheduleFor } from "./investment-schedule";
+import {
+  DURATION_SCHEDULE_VERSION,
+  elapsedDaysFor,
+  isOpenEnded,
+  isSelectableDuration,
+  rewardScheduleFor,
+} from "./investment-schedule";
 import {
   PlanTierError,
   resolveRateForAmount,
@@ -34,7 +40,17 @@ export class InvestmentError extends Error {
 }
 
 export async function createInvestment(
-  request: { userId: string; planId: string; amount: Decimal },
+  request: {
+    userId: string;
+    planId: string;
+    amount: Decimal;
+    /**
+     * The term the customer chose (7/15/30/60/90). Required once the plan has
+     * any active duration rate; the rate itself is never accepted from the
+     * caller — it is read from `plan_duration_rates` below.
+     */
+    durationDays?: number;
+  },
   actor: Actor = SYSTEM_ACTOR,
 ): Promise<{ investmentId: string; ledgerTxId: string; appliedRatePercent: number }> {
   return mutate(actor, async ({ tx, now, audit }) => {
@@ -85,9 +101,44 @@ export async function createInvestment(
       throw new InvestmentError("Not enough available balance.");
     }
 
+    /*
+     * THE CHOSEN TERM, PRICED FROM THE OPERATOR'S OWN TABLE.
+     *
+     * A plan with active duration rates is sold only on one of those terms:
+     * the term becomes the allocation's `duration_days`, the row's rate its
+     * `applied_rate_percent`, and the schedule is weekly, pro rata by days
+     * (version 2). A duration with no active row is refused — no rate is ever
+     * derived from another term's. A plan with no duration rates at all keeps
+     * the original single-term path below, unchanged.
+     */
+    const durationRows = await tx
+      .select()
+      .from(t.planDurationRates)
+      .where(
+        sql`${t.planDurationRates.planId} = ${plan.id} and ${t.planDurationRates.active} = true`,
+      );
+    let chosen: (typeof durationRows)[number] | null = null;
+    if (durationRows.length > 0) {
+      if (!isSelectableDuration(request.durationDays)) {
+        throw new InvestmentError("Choose how long to invest for.");
+      }
+      chosen = durationRows.find((row) => row.durationDays === request.durationDays) ?? null;
+      if (!chosen) {
+        throw new InvestmentError(
+          `${request.durationDays} days isn't available for ${plan.name}. Choose another duration.`,
+        );
+      }
+    } else if (request.durationDays !== undefined && request.durationDays !== plan.durationDays) {
+      throw new InvestmentError(`${plan.name} doesn't offer a choice of duration yet.`);
+    }
+
+    const termDays = chosen ? chosen.durationDays : plan.durationDays;
+    const rewardFrequency = chosen ? ("weekly" as const) : plan.rewardFrequency;
+    const scheduleVersion = chosen ? DURATION_SCHEDULE_VERSION : 1;
+
     const investmentId = newId("inv", now);
     const maturesAt = new Date(now);
-    maturesAt.setUTCDate(maturesAt.getUTCDate() + plan.durationDays);
+    maturesAt.setUTCDate(maturesAt.getUTCDate() + termDays);
 
     /*
      * THE RATE, RESOLVED SERVER-SIDE FROM THE PLAN'S OWN LADDER.
@@ -118,9 +169,19 @@ export async function createInvestment(
       active: tier.active,
     }));
 
-    let resolvedRate;
+    let resolvedRate: ReturnType<typeof resolveRateForAmount> | DurationRate;
     try {
-      resolvedRate = resolveRateForAmount(plan, tiers, request.amount);
+      resolvedRate = chosen
+        ? {
+            source: "duration",
+            ratePercent: chosen.ratePercent,
+            tierId: null,
+            minAmountUsdt: null,
+            maxAmountUsdt: null,
+            durationRateId: chosen.id,
+            durationDays: chosen.durationDays,
+          }
+        : resolveRateForAmount(plan, tiers, request.amount);
     } catch (error) {
       // The ladder's own refusal, re-thrown as the error type this service's
       // callers already handle, so a configuration gap reads to the customer
@@ -163,10 +224,11 @@ export async function createInvestment(
       {
         startedAt: now,
         maturesAt,
-        durationDays: plan.durationDays,
+        durationDays: termDays,
         projectedProfit,
-        rewardFrequency: plan.rewardFrequency,
+        rewardFrequency,
         earningsCreditedPeriods: 0,
+        scheduleVersion,
       },
       now,
     );
@@ -185,10 +247,12 @@ export async function createInvestment(
       projectedProfit: numericValue(projectedProfit),
       startedAt: now,
       maturesAt,
-      durationDays: plan.durationDays,
-      elapsedDays: elapsedDaysFor({ startedAt: now, durationDays: plan.durationDays }, now),
+      durationDays: termDays,
+      elapsedDays: elapsedDaysFor({ startedAt: now, durationDays: termDays }, now),
       status: "active",
-      rewardFrequency: plan.rewardFrequency,
+      rewardFrequency,
+      scheduleVersion,
+      appliedDurationRateId: chosen?.id ?? null,
       nextRewardAt: schedule.nextRewardAt,
       nextRewardAmount: schedule.nextRewardAmount,
       risk: plan.risk,
@@ -266,12 +330,24 @@ export async function createInvestment(
   });
 }
 
+/** A rate read from `plan_duration_rates` for the term the customer chose. */
+interface DurationRate {
+  source: "duration";
+  ratePercent: number;
+  tierId: null;
+  minAmountUsdt: null;
+  maxAmountUsdt: null;
+  durationRateId: string;
+  durationDays: number;
+}
+
 /** `tier 50–100 USDT` / `the plan rate`. For audit prose only. */
-function describeResolvedRate(resolved: {
-  source: "tier" | "plan";
-  minAmountUsdt: number | null;
-  maxAmountUsdt: number | null;
-}): string {
+function describeResolvedRate(
+  resolved:
+    | { source: "tier" | "plan"; minAmountUsdt: number | null; maxAmountUsdt: number | null }
+    | DurationRate,
+): string {
+  if (resolved.source === "duration") return `the ${resolved.durationDays}-day rate`;
   if (resolved.source === "plan") return "the plan's own rate, no tier ladder";
   return resolved.maxAmountUsdt === null
     ? `tier ${resolved.minAmountUsdt}+ USDT`

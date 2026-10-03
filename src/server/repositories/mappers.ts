@@ -59,6 +59,17 @@ type UserRow = Row<typeof schema.users>;
 type WalletRow = Row<typeof schema.walletBalances>;
 type PlanRow = Row<typeof schema.plans>;
 type PlanRateTierRow = Row<typeof schema.planRateTiers>;
+type PlanDurationRateRow = Row<typeof schema.planDurationRates>;
+
+/** One duration's rate, as both applications' screens read it. */
+export function toPlanDurationRateView(row: PlanDurationRateRow) {
+  return {
+    id: row.id,
+    durationDays: row.durationDays,
+    ratePercent: row.ratePercent,
+    active: row.active,
+  };
+}
 type InvestmentRow = Row<typeof schema.investments>;
 type TransactionRow = Row<typeof schema.transactions>;
 type DepositRow = Row<typeof schema.deposits>;
@@ -106,6 +117,8 @@ export function toUserProfile(user: UserRow, steps: KycStepRow[]): UserProfile {
     phone: user.phone,
     phoneVerified: user.phoneE164 !== null,
     avatarUrl: user.avatarUrl,
+    avatarStorageKey: user.avatarStorageKey,
+    gender: user.gender,
     country: user.country,
     memberSince: iso(user.registeredAt),
     kycStatus: user.kycStatus,
@@ -206,8 +219,14 @@ export function toPlanRateTierView(tier: PlanRateTierRow) {
  * caller correct — a plan with no bands is priced by its own rate, which is
  * exactly the behaviour every plan had before the ladder existed.
  */
-export function toPlan(plan: PlanRow, tiers: PlanRateTierRow[] = []): Plan {
+export function toPlan(
+  plan: PlanRow,
+  tiers: PlanRateTierRow[] = [],
+  durations: PlanDurationRateRow[] = [],
+): Plan {
   return {
+    // Only durations a customer can actually choose.
+    durationRates: durations.filter((row) => row.active).map(toPlanDurationRateView),
     // Inactive bands are filtered out here and not in the query: the CRM reads
     // the same rows and needs them. A customer has no use for a band that
     // cannot price their money.
@@ -263,6 +282,7 @@ export function toInvestment(investment: InvestmentRow): Investment {
     nextRewardDate: isoOrNull(investment.nextRewardAt),
     nextRewardAmount: investment.nextRewardAmount,
     risk: investment.risk,
+    appliedRatePercent: investment.appliedRatePercent ?? null,
   };
 }
 
@@ -355,6 +375,7 @@ export function toReferral(referral: ReferralRow): Referral {
     investedAmount: referral.investedAmount,
     earnedFromReferral: referral.earnedFromReferral,
     tier: referral.tier === 2 ? 2 : 1,
+    depth: referral.tier === 2 ? 2 : 1,
   };
 }
 
@@ -413,8 +434,10 @@ export function toAdminUser(user: UserRow, wallet: WalletRow | null): AdminUser 
 export function toAdminPlan(
   plan: PlanRow,
   tiers: PlanRateTierRow[] = [],
+  durations: PlanDurationRateRow[] = [],
 ): AdminPlan {
   return {
+    durationRates: durations.map(toPlanDurationRateView),
     // Every band, inactive included: an operator edits what is there.
     rateTiers: tiers.map(toPlanRateTierView),
     id: plan.id,

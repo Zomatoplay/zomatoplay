@@ -90,8 +90,10 @@ function seedRateTiers(plan: {
  * can never disagree with the plan's own minimum, maximum or published range —
  * which is the only way a fixture ladder goes wrong.
  */
-function withRateTiers(catalogue: Omit<Plan, "rateTiers">[]): Plan[] {
-  return catalogue.map((plan) => ({ ...plan, rateTiers: seedRateTiers(plan) }));
+function withRateTiers(catalogue: Omit<Plan, "rateTiers" | "durationRates">[]): Plan[] {
+  // No duration rates in the seed: every rate is an operator's decision
+  // (Admin → Plans), never a figure derived here.
+  return catalogue.map((plan) => ({ ...plan, rateTiers: seedRateTiers(plan), durationRates: [] }));
 }
 
 export const plans: Plan[] = withRateTiers([

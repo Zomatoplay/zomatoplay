@@ -66,6 +66,8 @@ const DOCUMENT_TYPE_LABELS: Record<KycDocumentType, string> = {
 const RISK_FLAG_LABELS: Record<string, string> = {
   liveness_not_verified: "No automated liveness check",
   documents_not_provided: "No documents attached",
+  no_document_uploaded: "No identity document uploaded",
+  no_live_photo: "No live photo uploaded",
 };
 
 /** The flag `submitKyc` sets when no provider was there to run a check. */

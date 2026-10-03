@@ -25,7 +25,8 @@
  * Bump CACHE_VERSION to discard old caches on the next activation.
  */
 
-const CACHE_VERSION = "v1";
+// v2: discards the placeholder "N" icons cached under v1.
+const CACHE_VERSION = "v2";
 const STATIC_CACHE = `zomatoplay-static-${CACHE_VERSION}`;
 // Caches written before the rename carry the old prefix; sweep both.
 const CACHE_PREFIXES = ["zomatoplay-", "nanotron-"];

@@ -236,6 +236,32 @@ export function splitEvenly(total: Decimal, parts: number): Decimal[] {
   return shares;
 }
 
+/**
+ * Splits `total` in proportion to positive integer `weights`, exactly.
+ *
+ * The pro-rata sibling of `splitEvenly`: each non-final share is
+ * `total × weight ÷ Σweights`, truncated at the schema's scale, and the last
+ * share is whatever remains, so the shares always sum to exactly `total`. Used
+ * for a weekly schedule whose term is not a whole number of weeks — 15 days is
+ * weights `[7, 7, 1]`, so the final day earns one fifteenth, not a third.
+ */
+export function splitByWeights(total: Decimal, weights: number[]): Decimal[] {
+  if (weights.length === 0 || weights.some((w) => !Number.isInteger(w) || w < 1)) {
+    throw new MoneyError("Weights must be positive integers.");
+  }
+  const totalUnits = toUnits(total);
+  const sum = BigInt(weights.reduce((a, b) => a + b, 0));
+  const shares: Decimal[] = [];
+  let allocated = BigInt(0);
+  for (let i = 0; i < weights.length - 1; i += 1) {
+    const share = (totalUnits * BigInt(weights[i])) / sum;
+    allocated += share;
+    shares.push(fromUnits(share));
+  }
+  shares.push(fromUnits(totalUnits - allocated));
+  return shares;
+}
+
 /** Scales an exact decimal string to an integer count of `1e-MAX_SCALE` units. */
 function toUnits(amount: Decimal): bigint {
   const negative = amount.startsWith("-");

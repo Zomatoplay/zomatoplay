@@ -9,7 +9,12 @@ import { maskIndianMobile } from "@/lib/phone";
 import type { ManualCreditCustomer, ManualCreditRecord } from "@/types/admin";
 
 import { resilientRead } from "../database";
-import { applyLedgerEntry, ensureWallet } from "../repositories/wallet.repository";
+import {
+  applyLedgerEntry,
+  ensureWallet,
+  InsufficientFundsError,
+  readBalance,
+} from "../repositories/wallet.repository";
 import { mutate, newId, withReason, type Actor } from "../write";
 
 export type { ManualCreditCustomer, ManualCreditRecord };
@@ -153,10 +158,16 @@ export async function findCustomerForCredit(rawId: unknown): Promise<ManualCredi
   };
 }
 
+/** Which way a Manual Funds adjustment moves money. */
+export type ManualFundsDirection = "credit" | "debit";
+
 export interface ManualCreditResult {
   creditId: string;
   ledgerTxId: string;
   amountUsdt: string;
+  direction: ManualFundsDirection;
+  /** Available balance right after this adjustment; null on a replayed key. */
+  balanceAfterUsdt: string | null;
   userId: string;
   displayId: string;
   /** True when this key had already been applied — nothing was credited now. */
@@ -164,7 +175,13 @@ export interface ManualCreditResult {
 }
 
 /**
- * Credits `amount` USDT to the account, once per idempotency key.
+ * Credits — or, with `direction: "debit"`, removes — `amount` USDT on the
+ * account's available balance, once per idempotency key (Manual Funds).
+ *
+ * A debit is the same path with the sign flipped: one `adjustment` ledger row
+ * through `applyLedgerEntry`, whose `WHERE available + delta >= 0` refuses to
+ * overdraw (an `InsufficientFundsError` rolls the whole thing back). A debit
+ * also requires a reason, because removing a customer's money must say why.
  *
  * Every input is re-validated here even though the action validated it: this
  * is the layer that moves money, so it does not assume its caller was careful.
@@ -175,14 +192,22 @@ export async function creditWalletManually(
     amount: string;
     note?: string | null;
     idempotencyKey: string;
+    direction?: ManualFundsDirection;
   },
   actor: Actor,
 ): Promise<ManualCreditResult> {
+  const direction: ManualFundsDirection = request.direction === "debit" ? "debit" : "credit";
+  if (request.direction !== undefined && request.direction !== "credit" && request.direction !== "debit") {
+    throw new ManualCreditError("Choose credit or debit.");
+  }
   if (actor.kind !== "agent") {
-    throw new ManualCreditError("Only an operator can credit a wallet.");
+    throw new ManualCreditError("Only an operator can adjust a wallet.");
   }
   const amount = parseManualCreditAmount(request.amount);
   const note = normalizeCreditNote(request.note);
+  if (direction === "debit" && !note) {
+    throw new ManualCreditError("A debit needs a reason.");
+  }
   if (!isIdempotencyKey(request.idempotencyKey)) {
     throw new ManualCreditError("This confirmation is not valid. Start the credit again.");
   }
@@ -218,13 +243,18 @@ export async function creditWalletManually(
         id: t.manualCredits.id,
         userId: t.manualCredits.userId,
         amount: sql<string>`${t.manualCredits.amountUsdt}::text`,
+        direction: t.manualCredits.direction,
         ledgerTxId: t.manualCredits.ledgerTxId,
       })
       .from(t.manualCredits)
       .where(eq(t.manualCredits.idempotencyKey, request.idempotencyKey))
       .limit(1);
     if (existing) {
-      if (existing.userId !== user.id || compare(decimalFrom(existing.amount), amount) !== 0) {
+      if (
+        existing.userId !== user.id ||
+        existing.direction !== direction ||
+        compare(decimalFrom(existing.amount), amount) !== 0
+      ) {
         // The same key for a different credit is a client bug or a replay with
         // edited fields. Refused rather than guessed at.
         throw new ManualCreditError(
@@ -235,6 +265,8 @@ export async function creditWalletManually(
         creditId: existing.id,
         ledgerTxId: existing.ledgerTxId,
         amountUsdt: decimalFrom(existing.amount),
+        direction,
+        balanceAfterUsdt: null,
         userId: user.id,
         displayId: user.displayId,
         duplicate: true,
@@ -244,21 +276,35 @@ export async function creditWalletManually(
     const creditId = newId("mcr", now);
 
     await ensureWallet(tx, user.id);
-    // The money: one ledger row and the balance move it explains.
-    const ledgerTxId = await applyLedgerEntry(tx, {
-      userId: user.id,
-      type: "adjustment",
-      amount,
-      description: "Account credit",
-      reference: creditId,
-      occurredAt: now,
-    });
+    // The money: one ledger row and the balance move it explains. A debit that
+    // would overdraw is refused by the ledger's own WHERE clause.
+    let ledgerTxId: string;
+    try {
+      ledgerTxId = await applyLedgerEntry(tx, {
+        userId: user.id,
+        type: "adjustment",
+        amount: direction === "debit" ? (`-${amount}` as Decimal) : amount,
+        description: direction === "debit" ? "Account debit" : "Account credit",
+        reference: creditId,
+        occurredAt: now,
+      });
+    } catch (error) {
+      if (error instanceof InsufficientFundsError) {
+        throw new ManualCreditError(
+          "The customer's available balance is lower than this debit. Nothing was changed.",
+        );
+      }
+      throw error;
+    }
+    const balanceAfter = (await readBalance(tx, user.id))?.available ?? null;
 
     // The decision, pointing at the entry that carried it out.
     await tx.insert(t.manualCredits).values({
       id: creditId,
       userId: user.id,
       amountUsdt: numericValue(amount),
+      direction,
+      balanceAfterUsdt: balanceAfter === null ? null : numericValue(balanceAfter),
       note,
       idempotencyKey: request.idempotencyKey,
       ledgerTxId,
@@ -268,10 +314,13 @@ export async function creditWalletManually(
     });
 
     audit({
-      action: "wallet_manual_credit",
+      action: direction === "debit" ? "wallet_manual_debit" : "wallet_manual_credit",
       target: { type: "user", id: user.id, label: `${user.fullName} (${user.displayId})` },
       details: withReason(
-        `Manually credited ${amount} USDT to ${user.displayId}. Credit ${creditId}, ledger entry ${ledgerTxId}.`,
+        `Manually ${direction === "debit" ? "debited" : "credited"} ${amount} USDT ` +
+          `${direction === "debit" ? "from" : "to"} ${user.displayId}. ` +
+          `Reference ${creditId}, ledger entry ${ledgerTxId}` +
+          (balanceAfter !== null ? `, available balance now ${balanceAfter} USDT.` : "."),
         note,
       ),
     });
@@ -280,6 +329,8 @@ export async function creditWalletManually(
       creditId,
       ledgerTxId,
       amountUsdt: amount,
+      direction,
+      balanceAfterUsdt: balanceAfter,
       userId: user.id,
       displayId: user.displayId,
       duplicate: false,
@@ -297,6 +348,8 @@ export async function listRecentManualCredits(limit = 25): Promise<ManualCreditR
         displayId: t.users.displayId,
         customerName: t.users.fullName,
         amountUsdt: t.manualCredits.amountUsdt,
+        direction: t.manualCredits.direction,
+        balanceAfterUsdt: t.manualCredits.balanceAfterUsdt,
         note: t.manualCredits.note,
         ledgerTxId: t.manualCredits.ledgerTxId,
         createdByName: t.manualCredits.createdByName,
@@ -307,5 +360,9 @@ export async function listRecentManualCredits(limit = 25): Promise<ManualCreditR
       .orderBy(desc(t.manualCredits.createdAt))
       .limit(Math.min(Math.max(limit, 1), 100)),
   );
-  return rows.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
+  return rows.map((row) => ({
+    ...row,
+    direction: row.direction === "debit" ? ("debit" as const) : ("credit" as const),
+    createdAt: row.createdAt.toISOString(),
+  }));
 }

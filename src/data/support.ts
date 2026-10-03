@@ -35,9 +35,9 @@ export const faqs: FaqItem[] = [
       "Deposits are accepted in USDT only. You choose a network, send USDT to the address shown, and your balance updates once the required number of network confirmations is reached.",
   },
   {
-    question: "Why do I see both USDT and INR amounts?",
+    question: "Which currency are my balances in?",
     answer:
-      "USDT is the platform's settlement currency, so every balance, investment and reward is held in USDT. INR amounts are shown alongside as an approximate local equivalent, converted at the USDT/INR rate set by Zomato Play, so you can gauge value at a glance. It is not a live market quote.",
+      "USDT is the platform's settlement currency, so every balance, investment and reward is held and shown in USDT. The deposit screen shows the USDT/INR deposit rate, and a withdrawal shows the exact INR you will receive before you confirm.",
   },
   {
     question: "How are withdrawals paid out?",

@@ -1,0 +1,1 @@
+ALTER TYPE "public"."audit_action" ADD VALUE 'wallet_manual_debit' BEFORE 'withdrawal_password_reset';

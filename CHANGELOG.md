@@ -4,6 +4,45 @@ Factual record of development on Zomato Play (formerly Nanotron). Newest first.
 
 ---
 
+## 2026-10-04 (Durations, multi-admin sign-in, onboarding, optional KYC uploads, Manual Funds)
+
+Migrations `0026` and `0027`, both additive (new `plan_duration_rates`;
+nullable/defaulted columns on `users`, `investments`, `manual_credits`; one new
+`audit_action` value). No existing row is rewritten.
+
+- **Selectable durations (7/15/30/60/90 days).** Operators enter a total return
+  per term in Admin → Plans → Durations (audited). Customers choose a term in
+  the invest sheet; the term and rate are stored on the allocation. Weekly
+  rewards, pro rata by days for a part-week (15 days → 7/15, 7/15, 1/15 at
+  maturity), as schedule version 2. Existing allocations stay on version 1.
+  Plans with no duration rates are sold exactly as before (§10e).
+- **One return figure per plan.** Ranges and min/max removed from the plan
+  card, plan detail, invest sheet and admin plan form. "Guaranteed" wording was
+  **not** adopted: the Terms, Risk Disclosure and FAQ state no return is
+  promised (§10).
+- **VIP = referral depth** on the referral screen (VIP 1/2/3…); commission is
+  unchanged at two tiers, shown as "Commission rate" (§10).
+- **Several administrators, each with their own code:** `ADMIN_LOGIN_ACCOUNTS`
+  (`mobile:code,…`), merged with the old pair. A number that passes the gate
+  but has no operator row is now told to be added in Admin → Agents (§20).
+- **First-time onboarding:** after OTP, a customer missing name, gender
+  (Male/Female/Not sure) or email completes them on one screen with an
+  optional profile photo in private S3 (`avatars/`). Existing values are kept.
+  Settings shows the photo, email and gender.
+- **KYC uploads optional:** document photo/PDF and live photo can be skipped;
+  the case is flagged and the customer sees Phone / Profile / Document states.
+  Submitting never verifies — a reviewer does (§23).
+- **Manual Funds:** "Manual credits" renamed; adds Manual Debit through the
+  same ledger path (reason required, overdraft refused), recording direction
+  and resulting balance (§26).
+- **PWA icon:** the install prompt showed the old "N" because the service
+  worker cached `/pwa-icon/*` forever under cache `v1`. Icons moved to
+  versioned URLs and the cache is now `v2`.
+- FAQ: the "USDT and INR amounts" answer no longer describes INR display that
+  was removed.
+
+---
+
 ## 2026-10-03 (Release hardening: admin access gate, first master-admin sign-in, INR display, deposit flow)
 
 No migrations.

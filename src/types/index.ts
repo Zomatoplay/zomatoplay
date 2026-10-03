@@ -63,7 +63,15 @@ export interface UserProfile {
    * is the sign-in and is not editable in the profile form.
    */
   phoneVerified: boolean;
+  /**
+   * A displayable photo URL: the short-lived presigned link to the private S3
+   * photo when one was uploaded at onboarding, otherwise the legacy column.
+   */
   avatarUrl: string | null;
+  /** The private S3 key behind `avatarUrl`. Server-side signing only. */
+  avatarStorageKey?: string | null;
+  /** `male` / `female` / `not_sure`, chosen at onboarding. */
+  gender?: string | null;
   country: string;
   memberSince: string;
   kycStatus: KycStatus;
@@ -142,6 +150,21 @@ export interface Plan {
    * against the rows Postgres holds, and never trusts a rate from a browser.
    */
   rateTiers: PlanRateTierView[];
+  /**
+   * The terms a customer can choose (7/15/30/60/90 days) and each one's total
+   * return, as an operator configured them. Empty until an operator sets
+   * them, in which case the plan is sold on its own single term as before.
+   * Display only — `createInvestment` reads the rate again server-side.
+   */
+  durationRates: PlanDurationRateView[];
+}
+
+/** One selectable term and its total return over that term. */
+export interface PlanDurationRateView {
+  id: string;
+  durationDays: number;
+  ratePercent: number;
+  active: boolean;
 }
 
 /** One band of a plan's rate ladder, as a screen reads it. */
@@ -181,6 +204,8 @@ export interface Investment {
   nextRewardDate: string | null;
   nextRewardAmount: number | null;
   risk: RiskLevel;
+  /** The total return this allocation was sold at. Null on old seeded rows. */
+  appliedRatePercent?: number | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -337,7 +362,14 @@ export interface Referral {
   investedAmount: number;
   /** Commission this referral has generated for the user. */
   earnedFromReferral: number;
+  /** The commission tier the `referrals` row was written at (1 or 2). */
   tier: 1 | 2;
+  /**
+   * The VIP level of this person FOR THE VIEWER: their depth in the viewer's
+   * referral tree (direct = 1, their referrals = 2, …). Never derived from
+   * referral counts or amounts.
+   */
+  depth: number;
 }
 
 export interface CommissionEntry {

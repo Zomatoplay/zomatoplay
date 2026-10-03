@@ -183,6 +183,20 @@
       "when": 1790963652551,
       "tag": "0025_zomato_play_platform_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791056466052,
+      "tag": "0026_durations_onboarding_manual_funds",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1791057343168,
+      "tag": "0027_manual_debit_audit_action",
+      "breakpoints": true
     }
   ]
 }

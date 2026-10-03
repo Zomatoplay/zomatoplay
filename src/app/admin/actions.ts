@@ -54,6 +54,8 @@ import {
   type TierDraft,
   type TierPreview,
 } from "@/server/services/plan-tiers-write.service";
+import { savePlanDurationRates } from "@/server/services/plan-duration-rates-write.service";
+import type { DurationRateDraft } from "@/lib/plan-durations";
 import {
   approveWithdrawal,
   markWithdrawalPaid,
@@ -866,7 +868,8 @@ export interface PlanInput {
   maxInvestment: number;
   durationDays: number;
   estimatedReturnPercent: number;
-  estimatedReturnRange: [number, number];
+  /** Ignored: kept for the form's shape. The stored range mirrors the rate. */
+  estimatedReturnRange?: [number, number];
   rewardFrequency: (typeof t.rewardFrequencyEnum.enumValues)[number];
   risk: (typeof t.riskLevelEnum.enumValues)[number];
   status: (typeof t.planStatusEnum.enumValues)[number];
@@ -887,6 +890,7 @@ function validatePlan(input: PlanInput) {
     throw new Error("The maximum cannot be below the minimum.");
   }
   if (input.durationDays < 0) throw new Error("The term cannot be negative.");
+  if (!(input.estimatedReturnPercent > 0)) throw new Error("The return must be above zero.");
 }
 
 export async function createPlanAction(
@@ -908,8 +912,9 @@ export async function createPlanAction(
         maxInvestment: input.maxInvestment,
         durationDays: input.durationDays,
         estimatedReturnPercent: input.estimatedReturnPercent,
-        estimatedReturnLow: input.estimatedReturnRange[0],
-        estimatedReturnHigh: input.estimatedReturnRange[1],
+        // One return figure per plan: the legacy range columns mirror it.
+        estimatedReturnLow: input.estimatedReturnPercent,
+        estimatedReturnHigh: input.estimatedReturnPercent,
         rewardFrequency: input.rewardFrequency,
         risk: input.risk,
         status: input.status,
@@ -984,8 +989,9 @@ export async function updatePlanAction(input: {
           maxInvestment: input.plan.maxInvestment,
           durationDays: input.plan.durationDays,
           estimatedReturnPercent: input.plan.estimatedReturnPercent,
-          estimatedReturnLow: input.plan.estimatedReturnRange[0],
-          estimatedReturnHigh: input.plan.estimatedReturnRange[1],
+          // One return figure per plan: the legacy range columns mirror it.
+          estimatedReturnLow: input.plan.estimatedReturnPercent,
+          estimatedReturnHigh: input.plan.estimatedReturnPercent,
           rewardFrequency: input.plan.rewardFrequency,
           risk: input.plan.risk,
           status: input.plan.status,
@@ -1718,6 +1724,37 @@ export async function savePlanTiersAction(input: {
   }
 }
 
+/**
+ * Saves a plan's per-duration rates (7/15/30/60/90 days). `manage` over
+ * `plans`, the same grant as the tier ladder, for the same reason: a rate is
+ * the plan's commercial terms. Validated and audited in
+ * `savePlanDurationRates`; existing allocations are never repriced.
+ */
+export async function savePlanDurationRatesAction(input: {
+  planId: string;
+  rates: DurationRateDraft[];
+  reason?: string;
+}): Promise<AdminActionResult> {
+  try {
+    const operator = await requirePermission("plans");
+    const { offered } = await savePlanDurationRates(
+      { planId: input.planId, rates: input.rates, reason: input.reason },
+      operator.actor,
+    );
+    revalidate("/admin/plans", "/admin", "/plans");
+    revalidateCatalogue();
+    return {
+      ok: true,
+      message:
+        offered === 0
+          ? "No durations offered. The plan is sold on its own single term."
+          : `${offered} duration${offered === 1 ? "" : "s"} offered. Existing allocations keep the rate they were sold at.`,
+    };
+  } catch (error) {
+    return failed(error, "The duration rates were not saved.");
+  }
+}
+
 export interface TierPreviewResult {
   ok: boolean;
   message?: string;
@@ -1805,6 +1842,8 @@ export async function manualCreditAction(input: {
   amount: string;
   note?: string;
   idempotencyKey: string;
+  /** Manual Funds: "debit" removes funds (reason required); default credit. */
+  direction?: "credit" | "debit";
 }): Promise<ManualCreditActionResult> {
   return traceAction(
     { name: "admin.wallet.manual_credit", actorType: "admin", pipeline: "admin" },
@@ -1814,8 +1853,11 @@ export async function manualCreditAction(input: {
         const result = await trackPipeline(
           {
             pipeline: "admin",
-            operation: "wallet.manual_credit",
-            message: "Operator credited USDT to a customer wallet by hand",
+            operation: input?.direction === "debit" ? "wallet.manual_debit" : "wallet.manual_credit",
+            message:
+              input?.direction === "debit"
+                ? "Operator debited USDT from a customer wallet by hand"
+                : "Operator credited USDT to a customer wallet by hand",
             userId: String(input?.userId ?? ""),
             actor: operator.actor,
           },
@@ -1826,6 +1868,8 @@ export async function manualCreditAction(input: {
                 amount: String(input?.amount ?? ""),
                 note: input?.note ?? null,
                 idempotencyKey: String(input?.idempotencyKey ?? ""),
+                // Validated again by the service; anything else is refused.
+                direction: input?.direction,
               },
               operator.actor,
             ),
@@ -1844,11 +1888,12 @@ export async function manualCreditAction(input: {
           creditId: result.creditId,
           ledgerTxId: result.ledgerTxId,
           message: result.duplicate
-            ? `Already applied: ${result.amountUsdt} USDT to ${result.displayId} (${result.creditId}). Nothing was credited again.`
-            : `Credited ${result.amountUsdt} USDT to ${result.displayId}. Reference ${result.creditId}.`,
+            ? `Already applied: ${result.amountUsdt} USDT ${result.direction === "debit" ? "from" : "to"} ${result.displayId} (${result.creditId}). Nothing was changed again.`
+            : `${result.direction === "debit" ? "Debited" : "Credited"} ${result.amountUsdt} USDT ${result.direction === "debit" ? "from" : "to"} ${result.displayId}. Reference ${result.creditId}` +
+              (result.balanceAfterUsdt !== null ? `. Available balance now ${result.balanceAfterUsdt} USDT.` : "."),
         };
       } catch (error) {
-        return failed(error, "The wallet was not credited.");
+        return failed(error, "The wallet was not changed.");
       }
     },
   );

@@ -10,6 +10,7 @@ import { getDb, isDatabaseConfigured } from "@/db";
 import { resilientRead } from "@/server/database";
 import { describeTraceActor, trackQuery } from "@/server/observability";
 import * as t from "@/db/schema";
+import { missingProfileFields } from "@/lib/profile";
 import { ensureWallet } from "@/server/repositories/wallet.repository";
 import { mutate, newId, SYSTEM_ACTOR } from "@/server/write";
 
@@ -50,8 +51,16 @@ export interface AuthenticatedAccount {
   phoneE164: string | null;
   displayId: string;
   fullName: string;
+  /** `male` / `female` / `not_sure`, or null until onboarding. */
+  gender: string | null;
+  /** Private S3 key of the profile photo, or null. */
+  avatarStorageKey: string | null;
   status: (typeof t.userStatusEnum.enumValues)[number];
-  /** False until the account has a name and a phone number on file. */
+  /**
+   * False until the account has a phone number and the first-time profile —
+   * full name, gender and a valid email (`missingProfileFields`). The app
+   * gate sends an incomplete account to `/complete-profile`.
+   */
   profileComplete: boolean;
   /** `users.session_epoch` — what a new phone session is issued against. */
   sessionEpoch: number;
@@ -186,6 +195,8 @@ async function findAccount(
           displayId: t.users.displayId,
           fullName: t.users.fullName,
           phone: t.users.phone,
+          gender: t.users.gender,
+          avatarStorageKey: t.users.avatarStorageKey,
           status: t.users.status,
           sessionEpoch: t.users.sessionEpoch,
         })
@@ -209,8 +220,11 @@ async function findAccount(
     phoneE164: row.phoneE164,
     displayId: row.displayId,
     fullName: row.fullName,
+    gender: row.gender,
+    avatarStorageKey: row.avatarStorageKey,
     status: row.status,
-    profileComplete: row.fullName.trim().length > 0 && hasPhone,
+    // Name, gender and a valid email (first-time onboarding), plus a number.
+    profileComplete: hasPhone && missingProfileFields(row).length === 0,
     sessionEpoch: row.sessionEpoch,
   };
 }

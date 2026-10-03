@@ -248,6 +248,73 @@ describe("manual USDT credit", { skip }, () => {
     assert.equal(customer.fullName, "Credit Test");
     assert.equal(customer.availableUsdt, 2);
   });
+
+  test("Manual Debit: removes funds through one negative ledger entry, records direction, reason and resulting balance", async () => {
+    const userId = await makeUser("40");
+    const result = await creditWalletManually(
+      { userId, amount: "15.25", note: "duplicate credit reversed", idempotencyKey: randomUUID(), direction: "debit" },
+      OPERATOR,
+    );
+    assert.equal(result.direction, "debit");
+    assert.equal(await available(userId), "24.75000000", "40 − 15.25, exactly");
+    assert.equal(result.balanceAfterUsdt, "24.75");
+
+    const entries = await ledger(userId);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].amount, -15.25);
+    assert.equal(entries[0].type, "adjustment");
+    assert.equal(entries[0].reference, result.creditId);
+
+    const [record] = await credits(userId);
+    assert.equal(record.direction, "debit");
+    assert.equal(record.balanceAfterUsdt, 24.75);
+    assert.equal(record.note, "duplicate credit reversed");
+
+    const audits = await db
+      .select()
+      .from(t.auditLogs)
+      .where(and(eq(t.auditLogs.targetId, userId), eq(t.auditLogs.action, "wallet_manual_debit")));
+    assert.equal(audits.length, 1);
+    assert.match(audits[0].details, /available balance now 24\.75/);
+  });
+
+  test("Manual Debit: refuses to overdraw and changes nothing", async () => {
+    const userId = await makeUser("5");
+    await assert.rejects(
+      creditWalletManually(
+        { userId, amount: "5.01", note: "too much", idempotencyKey: randomUUID(), direction: "debit" },
+        OPERATOR,
+      ),
+      /lower than this debit/,
+    );
+    assert.equal(await available(userId), "5.00000000");
+    assert.equal((await ledger(userId)).length, 0);
+    assert.equal((await credits(userId)).length, 0);
+  });
+
+  test("Manual Debit: requires a reason; a replayed key is applied once; a key cannot switch direction", async () => {
+    const userId = await makeUser("50");
+    await assert.rejects(
+      creditWalletManually({ userId, amount: "1", idempotencyKey: randomUUID(), direction: "debit" }, OPERATOR),
+      /needs a reason/,
+    );
+    const key = randomUUID();
+    const first = await creditWalletManually(
+      { userId, amount: "10", note: "correction", idempotencyKey: key, direction: "debit" },
+      OPERATOR,
+    );
+    const replay = await creditWalletManually(
+      { userId, amount: "10", note: "correction", idempotencyKey: key, direction: "debit" },
+      OPERATOR,
+    );
+    assert.equal(replay.duplicate, true);
+    assert.equal(replay.creditId, first.creditId);
+    assert.equal(await available(userId), "40.00000000", "debited once");
+    await assert.rejects(
+      creditWalletManually({ userId, amount: "10", note: "x", idempotencyKey: key, direction: "credit" }, OPERATOR),
+      /already used/,
+    );
+  });
 });
 
 describe("manual credit permission", () => {

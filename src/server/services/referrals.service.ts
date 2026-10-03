@@ -1,5 +1,6 @@
 import "server-only";
 
+import { cache } from "react";
 import { unstable_noStore as noStore } from "next/cache";
 
 import { getDb, isDatabaseConfigured, type Database } from "@/db";
@@ -10,7 +11,7 @@ import {
   findReferralSummary,
   findReferrerByCode,
   listCommissionsForUser,
-  listReferralsForUser,
+  listReferralNetwork,
 } from "../repositories/referrals.repository";
 
 import { AccountUnavailableError } from "./account.service";
@@ -75,8 +76,12 @@ export async function getReferralSummary(
  */
 export async function getReferrals(userId?: string): Promise<Referral[]> {
   const id = await resolveUserId(userId);
-  return read((db) => listReferralsForUser(db, id));
+  return referralNetworkFor(id);
 }
+
+// Request-scoped: the VIP section and the activity list read the same network
+// in one render, and it should cost one round trip (CLAUDE.md §16.2a).
+const referralNetworkFor = cache((id: string) => read((db) => listReferralNetwork(db, id)));
 
 export async function getCommissionHistory(
   userId?: string,

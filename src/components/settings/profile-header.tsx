@@ -5,7 +5,8 @@ import { Pencil } from "lucide-react";
 
 import { CopyButton } from "@/components/shared/copy-field";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { genderLabel } from "@/lib/profile";
 import { Button } from "@/components/ui/button";
 import { usePrototypeStore } from "@/lib/prototype-store";
 import { initials } from "@/utils/format";
@@ -22,6 +23,7 @@ export function ProfileHeader() {
     <section className="rounded-2xl border border-border bg-card p-5">
       <div className="flex items-start gap-4">
         <Avatar className="size-14 shrink-0">
+          {profile.avatarUrl ? <AvatarImage src={profile.avatarUrl} alt="" /> : null}
           <AvatarFallback className="text-base">
             {initials(profile.fullName)}
           </AvatarFallback>
@@ -35,6 +37,11 @@ export function ProfileHeader() {
             {/* A phone-only account has no email; show its number instead. */}
             {profile.email || profile.phone}
           </p>
+          {genderLabel(profile.gender) ? (
+            <p className="truncate text-xs text-muted-foreground">
+              {genderLabel(profile.gender)}
+            </p>
+          ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge kind="kyc" status={kycStatus} />
           </div>

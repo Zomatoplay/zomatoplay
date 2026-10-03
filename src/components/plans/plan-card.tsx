@@ -28,8 +28,8 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 }
 
 export function PlanCard({ plan, className }: { plan: Plan; className?: string }) {
-  const [low, high] = plan.estimatedReturnRange;
   const closed = plan.status === "closed";
+  const durations = plan.durationRates.filter((row) => row.active);
 
   return (
     <article
@@ -59,18 +59,38 @@ export function PlanCard({ plan, className }: { plan: Plan; className?: string }
         <StatusBadge kind="plan" status={plan.status} className="shrink-0" />
       </div>
 
-      {/* Estimated return is the headline figure, always qualified. */}
-      <div className="mt-4 rounded-xl bg-secondary/60 p-3">
-        <p className="text-[11px] font-medium text-muted-foreground">
-          Estimated total return
-        </p>
-        <p className="tabular mt-0.5 text-2xl font-semibold tracking-tight text-positive">
-          {plan.estimatedReturnPercent}%
-        </p>
-        <p className="tabular text-[11px] text-muted-foreground">
-          Projected range {low}%–{high}% over the term · not guaranteed
-        </p>
-      </div>
+      {/*
+        One applicable return per term — never a range. With durations
+        configured, each term shows its own single figure; otherwise the plan's
+        one term and rate.
+      */}
+      {durations.length > 0 ? (
+        <div className="mt-4">
+          <p className="text-[11px] font-medium text-muted-foreground">
+            Estimated total return by duration
+          </p>
+          <ul className="mt-1.5 grid grid-cols-3 gap-2 sm:grid-cols-5">
+            {durations.map((row) => (
+              <li key={row.id} className="rounded-xl bg-secondary/60 px-2 py-2 text-center">
+                <p className="text-[11px] text-muted-foreground">{row.durationDays} days</p>
+                <p className="tabular text-base font-semibold text-positive">{row.ratePercent}%</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <div className="mt-4 rounded-xl bg-secondary/60 p-3">
+          <p className="text-[11px] font-medium text-muted-foreground">
+            Estimated total return
+          </p>
+          <p className="tabular mt-0.5 text-2xl font-semibold tracking-tight text-positive">
+            {plan.estimatedReturnPercent}%
+          </p>
+          <p className="tabular text-[11px] text-muted-foreground">
+            {plan.durationDays === 0 ? "No fixed term" : `Over ${plan.durationDays} days`}
+          </p>
+        </div>
+      )}
 
       <div className="mt-4 grid grid-cols-3 gap-3">
         <Metric
@@ -79,9 +99,18 @@ export function PlanCard({ plan, className }: { plan: Plan; className?: string }
         />
         <Metric
           label="Duration"
-          value={plan.durationDays === 0 ? "Flexible" : `${plan.durationDays} days`}
+          value={
+            durations.length > 0
+              ? `${durations[0].durationDays}–${durations[durations.length - 1].durationDays} days`
+              : plan.durationDays === 0
+                ? "Flexible"
+                : `${plan.durationDays} days`
+          }
         />
-        <Metric label="Rewards" value={rewardFrequencyLabels[plan.rewardFrequency]} />
+        <Metric
+          label="Rewards"
+          value={durations.length > 0 ? "Weekly" : rewardFrequencyLabels[plan.rewardFrequency]}
+        />
       </div>
 
       {plan.status === "limited" && plan.capacityFilledPercent !== undefined ? (
@@ -107,7 +136,7 @@ export function PlanCard({ plan, className }: { plan: Plan; className?: string }
         Scrolls inside its own container so a three-band ladder never widens
         the page at 360px (CLAUDE.md §7).
       */}
-      {plan.rateTiers.length > 0 ? (
+      {durations.length === 0 && plan.rateTiers.length > 0 ? (
         <div className="mt-4">
           <p className="text-[11px] font-medium text-muted-foreground">
             Rate by allocation amount

@@ -1,150 +1,74 @@
-import { Check, Crown } from "lucide-react";
+import { Crown } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { formatUsdt } from "@/lib/currency";
 import { cn } from "@/lib/utils";
-import type { ReferralSummary, VipLevel, VipLevelId } from "@/types";
+import type { Referral, VipLevel } from "@/types";
 
 /**
- * VIP tiers. Percentages and thresholds are read from the catalogue rather
- * than restated here, so a config change reaches both applications at once.
+ * VIP levels by referral DEPTH, from this account's point of view.
+ *
+ * A person you referred is VIP 1; someone they referred is VIP 2; one level
+ * further is VIP 3, and so on. It never depends on how many people anyone
+ * referred or how much they invested — 500 direct referrals are 500 × VIP 1.
+ *
+ * Commission is unchanged: it is paid on VIP 1 and VIP 2 allocations at the
+ * two rates the programme defines (`vip_levels`, joined on this account), and
+ * deeper levels earn none — there is no third commission rate, and none is
+ * shown.
  */
 export function VipLevels({
-  levels,
-  currentLevel,
-  summary,
+  referrals,
+  commissionLevel,
   className,
 }: {
-  levels: VipLevel[];
-  currentLevel: VipLevelId;
-  summary: ReferralSummary;
+  referrals: Referral[];
+  /** The programme row that sets this account's two commission rates. */
+  commissionLevel: VipLevel | undefined;
   className?: string;
 }) {
-  const currentIndex = levels.findIndex((level) => level.id === currentLevel);
-  const nextLevel = levels[currentIndex + 1] ?? null;
+  const counts = new Map<number, number>();
+  for (const referral of referrals) {
+    counts.set(referral.depth, (counts.get(referral.depth) ?? 0) + 1);
+  }
+  const deepest = Math.max(3, ...counts.keys());
+  const levels = Array.from({ length: deepest }, (_, index) => index + 1);
+
+  function commissionFor(depth: number): string {
+    if (!commissionLevel) return "—";
+    if (depth === 1) return `${commissionLevel.tier1CommissionPercent}% commission`;
+    if (depth === 2) return `${commissionLevel.tier2CommissionPercent}% commission`;
+    return "No commission";
+  }
 
   return (
     <div className={cn("space-y-3", className)}>
-      {nextLevel && summary.nextLevelProgress !== null ? (
-        <div className="rounded-2xl border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-medium">Progress to {nextLevel.name}</p>
-            <span className="tabular text-sm font-semibold text-brand">
-              {summary.nextLevelProgress}%
-            </span>
-          </div>
-          <Progress
-            value={summary.nextLevelProgress}
-            className="mt-3"
-            aria-label={`Progress to ${nextLevel.name}`}
-          />
-          <p className="tabular mt-2 text-xs leading-relaxed text-muted-foreground">
-            {summary.activeReferrals}/{nextLevel.requirements.activeReferrals}{" "}
-            active referrals ·{" "}
-            {formatUsdt(summary.teamVolume, { withSymbol: false, compact: true })}/
-            {formatUsdt(nextLevel.requirements.teamVolumeUsdt, {
-              withSymbol: false,
-              compact: true,
-            })}{" "}
-            team volume
-          </p>
-        </div>
-      ) : null}
-
-      {levels.map((level, index) => {
-        const isCurrent = level.id === currentLevel;
-        const isUnlocked = index <= currentIndex;
-
-        return (
-          <article
-            key={level.id}
-            className={cn(
-              "rounded-2xl border p-5",
-              isCurrent ? "border-brand bg-brand-soft" : "border-border bg-card",
-            )}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <span
-                  className={cn(
-                    "flex size-9 shrink-0 items-center justify-center rounded-full",
-                    isUnlocked
-                      ? "bg-brand/15 text-brand"
-                      : "bg-secondary text-muted-foreground",
-                  )}
-                >
-                  <Crown className="size-4" aria-hidden />
-                </span>
-                <div>
-                  <h3 className="text-base font-semibold tracking-tight">
-                    {level.name}
-                  </h3>
-                  <p className="tabular text-xs text-muted-foreground">
-                    {level.tier1CommissionPercent}% tier 1 ·{" "}
-                    {level.tier2CommissionPercent}% tier 2
-                  </p>
-                </div>
+      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {levels.map((depth) => (
+          <li key={depth} className="rounded-2xl border border-border bg-card p-4">
+            <div className="flex items-center gap-2.5">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-brand/15 text-brand">
+                <Crown className="size-4" aria-hidden />
+              </span>
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold tracking-tight">VIP {depth}</h3>
+                <p className="text-xs text-muted-foreground">
+                  {depth === 1
+                    ? "People you referred"
+                    : depth === 2
+                      ? "Referred by your VIP 1"
+                      : `Referred by your VIP ${depth - 1}`}
+                </p>
               </div>
-              {isCurrent ? (
-                <Badge variant="brand" className="shrink-0">
-                  Current
-                </Badge>
-              ) : isUnlocked ? (
-                <Badge variant="outline" className="shrink-0">
-                  Unlocked
-                </Badge>
-              ) : null}
             </div>
-
-            <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-border/60 pt-4">
-              <div className="min-w-0">
-                <dt className="text-[11px] font-medium text-muted-foreground">
-                  Active referrals
-                </dt>
-                <dd className="tabular mt-0.5 text-sm font-semibold">
-                  {level.requirements.activeReferrals === 0
-                    ? "None required"
-                    : `${level.requirements.activeReferrals}+`}
-                </dd>
-              </div>
-              <div className="min-w-0">
-                <dt className="text-[11px] font-medium text-muted-foreground">
-                  Team volume
-                </dt>
-                <dd className="tabular mt-0.5 text-sm font-semibold">
-                  {level.requirements.teamVolumeUsdt === 0
-                    ? "None required"
-                    : formatUsdt(level.requirements.teamVolumeUsdt, {
-                        withSymbol: false,
-                        compact: true,
-                      })}
-                </dd>
-              </div>
-            </dl>
-
-            <ul className="mt-4 space-y-2">
-              {level.benefits.map((benefit) => (
-                <li key={benefit} className="flex items-start gap-2">
-                  <Check
-                    className={cn(
-                      "mt-0.5 size-3.5 shrink-0",
-                      isUnlocked ? "text-brand" : "text-muted-foreground",
-                    )}
-                    aria-hidden
-                  />
-                  <span className="text-xs leading-relaxed text-muted-foreground">
-                    {benefit}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </article>
-        );
-      })}
-
+            <div className="mt-3 flex items-baseline justify-between gap-3 border-t border-border/60 pt-3">
+              <span className="tabular text-xl font-semibold">{counts.get(depth) ?? 0}</span>
+              <span className="tabular text-xs text-muted-foreground">{commissionFor(depth)}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
       <p className="px-1 text-[11px] leading-relaxed text-muted-foreground">
-        Commission rates and level requirements are subject to change.
+        VIP level shows how far someone is from you in your referral network,
+        not how many people they referred.
       </p>
     </div>
   );

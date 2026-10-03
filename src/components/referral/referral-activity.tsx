@@ -54,7 +54,7 @@ export function ReferralActivity({
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
                     <StatusBadge kind="referral" status={referral.status} />
-                    <Badge variant="outline">Tier {referral.tier}</Badge>
+                    <Badge variant="outline">VIP {referral.depth}</Badge>
                     <span className="tabular text-[11px] text-muted-foreground">
                       Joined {formatDate(referral.joinedDate)}
                     </span>
@@ -92,7 +92,7 @@ export function ReferralActivity({
                     </p>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <Badge variant="outline">Tier {entry.tier}</Badge>
+                    <Badge variant="outline">VIP {entry.tier}</Badge>
                     <span className="tabular text-[11px] text-muted-foreground">
                       {formatDate(entry.date)}
                     </span>

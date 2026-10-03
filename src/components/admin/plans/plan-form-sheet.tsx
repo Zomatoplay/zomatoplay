@@ -25,12 +25,12 @@ import type { RewardFrequency, RiskLevel } from "@/types";
  * Create / edit form for an investment plan.
  *
  * Validation is deliberately about coherence rather than formatting: a maximum
- * below the minimum, or a projected range that does not contain the headline
- * figure, would produce a plan the user-facing screens cannot render sensibly.
+ * below the minimum would produce a plan the user-facing screens cannot render
+ * sensibly.
  *
- * The range is a required field, not an optional refinement — §10 of CLAUDE.md
- * requires every projection to be shown as a range so it never reads as a
- * promise.
+ * Plans show ONE return figure (client decision, 2026-10), so there is no range
+ * to enter: the stored low/high columns are kept equal to the headline rate on
+ * save. Per-duration returns are edited separately (Durations).
  */
 
 const EMPTY: PlanDraft = {
@@ -72,16 +72,8 @@ function validate(draft: PlanDraft): string[] {
     errors.push("The maximum allocation cannot be below the minimum.");
   if (draft.durationDays < 0)
     errors.push("The term cannot be negative. Use 0 for an open-ended plan.");
-  const [low, high] = draft.estimatedReturnRange;
-  if (high < low)
-    errors.push("The top of the projected range cannot be below the bottom.");
-  if (
-    draft.estimatedReturnPercent < low ||
-    draft.estimatedReturnPercent > high
-  )
-    errors.push(
-      "The headline projection must sit inside the projected range, so the range does not contradict it.",
-    );
+  if (!(draft.estimatedReturnPercent > 0))
+    errors.push("The return must be above zero.");
   return errors;
 }
 
@@ -125,8 +117,8 @@ export function PlanFormSheet({
             {mode === "create" ? "Create plan" : `Edit ${plan?.name ?? "plan"}`}
           </SheetTitle>
           <SheetDescription>
-            These values drive what users see. Returns are always presented as
-            estimates with a range — never as guaranteed.
+            These values drive what users see. Each plan shows one return
+            figure; set per-duration returns with Durations.
           </SheetDescription>
         </SheetHeader>
 
@@ -205,8 +197,8 @@ export function PlanFormSheet({
 
           <Field
             id="plan-return"
-            label="Headline projected return (%)"
-            hint="Shown as an estimate over the full term. Must sit inside the range below."
+            label="Total return over the term (%)"
+            hint="The single figure shown for this plan's own term. Used only when no duration returns are set."
           >
             <Input
               id="plan-return"
@@ -220,38 +212,6 @@ export function PlanFormSheet({
             />
           </Field>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field id="plan-range-low" label="Projected range — low (%)">
-              <Input
-                id="plan-range-low"
-                type="number"
-                inputMode="decimal"
-                step="0.1"
-                value={draft.estimatedReturnRange[0]}
-                onChange={(event) =>
-                  set("estimatedReturnRange", [
-                    Number(event.target.value),
-                    draft.estimatedReturnRange[1],
-                  ])
-                }
-              />
-            </Field>
-            <Field id="plan-range-high" label="Projected range — high (%)">
-              <Input
-                id="plan-range-high"
-                type="number"
-                inputMode="decimal"
-                step="0.1"
-                value={draft.estimatedReturnRange[1]}
-                onChange={(event) =>
-                  set("estimatedReturnRange", [
-                    draft.estimatedReturnRange[0],
-                    Number(event.target.value),
-                  ])
-                }
-              />
-            </Field>
-          </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <SelectField

@@ -3,9 +3,10 @@ import { redirect } from "next/navigation";
 
 import { CompleteProfileForm } from "@/components/auth/complete-profile-form";
 import { getAuthenticatedAccount } from "@/server/auth/account";
+import { isAvatarUploadAvailable, signAvatarUrl } from "@/server/storage/avatar-store";
 import { maskIndianMobile } from "@/lib/phone";
 
-export const metadata: Metadata = { title: "Complete your profile" };
+export const metadata: Metadata = { title: "Set up your profile" };
 
 export default async function CompleteProfilePage() {
   const account = await getAuthenticatedAccount();
@@ -19,6 +20,10 @@ export default async function CompleteProfilePage() {
       }
       phoneVerified={account.phoneE164 !== null}
       initialFullName={account.fullName}
+      initialGender={account.gender}
+      initialEmail={account.email}
+      avatarUploadAvailable={isAvatarUploadAvailable()}
+      initialAvatarUrl={await signAvatarUrl(account.avatarStorageKey)}
     />
   );
 }

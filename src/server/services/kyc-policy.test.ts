@@ -4,7 +4,7 @@ import { describe, test } from "node:test";
 import {
   kycFileRefusal,
   MAX_KYC_FILE_BYTES,
-  missingKycFilesRefusal,
+  kycFileReferencesRefusal,
 } from "./kyc-policy";
 
 const both = {
@@ -14,29 +14,25 @@ const both = {
   selfieFileName: "selfie.jpg",
 };
 
-describe("KYC submission requires both files", () => {
-  test("both present is accepted", () => {
-    assert.equal(missingKycFilesRefusal(both), null);
+describe("KYC uploads are optional, but a referenced file must be real", () => {
+  test("both, either, or neither file is accepted", () => {
+    assert.equal(kycFileReferencesRefusal(both), null);
+    assert.equal(kycFileReferencesRefusal({}), null);
+    assert.equal(kycFileReferencesRefusal({ documentPath: both.documentPath, documentFileName: "a.jpg" }), null);
+    assert.equal(kycFileReferencesRefusal({ selfiePath: both.selfiePath, selfieFileName: "s.jpg" }), null);
   });
 
-  test("a missing identity document is refused", () => {
-    assert.match(
-      missingKycFilesRefusal({ ...both, documentPath: undefined }) ?? "",
-      /identity document/i,
-    );
+  test("half a reference is a file that never uploaded, and is refused", () => {
     // A filename with no key is a file the screen showed and nothing uploaded.
-    assert.match(missingKycFilesRefusal({ ...both, documentPath: "  " }) ?? "", /identity document/i);
-    assert.match(missingKycFilesRefusal({ ...both, documentFileName: "" }) ?? "", /identity document/i);
-  });
-
-  test("a missing live photo is refused", () => {
-    assert.match(missingKycFilesRefusal({ ...both, selfiePath: null }) ?? "", /live photo/i);
-    assert.match(missingKycFilesRefusal({ ...both, selfieFileName: undefined }) ?? "", /live photo/i);
+    assert.match(kycFileReferencesRefusal({ ...both, documentPath: "  " }) ?? "", /identity document/i);
+    assert.match(kycFileReferencesRefusal({ ...both, documentFileName: "" }) ?? "", /identity document/i);
+    assert.match(kycFileReferencesRefusal({ ...both, selfiePath: null }) ?? "", /live photo/i);
+    assert.match(kycFileReferencesRefusal({ ...both, selfieFileName: undefined }) ?? "", /live photo/i);
   });
 
   test("one object cannot stand in for both", () => {
     assert.match(
-      missingKycFilesRefusal({ ...both, selfiePath: both.documentPath }) ?? "",
+      kycFileReferencesRefusal({ ...both, selfiePath: both.documentPath }) ?? "",
       /separate photo/i,
     );
   });

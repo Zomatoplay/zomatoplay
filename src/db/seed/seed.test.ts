@@ -108,8 +108,11 @@ test("every table in the schema is seeded", async () => {
    * `withdrawal_passwords` a secret a customer set after an SMS code — a
    * fixture would be, respectively, a credit nobody made and a credential
    * nobody chose.
+   * `plan_duration_rates` holds the return an operator chose for each term;
+   * a seeded figure would be a rate nobody set (CLAUDE.md §10e).
    */
   const operational = new Set([
+    "plan_duration_rates",
     "manual_credits",
     "withdrawal_passwords",
     "investment_earnings",

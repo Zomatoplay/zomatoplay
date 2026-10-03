@@ -90,7 +90,7 @@ export function readS3KycConfig(): S3KycConfig | null {
 
 let client: { region: string; s3: S3Client } | null = null;
 
-function s3For(config: S3KycConfig): S3Client {
+export function s3For(config: S3KycConfig): S3Client {
   if (client?.region !== config.region) {
     client = { region: config.region, s3: new S3Client({ region: config.region }) };
   }

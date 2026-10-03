@@ -102,7 +102,7 @@ export const ADMIN_NAV: AdminNavItem[] = [
   },
   {
     href: "/admin/wallet-credits",
-    label: "Manual credits",
+    label: "Manual Funds",
     icon: CirclePlus,
     permission: "wallet_credits",
     group: "Operations",

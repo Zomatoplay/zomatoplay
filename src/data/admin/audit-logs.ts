@@ -357,6 +357,7 @@ export const auditActionLabels: Record<AuditAction, string> = {
   notification_sent: "Notification sent",
   settings_updated: "Settings updated",
   wallet_manual_credit: "Manual USDT credit",
+  wallet_manual_debit: "Manual USDT debit",
   withdrawal_password_reset: "Withdrawal password reset",
   ticket_replied: "Support ticket reply",
   ticket_status_changed: "Support ticket status changed",
@@ -404,6 +405,7 @@ export const auditActionGroups: { label: string; actions: AuditAction[] }[] = [
       "withdrawal_rejected",
       "withdrawal_marked_paid",
       "wallet_manual_credit",
+      "wallet_manual_debit",
     ],
   },
   {

@@ -265,7 +265,7 @@ describe("verification lifecycle", { skip }, () => {
     const file = (
       base: KycUploadedDocument,
       override: Partial<KycUploadedDocument> | null | undefined,
-    ) => (override === null ? undefined : { ...base, ...override });
+    ) => (override === null ? null : { ...base, ...override });
     const { submissionId } = await submitKyc(
       {
         userId,
@@ -275,7 +275,7 @@ describe("verification lifecycle", { skip }, () => {
         documentNumberMasked: "•••• 1234",
         // Object keys the action verifies against the session before it gets
         // here; this calls the service directly, so it supplies them. A null
-        // override leaves the file out, which the service must refuse.
+        // override leaves the file out — uploads are optional.
         document: file(
           {
             fileName: "identity-document.jpg",
@@ -285,7 +285,7 @@ describe("verification lifecycle", { skip }, () => {
             storageBackend: "supabase",
           },
           options.document,
-        ) as KycUploadedDocument,
+        ),
         selfie: file(
           {
             fileName: "selfie.jpg",
@@ -295,7 +295,7 @@ describe("verification lifecycle", { skip }, () => {
             storageBackend: "supabase",
           },
           options.selfie,
-        ) as KycUploadedDocument,
+        ),
       },
       MASTER,
     );
@@ -376,18 +376,26 @@ describe("verification lifecycle", { skip }, () => {
     );
   });
 
-  test("a submission without an identity document is refused and writes nothing", async () => {
+  test("uploads are optional: no files still reaches review, flagged — and verifies nobody", async () => {
     const userId = await makeUser();
-    await expectRefused(submit(userId, { document: null }), /identity document and a live photo/i);
-    assert.equal(await caseCount(userId), 0, "no case was opened");
-    assert.equal(await statusOf(userId), "not_started", "the account did not move");
+    const submissionId = await submit(userId, { document: null, selfie: null });
+    assert.equal(await statusOf(userId), "pending_review", "in review, not verified");
+    const [row] = await db
+      .select({ riskFlags: t.kycSubmissions.riskFlags, liveness: t.kycSubmissions.livenessCheckPassed })
+      .from(t.kycSubmissions)
+      .where(eq(t.kycSubmissions.id, submissionId));
+    assert.deepEqual(row.riskFlags, ["liveness_not_verified", "no_document_uploaded", "no_live_photo"]);
+    assert.equal(row.liveness, false);
+    const files = await db.select().from(t.kycDocuments).where(eq(t.kycDocuments.submissionId, submissionId));
+    assert.equal(files.length, 0, "no file row claims a document that was not uploaded");
   });
 
-  test("a submission without a live photo is refused and writes nothing", async () => {
+  test("a document without a live photo is accepted and records only the document", async () => {
     const userId = await makeUser();
-    await expectRefused(submit(userId, { selfie: null }), /identity document and a live photo/i);
-    assert.equal(await caseCount(userId), 0);
-    assert.equal(await statusOf(userId), "not_started");
+    const submissionId = await submit(userId, { selfie: null });
+    const files = await db.select().from(t.kycDocuments).where(eq(t.kycDocuments.submissionId, submissionId));
+    assert.deepEqual(files.map((f) => f.label), ["Identity document"]);
+    assert.equal(await statusOf(userId), "pending_review");
   });
 
   test("a PDF is not accepted as the live photo", async () => {

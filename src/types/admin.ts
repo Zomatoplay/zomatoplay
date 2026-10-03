@@ -13,6 +13,7 @@
  */
 
 import type {
+  PlanDurationRateView,
   DepositNetworkId,
   KycStatus,
   RewardFrequency,
@@ -421,6 +422,8 @@ export interface AdminPlan {
    * plan has none and `estimatedReturnPercent` prices every allocation.
    */
   rateTiers: AdminPlanRateTier[];
+  /** Every configured duration rate, inactive included — see `Plan`. */
+  durationRates: PlanDurationRateView[];
   /** Live figures a real products service would compute. */
   stats: {
     activeInvestments: number;
@@ -621,6 +624,7 @@ export type AuditAction =
   | "notification_sent"
   | "settings_updated"
   | "wallet_manual_credit"
+  | "wallet_manual_debit"
   | "withdrawal_password_reset"
   | "ticket_replied"
   | "ticket_status_changed";
@@ -1013,6 +1017,10 @@ export interface ManualCreditRecord {
   displayId: string;
   customerName: string;
   amountUsdt: number;
+  /** Manual Funds: whether money was added or removed. */
+  direction: "credit" | "debit";
+  /** Available balance right after the adjustment; null on older rows. */
+  balanceAfterUsdt: number | null;
   note: string | null;
   ledgerTxId: string;
   createdByName: string;

@@ -90,6 +90,7 @@ export const referrals: Referral[] = [
     investedAmount: 2500,
     earnedFromReferral: 62.5,
     tier: 1,
+    depth: 1,
   },
   {
     id: "ref_2",
@@ -100,6 +101,7 @@ export const referrals: Referral[] = [
     investedAmount: 1750,
     earnedFromReferral: 43.75,
     tier: 1,
+    depth: 1,
   },
   {
     id: "ref_3",
@@ -110,6 +112,7 @@ export const referrals: Referral[] = [
     investedAmount: 1200,
     earnedFromReferral: 30,
     tier: 1,
+    depth: 1,
   },
   {
     id: "ref_4",
@@ -120,6 +123,7 @@ export const referrals: Referral[] = [
     investedAmount: 900,
     earnedFromReferral: 22.5,
     tier: 1,
+    depth: 1,
   },
   {
     id: "ref_5",
@@ -130,6 +134,7 @@ export const referrals: Referral[] = [
     investedAmount: 3000,
     earnedFromReferral: 30,
     tier: 2,
+    depth: 2,
   },
   {
     id: "ref_6",
@@ -140,6 +145,7 @@ export const referrals: Referral[] = [
     investedAmount: 0,
     earnedFromReferral: 0,
     tier: 1,
+    depth: 1,
   },
   {
     id: "ref_7",
@@ -150,6 +156,7 @@ export const referrals: Referral[] = [
     investedAmount: 0,
     earnedFromReferral: 0,
     tier: 1,
+    depth: 1,
   },
   {
     id: "ref_8",
@@ -160,6 +167,7 @@ export const referrals: Referral[] = [
     investedAmount: 1800,
     earnedFromReferral: 18,
     tier: 2,
+    depth: 2,
   },
 ];
 

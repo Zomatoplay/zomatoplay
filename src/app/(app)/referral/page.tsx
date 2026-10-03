@@ -85,7 +85,7 @@ export default function ReferralPage() {
         <section className="space-y-3">
           <SectionHeader
             title="VIP levels"
-            description="Higher levels earn a larger share of your team's allocations."
+            description="Your network by distance from you: people you referred are VIP 1, their referrals VIP 2, and so on."
           />
           <SectionBoundary title="VIP levels" fallback={<ListSkeleton rows={3} />}>
             <VipLevelsSection />
@@ -138,12 +138,14 @@ async function ReferralSummarySection() {
         tone="positive"
       />
       <StatTile
-        label="VIP Level"
-        value={level?.name ?? "VIP 1"}
-        icon={Crown}
-        hint={
-          level ? `${level.tier1CommissionPercent}% tier 1 commission` : undefined
+        label="Commission rate"
+        value={
+          level
+            ? `${level.tier1CommissionPercent}% / ${level.tier2CommissionPercent}%`
+            : "—"
         }
+        icon={Crown}
+        hint="On VIP 1 / VIP 2 allocations"
       />
     </div>
   );
@@ -166,17 +168,17 @@ async function ReferralLinkSection() {
   );
 }
 
-/** The VIP ladder and where this account sits on it. */
+/** The network by depth, and the commission each depth earns. */
 async function VipLevelsSection() {
-  const [summary, vipLevels] = await Promise.all([
+  const [summary, vipLevels, network] = await Promise.all([
     getReferralSummary(),
     getVipLevels(),
+    getReferrals(),
   ]);
   return (
     <VipLevels
-      levels={vipLevels}
-      currentLevel={summary.currentLevel}
-      summary={summary}
+      referrals={network}
+      commissionLevel={vipLevels.find((vip) => vip.id === summary.currentLevel)}
     />
   );
 }

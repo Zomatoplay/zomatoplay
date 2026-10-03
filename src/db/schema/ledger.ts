@@ -465,8 +465,21 @@ export const manualCredits = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    /** Always positive; `direction` says which way the money moved. */
     amountUsdt: usdt("amount_usdt").notNull(),
-    /** The operator's internal note. Never shown to the customer. */
+    /**
+     * `credit` adds to the available balance, `debit` removes from it. Every
+     * row written before Manual Funds existed is a credit, which is what the
+     * default records.
+     */
+    direction: text("direction").notNull().default("credit"),
+    /**
+     * The available balance immediately after this adjustment, read inside
+     * the transaction that applied it. Null on rows written before it was
+     * recorded.
+     */
+    balanceAfterUsdt: usdt("balance_after_usdt"),
+    /** The operator's internal note / reason. Never shown to the customer. */
     note: text("note"),
     idempotencyKey: text("idempotency_key").notNull(),
     /** The ledger entry that moved the money. */
@@ -483,5 +496,6 @@ export const manualCredits = pgTable(
     index("manual_credits_user_idx").on(table.userId),
     index("manual_credits_created_idx").on(table.createdAt),
     check("manual_credits_amount_positive", sql`${table.amountUsdt} > 0`),
+    check("manual_credits_direction_known", sql`${table.direction} in ('credit', 'debit')`),
   ],
 );

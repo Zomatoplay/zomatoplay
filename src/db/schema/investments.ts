@@ -1,4 +1,4 @@
-import { index, integer, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
+import { index, integer, pgTable, smallint, text, uniqueIndex } from "drizzle-orm/pg-core";
 
 import { percent, ts, usdt } from "./columns";
 import {
@@ -83,6 +83,20 @@ export const investments = pgTable(
     appliedTierMaxUsdt: usdt("applied_tier_max_usdt"),
     /** The rate actually applied, whether it came from a band or the plan. */
     appliedRatePercent: percent("applied_rate_percent"),
+    /**
+     * How this allocation's reward periods are laid out — see
+     * `ScheduleVersion` in `investment-schedule.ts`. 1 (the default, so every
+     * existing row) keeps the original even split; 2 is a duration the
+     * customer chose, paid weekly and pro rata by days. Copied at creation and
+     * never changed, so a later rule can never reprice an allocation sold.
+     */
+    scheduleVersion: smallint("schedule_version").notNull().default(1),
+    /**
+     * The `plan_duration_rates` row that priced this allocation, as a
+     * breadcrumb — not a foreign key, for the reason `applied_tier_id` is not.
+     * `duration_days` and `applied_rate_percent` carry the substance.
+     */
+    appliedDurationRateId: text("applied_duration_rate_id"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },

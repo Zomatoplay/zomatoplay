@@ -1,6 +1,6 @@
 import "server-only";
 
-import { splitEvenly, type Decimal } from "@/db/money";
+import { splitByWeights, splitEvenly, type Decimal } from "@/db/money";
 import * as t from "@/db/schema";
 
 /**
@@ -62,6 +62,36 @@ const PERIOD_DAYS: Record<Exclude<RewardFrequency, "on_maturity">, number> = {
   monthly: 30,
 };
 
+/**
+ * How an allocation's periods are laid out — stored on the row
+ * (`investments.schedule_version`) so a change to the rule can never reprice
+ * an allocation already sold.
+ *
+ *   1  the original rule: `ceil(term ÷ period)` periods, profit split evenly,
+ *      the last period pinned to maturity. Every allocation made before
+ *      selectable durations keeps exactly this.
+ *   2  selectable durations (7/15/30/60/90 days): weekly periods, the last one
+ *      shorter when the term is not whole weeks, and profit split PRO RATA BY
+ *      DAYS — 15 days pays 7/15, 7/15, then 1/15 at maturity.
+ */
+export type ScheduleVersion = 1 | 2;
+export const DURATION_SCHEDULE_VERSION: ScheduleVersion = 2;
+
+/** The terms a customer can choose from, in days. */
+export const SELECTABLE_DURATIONS = [7, 15, 30, 60, 90] as const;
+export type SelectableDuration = (typeof SELECTABLE_DURATIONS)[number];
+
+export function isSelectableDuration(value: unknown): value is SelectableDuration {
+  return SELECTABLE_DURATIONS.includes(value as SelectableDuration);
+}
+
+/** Day lengths of each weekly period in a version-2 term: 15 → [7, 7, 1]. */
+export function weeklyPeriodDays(durationDays: number): number[] {
+  const days: number[] = [];
+  for (let left = durationDays; left > 0; left -= 7) days.push(Math.min(7, left));
+  return days.length > 0 ? days : [durationDays];
+}
+
 export interface RewardSchedule {
   /** When the next reward falls due, or null once there are none left. */
   nextRewardAt: Date | null;
@@ -119,7 +149,24 @@ export function earningPeriodsFor(investment: {
   durationDays: number;
   rewardFrequency: RewardFrequency;
   projectedProfit: Decimal;
+  /** Absent or 1 for every allocation made before selectable durations. */
+  scheduleVersion?: number;
 }): EarningPeriod[] {
+  if (investment.scheduleVersion === DURATION_SCHEDULE_VERSION) {
+    const lengths = weeklyPeriodDays(investment.durationDays);
+    const amounts = splitByWeights(investment.projectedProfit, lengths);
+    let elapsed = 0;
+    return amounts.map((amount, i) => {
+      elapsed += lengths[i];
+      const index = i + 1;
+      // The last period is pinned to maturity itself, so nothing is ever due
+      // after the term ends.
+      const dueAt =
+        index === lengths.length ? investment.maturesAt : addDays(investment.startedAt, elapsed);
+      return { index, periodKey: periodKeyFor(index), dueAt, amount };
+    });
+  }
+
   const totalPeriods = earningPeriodCount(
     investment.durationDays,
     investment.rewardFrequency,
@@ -164,6 +211,7 @@ export function rewardScheduleFor(
     rewardFrequency: RewardFrequency;
     /** How many periods `creditDueEarnings` has already settled. */
     earningsCreditedPeriods: number;
+    scheduleVersion?: number;
   },
   asOf: Date,
 ): RewardSchedule {

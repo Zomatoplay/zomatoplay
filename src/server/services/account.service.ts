@@ -3,6 +3,8 @@ import "server-only";
 import { findTicketForUser } from "../repositories/tickets.repository";
 
 import { cache } from "react";
+
+import { signAvatarUrl } from "@/server/storage/avatar-store";
 import { unstable_noStore as noStore } from "next/cache";
 
 import { getDb, isDatabaseConfigured } from "@/db";
@@ -117,7 +119,16 @@ async function read<T>(query: (db: ReturnType<typeof getDb>) => Promise<T>): Pro
  * Request-scoped only: a later request re-reads, so nothing here can serve a
  * stale balance across requests.
  */
-const cachedProfile = cache((id: string) => read((db) => findUserProfile(db, id)));
+const cachedProfile = cache(async (id: string) => {
+  const profile = await read((db) => findUserProfile(db, id));
+  if (!profile) return profile;
+  // The onboarding photo lives in private S3: shown through a short-lived
+  // presigned link signed here (locally, no round trip). The key itself never
+  // leaves the server.
+  const { avatarStorageKey, ...rest } = profile;
+  const signed = await signAvatarUrl(avatarStorageKey ?? null);
+  return { ...rest, avatarUrl: signed ?? rest.avatarUrl };
+});
 const cachedWallet = cache((id: string) => read((db) => findWalletBalance(db, id)));
 const cachedBankAccounts = cache((id: string) =>
   read((db) => listBankAccounts(db, id)),

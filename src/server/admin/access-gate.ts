@@ -12,9 +12,23 @@ import { readOperatorSessionSecret } from "./operator-session";
 /**
  * The administrator access gate — a second factor asked BEFORE any SMS is sent.
  *
- *   ADMIN_LOGIN_MOBILE        the number(s) allowed to start operator sign-in
- *                              (comma-separated when there is more than one)
- *   ADMIN_LOGIN_ACCESS_CODE   exactly 10 letters/digits, compared here
+ *   ADMIN_LOGIN_ACCOUNTS      one entry per administrator, each with their
+ *                              OWN code: "mobile:code,mobile:code". Numbers in
+ *                              any Indian spelling; codes exactly 10 letters
+ *                              and digits (so ':' and ',' can never be part of
+ *                              one).
+ *   ADMIN_LOGIN_MOBILE +       the original single-code form, still honoured:
+ *   ADMIN_LOGIN_ACCESS_CODE    every number in ADMIN_LOGIN_MOBILE shares the
+ *                              one ADMIN_LOGIN_ACCESS_CODE.
+ *
+ * The two forms merge. A number listed twice with different codes is
+ * ambiguous and is dropped entirely rather than accepting either code. A
+ * malformed entry is ignored, never half-accepted. The values are read on
+ * every call, so adding or removing an administrator needs only the
+ * environment changed and the process restarted — no deployment.
+ *
+ * Passing the gate authorises nobody by itself: after the SMS code the number
+ * must still resolve to an `admin_agents` row (`signInOperatorByPhone`).
  *
  * Both are server-only environment values: never `NEXT_PUBLIC_`, never stored,
  * never logged, never returned. It does not replace the SMS code — Firebase
@@ -34,30 +48,54 @@ const CODE_SHAPE = /^[A-Za-z0-9]{10}$/;
 export const ACCESS_PASS_COOKIE = "nanotron-operator-gate";
 const PASS_SECONDS = 15 * 60;
 
-function configuredNumbers(): string[] {
-  return (process.env.ADMIN_LOGIN_MOBILE ?? "")
-    .split(",")
-    .map((value) => normalizeIndianMobile(value))
-    .filter((value): value is string => value !== null);
-}
+/** Every authorised number and its code, from both forms. Read per call. */
+function configuredAccounts(): Map<string, string> {
+  const entries: [string, string][] = [];
 
-function configuredCode(): string | null {
-  const code = (process.env.ADMIN_LOGIN_ACCESS_CODE ?? "").trim();
-  return CODE_SHAPE.test(code) ? code : null;
+  for (const raw of (process.env.ADMIN_LOGIN_ACCOUNTS ?? "").split(",")) {
+    const separator = raw.lastIndexOf(":");
+    if (separator <= 0) continue;
+    const phone = normalizeIndianMobile(raw.slice(0, separator));
+    const code = raw.slice(separator + 1).trim();
+    if (phone && CODE_SHAPE.test(code)) entries.push([phone, code]);
+  }
+
+  const sharedCode = (process.env.ADMIN_LOGIN_ACCESS_CODE ?? "").trim();
+  if (CODE_SHAPE.test(sharedCode)) {
+    for (const raw of (process.env.ADMIN_LOGIN_MOBILE ?? "").split(",")) {
+      const phone = normalizeIndianMobile(raw);
+      if (phone) entries.push([phone, sharedCode]);
+    }
+  }
+
+  const accounts = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const [phone, code] of entries) {
+    const existing = accounts.get(phone);
+    if (existing !== undefined && existing !== code) ambiguous.add(phone);
+    accounts.set(phone, code);
+  }
+  for (const phone of ambiguous) accounts.delete(phone);
+  return accounts;
 }
 
 export function isAccessGateConfigured(): boolean {
-  return configuredNumbers().length > 0 && configuredCode() !== null;
+  return configuredAccounts().size > 0;
 }
 
 /** Is this (already normalised) number one the deployment authorised? */
 export function isAuthorizedAdminMobile(phoneE164: string | null): boolean {
-  return phoneE164 !== null && configuredNumbers().includes(phoneE164);
+  return phoneE164 !== null && configuredAccounts().has(phoneE164);
 }
 
-/** Constant-time check of the typed code. False when the gate is not configured. */
-export function accessCodeMatches(given: string): boolean {
-  const expected = configuredCode();
+/**
+ * Constant-time check of the typed code against THAT number's code — one
+ * administrator's code never opens another administrator's number. False
+ * when the number is not configured.
+ */
+export function accessCodeMatches(phoneE164: string | null, given: string): boolean {
+  if (phoneE164 === null) return false;
+  const expected = configuredAccounts().get(phoneE164);
   if (!expected || typeof given !== "string" || !CODE_SHAPE.test(given.trim())) return false;
   return sameSecret(given.trim(), expected);
 }

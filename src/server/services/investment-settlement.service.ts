@@ -139,6 +139,7 @@ async function creditDueEarnings(
       rewardFrequency: t.investments.rewardFrequency,
       projectedProfit: t.investments.projectedProfit,
       earningsCreditedPeriods: t.investments.earningsCreditedPeriods,
+      scheduleVersion: t.investments.scheduleVersion,
     })
     .from(t.investments)
     .where(
@@ -160,6 +161,7 @@ async function creditDueEarnings(
         durationDays: investment.durationDays,
         rewardFrequency: investment.rewardFrequency,
         projectedProfit: decimalFrom(investment.projectedProfit),
+        scheduleVersion: investment.scheduleVersion,
       });
 
       const due = periods
@@ -288,6 +290,7 @@ export async function settleInvestments(
       projectedProfit: t.investments.projectedProfit,
       rewardFrequency: t.investments.rewardFrequency,
       earningsCreditedPeriods: t.investments.earningsCreditedPeriods,
+      scheduleVersion: t.investments.scheduleVersion,
       elapsedDays: t.investments.elapsedDays,
       nextRewardAt: t.investments.nextRewardAt,
       nextRewardAmount: t.investments.nextRewardAmount,

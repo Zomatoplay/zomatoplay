@@ -59,10 +59,10 @@ export interface KycSubmissionRequest {
   documentType: (typeof t.kycDocumentTypeEnum.enumValues)[number];
   /** Already masked by the caller — the full number never reaches this layer. */
   documentNumberMasked: string;
-  /** The identity document. Required. */
-  document: KycUploadedDocument;
-  /** The live photo the reviewer compares against the document. Required. */
-  selfie: KycUploadedDocument;
+  /** The uploaded identity document, or null — uploads are optional. */
+  document: KycUploadedDocument | null;
+  /** The live photo, or null — optional too. */
+  selfie: KycUploadedDocument | null;
 }
 
 /**
@@ -82,27 +82,26 @@ export async function submitKyc(
   actor: Actor,
 ): Promise<{ submissionId: string }> {
   /*
-   * Both files, checked again here rather than trusted from the action.
-   *
-   * The action already refused a submission without them; this is the layer
-   * that writes the case, so it is the one that must not be able to write a
-   * case a reviewer cannot compare against a face — whoever calls it.
+   * Each file is optional, but whatever IS attached is checked again here
+   * rather than trusted from the action: this is the layer that writes the
+   * case, whoever calls it.
    */
-  if (!request.document?.path || !request.selfie?.path) {
-    throw new KycError("An identity document and a live photo are both required.");
-  }
-  if (request.document.path === request.selfie.path) {
+  if (request.document && request.selfie && request.document.path === request.selfie.path) {
     throw new KycError("The live photo must be a separate photo from the document.");
   }
   const fileRefusal =
-    kycFileRefusal("document", {
-      contentType: request.document.mimeType,
-      byteSize: request.document.byteSize,
-    }) ??
-    kycFileRefusal("selfie", {
-      contentType: request.selfie.mimeType,
-      byteSize: request.selfie.byteSize,
-    });
+    (request.document
+      ? kycFileRefusal("document", {
+          contentType: request.document.mimeType,
+          byteSize: request.document.byteSize,
+        })
+      : null) ??
+    (request.selfie
+      ? kycFileRefusal("selfie", {
+          contentType: request.selfie.mimeType,
+          byteSize: request.selfie.byteSize,
+        })
+      : null);
   if (fileRefusal) throw new KycError(fileRefusal);
 
   return mutate(actor, async ({ tx, now, audit }) => {
@@ -134,8 +133,9 @@ export async function submitKyc(
 
     const submissionId = newId("kyc", now);
 
-    const documents: (typeof t.kycDocuments.$inferInsert)[] = [
-      {
+    const documents: (typeof t.kycDocuments.$inferInsert)[] = [];
+    if (request.document) {
+      documents.push({
         id: newId("kyd", now),
         submissionId,
         label: "Identity document",
@@ -147,8 +147,10 @@ export async function submitKyc(
         byteSize: request.document.byteSize,
         uploadedAt: now,
         pages: 1,
-      },
-      {
+      });
+    }
+    if (request.selfie) {
+      documents.push({
         // Offset by a millisecond so two ids generated in the same call cannot
         // collide — `newId` derives from the timestamp.
         id: newId("kyd", new Date(now.getTime() + 1)),
@@ -162,8 +164,8 @@ export async function submitKyc(
         byteSize: request.selfie.byteSize,
         uploadedAt: now,
         pages: 1,
-      },
-    ];
+      });
+    }
 
     await tx.insert(t.kycSubmissions).values({
       id: submissionId,
@@ -188,17 +190,22 @@ export async function submitKyc(
        * approves from, that nothing had established.
        */
       livenessCheckPassed: false,
-      // A true statement about what this deployment did, not about the person.
-      riskFlags: [LIVENESS_NOT_VERIFIED],
+      // True statements about what this deployment did and what was provided,
+      // not about the person — so a reviewer never mistakes a case without
+      // files for a checked one.
+      riskFlags: [
+        LIVENESS_NOT_VERIFIED,
+        ...(request.document ? [] : ["no_document_uploaded"]),
+        ...(request.selfie ? [] : ["no_live_photo"]),
+      ],
     });
 
     /*
-     * Both rows, always: `storagePath` points at an object in the private
-     * bucket that `verifyOwnKycUpload` has already confirmed exists, belongs
-     * to this account and is the right kind of file. The bytes are not here;
-     * see the note on the table.
+     * Only the files actually provided: each `storagePath` points at an object
+     * in the private bucket that `verifyOwnKycUpload` has already confirmed
+     * exists, belongs to this account and is the right kind of file.
      */
-    await tx.insert(t.kycDocuments).values(documents);
+    if (documents.length > 0) await tx.insert(t.kycDocuments).values(documents);
 
     await tx
       .update(t.users)
@@ -210,14 +217,14 @@ export async function submitKyc(
       target: { type: "kyc", id: submissionId, label: request.userId },
       details:
         documents.length === 0
-          ? "User submitted identity verification with declared details only. " +
-            "Document upload is not enabled on this deployment, so no files " +
-            "were provided and none were expected. No automated liveness " +
-            "check ran — none is connected."
-          : `User submitted identity verification with ${documents.length} ` +
-            `document${documents.length === 1 ? "" : "s"}. Awaiting review. No ` +
-            "automated liveness check ran — none is connected — so the selfie " +
-            "must be compared with the document by hand.",
+          ? "User submitted identity verification with declared details and a " +
+            "verified mobile number only — no document or live photo was " +
+            "uploaded (both are optional). Nothing has been verified yet; " +
+            "approval is the reviewer's decision."
+          : `User submitted identity verification with ${request.document ? "an identity document" : "no identity document"} ` +
+            `and ${request.selfie ? "a live photo" : "no live photo"}. Awaiting review. No ` +
+            "automated liveness check ran — none is connected — so any photo " +
+            "must be compared by hand.",
     });
 
     return { submissionId };

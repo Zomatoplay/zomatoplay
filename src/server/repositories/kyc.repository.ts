@@ -59,6 +59,10 @@ export async function findOwnKycCase(
       rejectionReason: schema.kycSubmissions.rejectionReason,
       submittedAt: schema.kycSubmissions.submittedAt,
       reviewedAt: schema.kycSubmissions.reviewedAt,
+      // Uploads are optional; the customer's screen says whether a document
+      // and a live photo are on file rather than implying one was checked.
+      documentFiles: sql<number>`(select count(*)::int from ${schema.kycDocuments} d where d.submission_id = ${schema.kycSubmissions.id} and d.label = 'Identity document')`,
+      selfieFiles: sql<number>`(select count(*)::int from ${schema.kycDocuments} d where d.submission_id = ${schema.kycSubmissions.id} and d.label = 'Selfie capture')`,
     })
     .from(schema.kycSubmissions)
     .where(eq(schema.kycSubmissions.userId, userId))
@@ -74,6 +78,8 @@ export async function findOwnKycCase(
     rejectionReason: row.rejectionReason,
     submittedAt: row.submittedAt.toISOString(),
     reviewedAt: row.reviewedAt?.toISOString() ?? null,
+    hasDocument: Number(row.documentFiles) > 0,
+    hasSelfie: Number(row.selfieFiles) > 0,
   };
 }
 
@@ -84,6 +90,10 @@ export interface OwnKycCase {
   rejectionReason: string | null;
   submittedAt: string;
   reviewedAt: string | null;
+  /** Whether that submission carried an uploaded identity document. */
+  hasDocument: boolean;
+  /** Whether it carried a live photo. */
+  hasSelfie: boolean;
 }
 
 /* -------------------------------------------------------------------------- */

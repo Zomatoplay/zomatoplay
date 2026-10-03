@@ -22,6 +22,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { usePrototypeStore } from "@/lib/prototype-store";
+import { genderLabel } from "@/lib/profile";
 import {
   startKycAction,
   submitKycAction,
@@ -67,15 +68,18 @@ import {
  *   this deployment performs an automated liveness check, so nothing here may
  *   claim one passed.
  *
- * BOTH PHOTOGRAPHS ARE REQUIRED
- * -----------------------------
- * The document and the live photo are mandatory, here and on the server
- * (`@/server/services/kyc-policy`). Each is compressed on the device before it
- * is uploaded straight to private storage, and Submit is only reached once
- * storage has accepted both — the screen never treats a selected file as an
- * uploaded one. When no document store is configured the flow says
- * verification is unavailable instead of offering a submission that cannot
- * succeed.
+ * UPLOADS ARE OPTIONAL, AND THE SCREEN SAYS WHAT IS ON FILE
+ * ---------------------------------------------------------
+ * Required: the verified mobile number, the profile (name, gender, email —
+ * shown from onboarding), date of birth, and the document type and last four
+ * characters of its number. The document photo/PDF and the live photo are each
+ * optional (`@/server/services/kyc-policy`). A file that IS chosen is
+ * compressed on the device and uploaded to private storage before Submit, and
+ * the screen never treats a selected file as an uploaded one. With no document
+ * store configured the upload controls are hidden and the details still
+ * submit. Submitting never verifies anybody: the status panel says "Phone
+ * verified", "Profile complete" and the document's real state, and only a
+ * reviewer's approval makes the account verified.
  */
 
 const DOCUMENT_TYPES = [
@@ -92,20 +96,20 @@ const STEPS = [
   {
     id: "personal",
     title: "Personal details",
-    description: "Your legal name and date of birth, as they appear on your ID.",
+    description: "Your details and your identity document's type and number.",
     icon: User,
   },
   {
     id: "document",
-    title: "Identity document",
-    description: "A government-issued photo ID — passport, Aadhaar or driving licence.",
+    title: "Document photo (optional)",
+    description: "A photo or PDF of your ID — Aadhaar, PAN, passport or driving licence. You can skip this.",
     icon: IdCard,
   },
   {
     id: "selfie",
-    title: "Selfie",
+    title: "Live photo (optional)",
     description:
-      "A live photo of your face, taken now, so a reviewer can compare it with your document.",
+      "A photo of your face, taken now, so a reviewer can compare it with your document. You can skip this.",
     icon: Camera,
   },
 ] as const;
@@ -127,6 +131,8 @@ export function KycFlow({
    * account's own latest case — see `getOwnKycCase`.
    */
   reviewerNote = null,
+  /** What the latest submission carried — shown, never implied. */
+  submittedFiles = null,
   /**
    * Where attached files go, decided server-side (`kycUploadModeFor`).
    * `unavailable` hides the attach controls rather than offering a button
@@ -136,6 +142,7 @@ export function KycFlow({
 }: {
   reviewerNote?: string | null;
   uploadMode?: KycUploadMode;
+  submittedFiles?: { hasDocument: boolean; hasSelfie: boolean } | null;
 } = {}) {
   const canAttach = uploadMode !== "unavailable";
   /**
@@ -146,11 +153,11 @@ export function KycFlow({
   const uploaded = useRef(new Map<string, string>());
   // Status only. The store is a cache of what the database said at render
   // time; it cannot change a verification state, and nothing here asks it to.
-  const { kycStatus } = usePrototypeStore();
+  const { kycStatus, profile } = usePrototypeStore();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [step, setStep] = useState(0);
-  const [fullName, setFullName] = useState("");
+  const [fullName, setFullName] = useState(profile.fullName);
   const [dob, setDob] = useState("");
   const [documentType, setDocumentType] = useState<DocumentType>("aadhaar");
   const [documentNumber, setDocumentNumber] = useState("");
@@ -170,12 +177,17 @@ export function KycFlow({
           <span className="mx-auto flex size-14 items-center justify-center rounded-full bg-brand-soft text-brand">
             <BadgeCheck className="size-7" aria-hidden />
           </span>
-          <h2 className="mt-4 text-lg font-semibold">You are verified</h2>
+          <h2 className="mt-4 text-lg font-semibold">Verification approved</h2>
           <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-            Your identity has been confirmed. Investing and withdrawals are fully
-            available on your account.
+            Our verification team approved your account. Investing and
+            withdrawals are available.
           </p>
         </Card>
+        <VerificationStatus
+          phoneVerified={profile.phoneVerified}
+          profileComplete
+          document={submittedFiles?.hasDocument ? "verified" : "not_provided"}
+        />
         <div className="space-y-2">
           <Button asChild variant="brand" size="lg" block>
             <Link href="/plans">Explore plans</Link>
@@ -197,27 +209,17 @@ export function KycFlow({
           </span>
           <h2 className="mt-4 text-lg font-semibold">Verification in review</h2>
           <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-            We have received your details. Checks usually complete within 24
-            hours, and we will notify you as soon as they do.
+            We have received your details. Our team reviews each submission by
+            hand, and the result appears here.
           </p>
         </Card>
 
-        <div className="space-y-3 rounded-2xl border border-border bg-card p-5">
-          {STEPS.map((item) => (
-            <div key={item.id} className="flex items-center gap-3">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand text-brand-foreground">
-                <Check className="size-3.5" aria-hidden />
-              </span>
-              <span className="text-sm text-foreground">{item.title}</span>
-            </div>
-          ))}
-          <div className="flex items-center gap-3">
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-info/15 text-info">
-              <Clock className="size-3.5" aria-hidden />
-            </span>
-            <span className="text-sm text-muted-foreground">Under review</span>
-          </div>
-        </div>
+        <VerificationStatus
+          phoneVerified={profile.phoneVerified}
+          profileComplete
+          document={submittedFiles?.hasDocument ? "pending" : "not_provided"}
+          livePhoto={submittedFiles ? (submittedFiles.hasSelfie ? "pending" : "not_provided") : undefined}
+        />
       </div>
     );
   }
@@ -226,18 +228,16 @@ export function KycFlow({
   /* Interactive steps                                                 */
   /* ---------------------------------------------------------------- */
   /*
-   * What each step needs before it can be left: the identity details, then a
-   * document number and a photo of the document, then a live photo. None of
-   * it is optional, and the server checks all of it again.
+   * What each step needs before it can be left: the details (name, date of
+   * birth, document type and number, and a verified mobile number) — the two
+   * photo steps are optional. The server checks all of it again.
    */
-  const canContinue =
-    !canAttach
-      ? false
-      : step === 0
-        ? fullName.trim().length > 2 && dob.trim() !== ""
-        : step === 1
-          ? lastFour(documentNumber).length === 4 && document !== null
-          : selfie !== null;
+  const detailsOk =
+    profile.phoneVerified &&
+    fullName.trim().length > 2 &&
+    dob.trim() !== "" &&
+    lastFour(documentNumber).length === 4;
+  const canContinue = step === 0 ? detailsOk : true;
 
   function next() {
     if (step < STEPS.length - 1) {
@@ -250,7 +250,7 @@ export function KycFlow({
       return;
     }
 
-    if (!document || !selfie || pending || uploading) return;
+    if (!detailsOk || pending || uploading) return;
 
     startTransition(async () => {
       /*
@@ -258,8 +258,8 @@ export function KycFlow({
        * has accepted both. A submission written before its uploads landed
        * would be a case pointing at nothing, which a reviewer cannot progress.
        */
-      let documentPath: string;
-      let selfiePath: string;
+      let documentPath: string | undefined;
+      let selfiePath: string | undefined;
       const send = async (image: CapturedImage, kind: "document" | "selfie") => {
         const done = uploaded.current.get(image.previewUrl);
         if (done) {
@@ -273,10 +273,11 @@ export function KycFlow({
         return key;
       };
       try {
-        setProgress({ document: 0, selfie: 0 });
+        // Only what was chosen is uploaded; an absent file counts as done.
+        setProgress({ document: document ? 0 : 1, selfie: selfie ? 0 : 1 });
         [documentPath, selfiePath] = await Promise.all([
-          send(document, "document"),
-          send(selfie, "selfie"),
+          document && canAttach ? send(document, "document") : undefined,
+          selfie && canAttach ? send(selfie, "selfie") : undefined,
         ]);
       } catch (error) {
         toast.error(
@@ -297,12 +298,15 @@ export function KycFlow({
         // mask, so there is no complete identity number in a request body, in a
         // server log, or in the database.
         documentNumberLast4: lastFour(documentNumber),
-        documentFileName: document.fileName,
-        documentByteSize: document.sizeBytes,
-        documentMimeType: document.mimeType,
-        documentPath,
-        selfieFileName: selfie.fileName,
-        selfiePath,
+        ...(documentPath && document
+          ? {
+              documentFileName: document.fileName,
+              documentByteSize: document.sizeBytes,
+              documentMimeType: document.mimeType,
+              documentPath,
+            }
+          : {}),
+        ...(selfiePath && selfie ? { selfieFileName: selfie.fileName, selfiePath } : {}),
       });
 
       if (!result.ok) {
@@ -383,17 +387,30 @@ export function KycFlow({
           </div>
         </div>
 
-        {!canAttach ? (
-          <p
-            className="rounded-xl border border-warning/40 bg-warning/8 p-3.5 text-sm leading-relaxed text-foreground"
-            role="status"
-          >
-            Identity verification is temporarily unavailable because photo
-            upload is not working right now. Please try again later or contact
-            support.
-          </p>
-        ) : step === 0 ? (
+        {step === 0 ? (
           <div className="space-y-4">
+            <dl className="divide-y divide-border rounded-xl border border-border px-4 text-sm">
+              <div className="flex items-center justify-between gap-3 py-2.5">
+                <dt className="text-muted-foreground">Mobile number</dt>
+                <dd className="tabular text-right font-medium">
+                  {profile.phoneVerified ? `${profile.phone} · verified` : "Not verified"}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-3 py-2.5">
+                <dt className="text-muted-foreground">Gender</dt>
+                <dd className="text-right font-medium">{genderLabel(profile.gender) ?? "—"}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-3 py-2.5">
+                <dt className="shrink-0 text-muted-foreground">Email</dt>
+                <dd className="min-w-0 break-all text-right font-medium">{profile.email || "—"}</dd>
+              </div>
+            </dl>
+            {!profile.phoneVerified ? (
+              <p className="rounded-xl border border-warning/40 bg-warning/8 p-3 text-xs leading-relaxed text-foreground" role="status">
+                A verified mobile number is required. Sign in with your mobile
+                number to verify it, then come back here.
+              </p>
+            ) : null}
             <div className="space-y-1.5">
               <Label htmlFor="kyc-name">Full legal name</Label>
               <Input
@@ -414,17 +431,23 @@ export function KycFlow({
                 onChange={(event) => setDob(event.target.value)}
               />
             </div>
+            <DocumentDetails
+              documentType={documentType}
+              onDocumentType={setDocumentType}
+              documentNumber={documentNumber}
+              onDocumentNumber={setDocumentNumber}
+            />
           </div>
+        ) : !canAttach ? (
+          <p
+            className="rounded-xl border border-border bg-secondary/60 p-3.5 text-sm leading-relaxed text-muted-foreground"
+            role="status"
+          >
+            Photo upload isn&rsquo;t available right now. This step is optional —
+            continue without it and our team will review your details.
+          </p>
         ) : step === 1 ? (
-          <DocumentStep
-            documentType={documentType}
-            onDocumentType={setDocumentType}
-            documentNumber={documentNumber}
-            onDocumentNumber={setDocumentNumber}
-            document={document}
-            onDocument={setDocument}
-            canAttach={canAttach}
-          />
+          <DocumentStep document={document} onDocument={setDocument} canAttach={canAttach} />
         ) : (
           <div className="space-y-3">
             <SelfieCapture
@@ -476,11 +499,13 @@ export function KycFlow({
         >
           {step === STEPS.length - 1
             ? progress
-              ? `Uploading your photos… ${Math.round(((progress.document + progress.selfie) / 2) * 100)}%`
+              ? `Uploading… ${Math.round(((progress.document + progress.selfie) / 2) * 100)}%`
               : pending
                 ? "Submitting…"
                 : "Submit for review"
-            : "Continue"}
+            : step > 0 && ((step === 1 && !document) || (step === 2 && !selfie))
+              ? "Skip this step"
+              : "Continue"}
         </Button>
         {step > 0 ? (
           <Button
@@ -500,24 +525,17 @@ export function KycFlow({
 
 /* -------------------------------------------------------------------------- */
 
-function DocumentStep({
+function DocumentDetails({
   documentType,
   onDocumentType,
   documentNumber,
   onDocumentNumber,
-  document,
-  onDocument,
-  canAttach,
 }: {
-  canAttach: boolean;
   documentType: DocumentType;
   onDocumentType: (value: DocumentType) => void;
   documentNumber: string;
   onDocumentNumber: (value: string) => void;
-  document: CapturedImage | null;
-  onDocument: (value: CapturedImage | null) => void;
 }) {
-  const [problem, setProblem] = useState<string | null>(null);
   const masked = lastFour(documentNumber);
 
   return (
@@ -569,7 +587,23 @@ function DocumentStep({
             : "Only the last four characters are sent — the rest stays on this device."}
         </p>
       </div>
+    </div>
+  );
+}
 
+function DocumentStep({
+  document,
+  onDocument,
+  canAttach,
+}: {
+  canAttach: boolean;
+  document: CapturedImage | null;
+  onDocument: (value: CapturedImage | null) => void;
+}) {
+  const [problem, setProblem] = useState<string | null>(null);
+
+  return (
+    <div className="space-y-4">
       {!canAttach ? null : document ? (
         <div className="space-y-3">
           <div className="flex items-start gap-3 rounded-xl border border-brand bg-brand-soft p-4">
@@ -634,5 +668,57 @@ function DocumentStep({
         </p>
       ) : null}
     </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+type FileState = "not_provided" | "pending" | "verified";
+
+/**
+ * What is actually established about this account — never more. "Phone
+ * verified" is the OTP; "Profile complete" is onboarding; a document is
+ * "pending" until a reviewer approves, and "not provided" when none was
+ * uploaded. None of these alone makes the account verified.
+ */
+function VerificationStatus({
+  phoneVerified,
+  profileComplete,
+  document,
+  livePhoto,
+}: {
+  phoneVerified: boolean;
+  profileComplete: boolean;
+  document: FileState;
+  livePhoto?: FileState;
+}) {
+  const label: Record<FileState, string> = {
+    not_provided: "Not provided",
+    pending: "Pending review",
+    verified: "Verified",
+  };
+  const rows: { label: string; value: string; done: boolean }[] = [
+    { label: "Phone", value: phoneVerified ? "Verified" : "Not verified", done: phoneVerified },
+    { label: "Profile", value: profileComplete ? "Complete" : "Incomplete", done: profileComplete },
+    { label: "Document", value: label[document], done: document === "verified" },
+    ...(livePhoto ? [{ label: "Live photo", value: label[livePhoto], done: livePhoto === "verified" }] : []),
+  ];
+  return (
+    <ul className="space-y-3 rounded-2xl border border-border bg-card p-5">
+      {rows.map((row) => (
+        <li key={row.label} className="flex items-center gap-3">
+          <span
+            className={cn(
+              "flex size-7 shrink-0 items-center justify-center rounded-full",
+              row.done ? "bg-brand text-brand-foreground" : "bg-secondary text-muted-foreground",
+            )}
+          >
+            {row.done ? <Check className="size-3.5" aria-hidden /> : <Clock className="size-3.5" aria-hidden />}
+          </span>
+          <span className="flex-1 text-sm text-foreground">{row.label}</span>
+          <span className="text-sm text-muted-foreground">{row.value}</span>
+        </li>
+      ))}
+    </ul>
   );
 }

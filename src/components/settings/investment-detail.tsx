@@ -101,6 +101,13 @@ export function InvestmentDetail({
           label="Amount invested"
           value={formatUsdt(investment.amount)}
         />
+        {investment.appliedRatePercent ? (
+          <InfoRow
+            label="Return"
+            value={`${investment.appliedRatePercent}%`}
+            hint={openEnded ? undefined : `Total over ${investment.durationDays} days`}
+          />
+        ) : null}
         <InfoRow
           label="Projected profit"
           value={formatUsdt(investment.projectedProfit)}

@@ -27,10 +27,10 @@ export default function manifest(): MetadataRoute.Manifest {
     theme_color: "#fcfcfd",
     categories: ["finance"],
     icons: [
-      { src: "/pwa-icon/192", sizes: "192x192", type: "image/png", purpose: "any" },
-      { src: "/pwa-icon/512", sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: "/pwa-icon/v2-192", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "/pwa-icon/v2-512", sizes: "512x512", type: "image/png", purpose: "any" },
       {
-        src: "/pwa-icon/maskable-512",
+        src: "/pwa-icon/v2-maskable-512",
         sizes: "512x512",
         type: "image/png",
         purpose: "maskable",

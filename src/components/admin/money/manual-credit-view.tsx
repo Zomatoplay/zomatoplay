@@ -27,7 +27,9 @@ import { formatDateTimeUtc } from "@/utils/format";
 import type { ManualCreditCustomer, ManualCreditRecord } from "@/types/admin";
 
 /**
- * Manual USDT credit: customer id + amount (+ note) → review the customer →
+ * Manual Funds: Manual Credit adds to a customer's available balance, Manual
+ * Debit removes from it (a reason is required, and the ledger refuses a debit
+ * that would overdraw). Customer id + amount + reason → review the customer →
  * confirm → the reference of what was written.
  *
  * WHY A REVIEW STEP, NOT A CONFIRM BOX
@@ -59,13 +61,20 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
   const [customerId, setCustomerId] = useState("");
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
+  const [direction, setDirection] = useState<"credit" | "debit">("credit");
   const [stage, setStage] = useState<Stage>({ kind: "form" });
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
   const amountShape = /^\d{1,7}(\.\d{1,6})?$/.test(amount.trim().replace(/,/g, ""));
   const amountPositive = amountShape && Number(amount.replace(/,/g, "")) > 0;
-  const canReview = allowed && customerId.trim().length >= 4 && amountPositive && !pending;
+  const isDebit = direction === "debit";
+  const canReview =
+    allowed &&
+    customerId.trim().length >= 4 &&
+    amountPositive &&
+    (!isDebit || note.trim().length > 0) &&
+    !pending;
 
   function review() {
     if (!canReview) return;
@@ -92,10 +101,11 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
           amount: amount.trim().replace(/,/g, ""),
           note: note.trim() || undefined,
           idempotencyKey,
+          direction,
         });
       } catch {
         // The request may or may not have reached the server. Keep the same
-        // key, so pressing Confirm again cannot credit twice.
+        // key, so pressing Confirm again cannot apply it twice.
         setError("The request did not complete. Press Confirm again — it will not be applied twice.");
         return;
       }
@@ -127,7 +137,7 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
     <AdminSection className="space-y-4">
       {!allowed ? (
         <p className="rounded-xl border border-border bg-secondary/60 p-3.5 text-sm leading-relaxed text-muted-foreground">
-          You can view manual credits but not make one. Crediting requires the
+          You can view manual adjustments but not make one. Manual Funds requires the
           <span className="font-medium text-foreground"> Manual wallet credits </span>
           permission at manage level, granted by a master admin.
         </p>
@@ -135,9 +145,35 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
 
       {stage.kind === "form" ? (
         <DetailCard
-          title="Credit USDT to a wallet"
-          description="The amount is added to the customer's available balance as a ledger entry, and the credit is recorded in the audit log under your name."
+          title={isDebit ? "Manual Debit" : "Manual Credit"}
+          description={
+            isDebit
+              ? "The amount is removed from the customer's available balance as a ledger entry, and the debit is recorded in the audit log under your name. A debit larger than the available balance is refused."
+              : "The amount is added to the customer's available balance as a ledger entry, and the credit is recorded in the audit log under your name."
+          }
         >
+          <div role="tablist" aria-label="Adjustment type" className="mb-4 inline-flex rounded-xl border border-border p-1">
+            {(["credit", "debit"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={direction === value}
+                disabled={pending}
+                onClick={() => {
+                  setDirection(value);
+                  setError(null);
+                }}
+                className={
+                  direction === value
+                    ? "min-h-9 rounded-lg bg-foreground px-4 text-sm font-medium text-background"
+                    : "min-h-9 rounded-lg px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
+                }
+              >
+                {value === "credit" ? "Manual Credit" : "Manual Debit"}
+              </button>
+            ))}
+          </div>
           <form
             className="grid gap-4 sm:max-w-lg"
             onSubmit={(event) => {
@@ -171,16 +207,16 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
                 disabled={!allowed || pending}
               />
               <p className="text-xs text-muted-foreground">
-                USDT only, up to six decimal places. Credits only — this cannot debit a wallet.
+                USDT only, up to six decimal places.
               </p>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="credit-note">Internal note (optional)</Label>
+              <Label htmlFor="credit-note">{isDebit ? "Reason (required)" : "Reason (optional)"}</Label>
               <Textarea
                 id="credit-note"
                 rows={3}
                 maxLength={500}
-                placeholder="Why this credit is being made — never shown to the customer."
+                placeholder={`Why this ${isDebit ? "debit" : "credit"} is being made — never shown to the customer.`}
                 value={note}
                 onChange={(event) => setNote(event.target.value)}
                 disabled={!allowed || pending}
@@ -194,7 +230,7 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
             <div>
               <Button type="submit" variant="brand" disabled={!canReview}>
                 {pending ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                {pending ? "Looking up…" : "Review credit"}
+                {pending ? "Looking up…" : isDebit ? "Review debit" : "Review credit"}
               </Button>
             </div>
           </form>
@@ -203,11 +239,12 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
 
       {stage.kind === "review" ? (
         <DetailCard
-          title="Confirm this credit"
-          description="Check the customer below is the one you mean. This adds money to their wallet and cannot be undone from this screen."
+          title={isDebit ? "Confirm this debit" : "Confirm this credit"}
+          description={`Check the customer below is the one you mean. This ${isDebit ? "removes money from" : "adds money to"} their wallet and cannot be undone from this screen.`}
         >
           <div className="space-y-4">
             <p className="tabular text-3xl font-semibold tracking-tight">
+              {isDebit ? "− " : "+ "}
               {formatUsdt(Number(amount.replace(/,/g, "")))}
             </p>
             <DetailList>
@@ -219,14 +256,14 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
               <DetailRow label="Account status">{stage.customer.status}</DetailRow>
               <DetailRow label="KYC">{stage.customer.kycStatus.replace(/_/g, " ")}</DetailRow>
               <DetailRow label="Available now">{formatUsdt(stage.customer.availableUsdt)}</DetailRow>
-              <DetailRow label="Note" wide>
+              <DetailRow label="Reason" wide>
                 {note.trim() || "—"}
               </DetailRow>
             </DetailList>
             {stage.customer.status !== "active" ? (
               <p className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/8 p-3 text-sm text-foreground">
                 <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
-                This account is {stage.customer.status}. Make sure crediting it is intended.
+                This account is {stage.customer.status}. Make sure this adjustment is intended.
               </p>
             ) : null}
             {error ? (
@@ -237,7 +274,13 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
             <div className="flex flex-wrap gap-2">
               <Button variant="brand" onClick={confirm} disabled={pending}>
                 {pending ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                {pending ? "Crediting…" : `Confirm credit to ${stage.customer.displayId}`}
+                {pending
+                  ? isDebit
+                    ? "Debiting…"
+                    : "Crediting…"
+                  : isDebit
+                    ? `Confirm debit from ${stage.customer.displayId}`
+                    : `Confirm credit to ${stage.customer.displayId}`}
               </Button>
               <Button
                 variant="ghost"
@@ -255,14 +298,14 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
       ) : null}
 
       {stage.kind === "done" ? (
-        <DetailCard title={stage.duplicate ? "Already applied" : "Credit applied"}>
+        <DetailCard title={stage.duplicate ? "Already applied" : isDebit ? "Debit applied" : "Credit applied"}>
           <div className="space-y-4">
             <p className="flex items-start gap-2 text-sm text-foreground">
               <BadgeCheck className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden />
               {stage.message}
             </p>
             <DetailList>
-              <DetailRow label="Credit reference">
+              <DetailRow label="Reference">
                 <MonoValue>{stage.creditId ?? "—"}</MonoValue>
               </DetailRow>
               <DetailRow label="Ledger entry">
@@ -270,22 +313,22 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
               </DetailRow>
             </DetailList>
             <Button variant="outline" onClick={startOver}>
-              New credit
+              New adjustment
             </Button>
           </div>
         </DetailCard>
       ) : null}
 
       <DetailCard
-        title="Recent manual credits"
-        description="Newest first. Each row is also in the audit log."
+        title="Recent manual adjustments"
+        description="Newest first. Each row is also in the ledger and the audit log."
       >
         {recent === null ? (
           <p className="text-sm text-muted-foreground">
-            You do not have access to the credit history.
+            You do not have access to the adjustment history.
           </p>
         ) : recent.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No manual credits yet.</p>
+          <p className="text-sm text-muted-foreground">No manual adjustments yet.</p>
         ) : (
           <ul className="divide-y divide-border">
             {recent.map((credit) => (
@@ -305,9 +348,18 @@ export function ManualCreditView({ recent }: { recent: ManualCreditRecord[] | nu
                     <p className="break-words text-xs text-muted-foreground">{credit.note}</p>
                   ) : null}
                 </div>
-                <p className="tabular text-sm font-semibold text-foreground">
-                  + {formatUsdt(credit.amountUsdt)}
-                </p>
+                <div className="text-right">
+                  <p className="tabular text-sm font-semibold text-foreground">
+                    {credit.direction === "debit" ? "− " : "+ "}
+                    {formatUsdt(credit.amountUsdt)}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {credit.direction === "debit" ? "Debit" : "Credit"}
+                    {credit.balanceAfterUsdt !== null
+                      ? ` · balance after ${formatUsdt(credit.balanceAfterUsdt)}`
+                      : ""}
+                  </p>
+                </div>
               </li>
             ))}
           </ul>

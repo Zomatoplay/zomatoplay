@@ -4,10 +4,11 @@ import { eq } from "drizzle-orm";
 
 import * as t from "@/db/schema";
 import { isGender, isValidEmail, missingProfileFields } from "@/lib/profile";
-import { getAuthenticatedAccount } from "@/server/auth/account";
+import { getAuthenticatedAccount, getUsableAccount } from "@/server/auth/account";
 import { toSafeFailure } from "@/server/errors";
 import { describeError } from "@/server/observability";
 import { takeToken } from "@/server/rate-limit";
+import { revalidate } from "@/server/revalidate";
 import {
   createAvatarUploadTarget,
   isOwnAvatarKey,
@@ -130,4 +131,41 @@ export async function requestAvatarUploadAction(input: {
   } catch (error) {
     return { ok: false, message: toSafeFailure(error, "Photo upload is not available right now.").message };
   }
+}
+
+/**
+ * Adds or replaces the profile photo after onboarding (Settings → Edit
+ * profile). Same rules as onboarding: the key must be one this account was
+ * issued, and S3 must hold a valid photo there before the row points at it.
+ * The previous object is left in place — it is unreferenced, private, and
+ * deleting it would need a permission the instance role does not otherwise
+ * require.
+ */
+export async function saveAvatarAction(input: {
+  avatarKey: string;
+}): Promise<{ ok: boolean; message: string }> {
+  const account = await getUsableAccount();
+  if (!account) return { ok: false, message: "Your session has expired. Please sign in again." };
+  if (!isOwnAvatarKey(input?.avatarKey, account.userId)) {
+    return { ok: false, message: "That photo upload is not valid. Try again." };
+  }
+  try {
+    await verifyAvatarObject(input.avatarKey);
+    const actor: Actor = { kind: "user", id: account.userId, name: account.fullName, role: "agent" };
+    await mutate(actor, async ({ tx, now, audit }) => {
+      await tx
+        .update(t.users)
+        .set({ avatarStorageKey: input.avatarKey, updatedAt: now })
+        .where(eq(t.users.id, account.userId));
+      audit({
+        action: "user_updated",
+        target: { type: "user", id: account.userId, label: account.displayId },
+        details: account.avatarStorageKey ? "Replaced profile photo." : "Added profile photo.",
+      });
+    });
+  } catch (error) {
+    return { ok: false, message: toSafeFailure(error, "The photo could not be saved. Try again.").message };
+  }
+  revalidate("/settings", "/settings/profile", "/");
+  return { ok: true, message: "Profile photo updated." };
 }

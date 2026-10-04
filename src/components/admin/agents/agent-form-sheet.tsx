@@ -30,6 +30,12 @@ export interface AgentDraft {
   email: string;
   /** The sign-in number. Required to create; empty on edit keeps the current one. */
   phone: string;
+  /**
+   * The operator's console access code (10 letters and digits). Required to
+   * create; empty on edit keeps the current one. Sent once, stored hashed,
+   * never shown again.
+   */
+  accessCode?: string;
   permissions: AdminPermissionSet;
   note?: string;
 }
@@ -45,11 +51,28 @@ import type { AdminAgent, AdminPermissionSet } from "@/types/admin";
  * editable, and choosing one simply seeds it.
  */
 
+/**
+ * Ten characters from an alphabet without look-alikes (no 0/O, 1/I/l), from
+ * the browser's CSPRNG — read aloud or typed from a message without mistakes.
+ */
+function generateAccessCode(): string {
+  const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  let code = "";
+  while (code.length < 10) {
+    for (const byte of crypto.getRandomValues(new Uint8Array(16))) {
+      // Rejection sampling: no character is likelier than another.
+      if (byte < 256 - (256 % alphabet.length) && code.length < 10) code += alphabet[byte % alphabet.length];
+    }
+  }
+  return code;
+}
+
 function emptyDraft(): AgentDraft {
   return {
     name: "",
     email: "",
     phone: "",
+    accessCode: "",
     permissions: AGENT_PRESETS[0].permissions,
     note: "",
   };
@@ -61,6 +84,7 @@ function toDraft(agent: AdminAgent): AgentDraft {
     email: agent.email,
     // Never prefilled: the full number is not sent to the browser.
     phone: "",
+    accessCode: "",
     permissions: agent.permissions,
     note: agent.note ?? "",
   };
@@ -112,7 +136,10 @@ export function AgentFormSheet({
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email.trim());
   const phoneValid =
     normalizeIndianMobile(draft.phone) !== null || (mode === "edit" && draft.phone.trim() === "");
-  const valid = draft.name.trim() !== "" && emailValid && phoneValid;
+  const code = draft.accessCode?.trim() ?? "";
+  const codeValid =
+    /^[A-Za-z0-9]{10}$/.test(code) || (mode === "edit" && code === "");
+  const valid = draft.name.trim() !== "" && emailValid && phoneValid && codeValid;
 
   return (
     <Sheet open={open} onOpenChange={handleOpenChange}>
@@ -181,6 +208,43 @@ export function AgentFormSheet({
           </div>
 
           <div className="space-y-2">
+            <Label htmlFor="agent-access-code">Console access code</Label>
+            <div className="flex gap-2">
+              <Input
+                id="agent-access-code"
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={10}
+                className="font-mono"
+                value={draft.accessCode ?? ""}
+                onChange={(event) =>
+                  setDraft({ ...draft, accessCode: event.target.value.replace(/[^A-Za-z0-9]/g, "") })
+                }
+                placeholder={
+                  mode === "edit"
+                    ? agent?.accessCodeSet
+                      ? "Set — leave blank to keep"
+                      : "Not set yet"
+                    : "10 letters and digits"
+                }
+                aria-invalid={touched && !codeValid}
+                aria-describedby="agent-access-code-help"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setDraft({ ...draft, accessCode: generateAccessCode() })}
+              >
+                Generate
+              </Button>
+            </div>
+            <p id="agent-access-code-help" className="text-xs leading-relaxed text-muted-foreground">
+              Asked before the SMS code at sign-in. Give it to the operator
+              privately — it is stored as a one-way hash and cannot be shown again.
+            </p>
+          </div>
+
+          <div className="space-y-2">
             <Label htmlFor="agent-note">Note</Label>
             <Textarea
               id="agent-note"
@@ -241,8 +305,8 @@ export function AgentFormSheet({
 
           {touched && !valid ? (
             <p className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs leading-relaxed text-destructive">
-              A name, a valid work email address and a valid Indian mobile
-              number are required.
+              A name, a valid work email address, a valid Indian mobile
+              number and a 10-character access code are required.
             </p>
           ) : null}
         </SheetBody>
@@ -260,6 +324,7 @@ export function AgentFormSheet({
                 name: draft.name.trim(),
                 email: draft.email.trim(),
                 phone: draft.phone.trim(),
+                accessCode: code || undefined,
                 note: draft.note?.trim() || undefined,
               });
               onOpenChange(false);

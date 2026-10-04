@@ -469,3 +469,46 @@ Profile photos use the KYC bucket under `avatars/` — add that prefix to the
 instance role (the §2.2 policy above already lists it). KYC document and live
 photo uploads are optional now; without S3 the customer can still submit
 details for review. Both still need the S3 settings in §2 to upload anything.
+
+## Release: compact KYC/deposit/profile, validated KYC details, per-agent access codes
+
+**Migration 0028 — additive** (one nullable column,
+`admin_agents.access_code_hash`). No row is rewritten. On EC2:
+
+```bash
+npm run db:verify
+npm run db:migrate
+```
+
+(No new table, so `db:secure` is not required — running it is harmless.)
+
+### Administrators — no environment variable per admin any more
+
+1. The master admin signs in as today (env bootstrap code).
+2. **Admin → Agents → Create agent**: name, email, mobile number, and a
+   **console access code** (type 10 letters/digits or press *Generate*). Give
+   the code to the operator privately — it is stored as a hash and cannot be
+   shown again. To replace a lost code: *Edit* → new code.
+3. The operator signs in at `/admin/login` with number → access code → SMS.
+   The first SMS binds their Firebase uid. Permissions are the ones assigned.
+
+Existing operators created before this release have no code: edit each one and
+set a code, or they can only pass the gate through the environment.
+`ADMIN_LOGIN_ACCOUNTS` entries for those operators can be removed once they
+have a code (restart the service after editing the env file).
+
+### KYC uploads — check the whole path, including the browser's half
+
+EC2 reaching S3 proves the server side only. The browser uploads straight to
+S3 and needs the bucket's CORS rule (§2, step 7). Run, on EC2, with the
+service's environment loaded:
+
+```bash
+set -a; . <the service's EnvironmentFile>; set +a
+npm run kyc:s3-check -- --origin https://zomatoplay.com
+```
+
+Every line should say PASS. A failed `CORS preflight` line is exactly the
+"upload failed — check your connection" error customers see; fix the CORS rule
+and re-run. Customer-side upload failures are also recorded in Admin → System
+logs as `kyc.upload.failed` with the reference shown to the customer.

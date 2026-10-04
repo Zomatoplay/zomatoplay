@@ -6,7 +6,9 @@ import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
+  Check,
   ChevronRight,
+  Copy,
   ImageIcon,
   Loader2,
   Pencil,
@@ -28,13 +30,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Sheet,
-  SheetBody,
   SheetContent,
   SheetDescription,
   SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { getUsdtInrRate } from "@/lib/currency";
 import { formatDateTime } from "@/utils/format";
 import type { DepositRequestView } from "@/server/services/deposit-requests.service";
@@ -79,8 +81,9 @@ import { APP_NAME } from "@/constants/app";
  * THE SCREENSHOT FIELD STORES NOTHING
  * -----------------------------------
  * It is optional, previewed on this device only, and never sent to the
- * server — there is no store for it yet (CLAUDE.md §23). It is labelled that
- * way on screen. Verification depends on the transaction hash alone.
+ * server — there is no store for it yet (CLAUDE.md §23). Verification depends
+ * on the transaction hash alone, so the screen does not ask for it twice or
+ * explain the storage; nothing about it can influence a credit.
  */
 
 const TOKEN_LABEL = "USDT (TRC-20)";
@@ -178,12 +181,10 @@ function AmountStep({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-5" noValidate>
+    <form onSubmit={submit} className="space-y-4" noValidate>
       <div>
         <h2 className="text-base font-semibold tracking-tight">Deposit USDT</h2>
-        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-          Deposits are accepted in USDT on the TRON network (TRC-20) only.
-        </p>
+        <p className="mt-1 text-sm text-muted-foreground">USDT on TRON (TRC-20) only.</p>
       </div>
 
       <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
@@ -205,8 +206,8 @@ function AmountStep({
           aria-invalid={error ? true : undefined}
         />
         <p id="deposit-amount-help" className="text-xs leading-relaxed text-muted-foreground">
-          Next, you will be given an exact amount to send — a few cents above this — so your
-          transfer can be matched to your account. All of it is credited to your balance.
+          You&rsquo;ll get an exact amount to send — a few cents more. All of it is credited to
+          you.
         </p>
       </div>
 
@@ -367,67 +368,54 @@ function RequestStep({
   const replaceable = request.status === "awaiting_payment" && !request.submittedTxHash;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <LeaveGuard active={replaceable} requestId={request.id} />
       <DepositConfirmation deposits={newDeposits} availableUsdt={availableUsdt} />
 
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      <Card className="space-y-4 p-4">
+        <div className="flex items-center justify-between gap-3">
           <h2 className="text-base font-semibold tracking-tight">Deposit USDT</h2>
+          <StatusBadge kind="depositRequest" status={request.status} />
         </div>
-        <StatusBadge kind="depositRequest" status={request.status} />
-      </div>
 
-      <Card className="space-y-4 p-5">
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-muted-foreground">Send exactly</p>
-          <p className="tabular text-2xl font-semibold tracking-tight">
-            {request.expectedAmountUsdt} <span className="text-base font-medium">USDT</span>
-          </p>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            The exact amount is how your transfer is matched to your account. If your wallet or
-            exchange deducts a fee from it, the amount received will differ and the deposit will
-            need a manual review.
-          </p>
-        </div>
-        <CopyField
-          label="Exact amount"
-          value={request.expectedAmountUsdt}
-          successMessage="Amount copied"
+        <ExactAmount
+          request={request}
+          editable={replaceable}
+          minimumDeposit={minimumDeposit}
+          onReplaced={onReplace}
         />
-        {replaceable ? (
-          <ChangeAmount
-            currentRequestId={request.id}
-            currentAmount={request.requestedAmountUsdt}
-            minimumDeposit={minimumDeposit}
-            onReplaced={onReplace}
+
+        <div className="flex flex-col items-center gap-3 border-t border-border pt-4">
+          {qrSvg ? (
+            <QrCode
+              svg={qrSvg}
+              label={`QR code for the ${APP_NAME} ${TOKEN_LABEL} deposit address`}
+              className="size-40"
+            />
+          ) : (
+            <div className="size-40 animate-pulse rounded-2xl bg-secondary" aria-hidden />
+          )}
+          <CopyField
+            className="w-full"
+            label={`Deposit address · ${TOKEN_LABEL}`}
+            value={request.receivingAddress}
+            successMessage="Deposit address copied"
           />
-        ) : null}
-      </Card>
+        </div>
 
-      <Card className="space-y-4 p-5">
-        {qrSvg ? (
-          <QrCode svg={qrSvg} label={`QR code for the ${APP_NAME} ${TOKEN_LABEL} deposit address`} />
-        ) : (
-          <div className="mx-auto size-44 animate-pulse rounded-2xl bg-secondary" aria-hidden />
-        )}
-        <CopyField
-          label="Deposit address"
-          value={request.receivingAddress}
-          successMessage="Deposit address copied"
-        />
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-1 border-t border-border pt-3 text-xs">
+          <dt className="text-muted-foreground">Rate</dt>
+          <dd className="tabular text-right font-medium">1 USDT = ₹{getUsdtInrRate().rate.toFixed(2)}</dd>
+          <dt className="text-muted-foreground">Request ID</dt>
+          <dd className="text-right font-mono font-medium">{request.id}</dd>
+          <dt className="text-muted-foreground">Valid until</dt>
+          <dd className="tabular text-right font-medium">{formatDateTime(request.expiresAt)}</dd>
+        </dl>
       </Card>
-
-      <div className="divide-y divide-border rounded-2xl border border-border bg-card px-4">
-        <InfoRow label="Asset" value={TOKEN_LABEL} />
-        <InfoRow label="Rate" value={`1 USDT = ₹${getUsdtInrRate().rate.toFixed(2)}`} />
-        <InfoRow label="Deposit Request ID" value={<span className="font-mono">{request.id}</span>} />
-        <InfoRow label="Valid until" value={formatDateTime(request.expiresAt)} />
-      </div>
 
       <NetworkWarnings isTestnet={isTestnet} />
 
-      <StatusExplanation request={request} />
+      {request.status === "awaiting_payment" ? null : <StatusExplanation request={request} />}
 
       {open && failedChecks >= 2 ? (
         <div
@@ -447,9 +435,8 @@ function RequestStep({
 
       {canSubmitHash ? (
         <form onSubmit={verify} className="space-y-3" noValidate>
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            Already paid? Find your transaction hash / TxID in your wallet or exchange payment
-            details and enter it below to confirm your payment.
+          <p className="text-sm font-medium leading-relaxed">
+            After you have paid, enter your transaction hash / TxID below.
           </p>
           <div className="space-y-1.5">
             <Label htmlFor="tx-hash">Transaction hash / TxID</Label>
@@ -458,14 +445,14 @@ function RequestStep({
               autoComplete="off"
               autoCapitalize="off"
               spellCheck={false}
-              placeholder="64-character hash from your wallet"
+              placeholder="From your wallet or exchange"
               className="h-11 font-mono text-base"
               value={txHash}
               onChange={(event) => setTxHash(event.target.value.trim())}
               aria-describedby="tx-hash-help"
             />
-            <p id="tx-hash-help" className="text-xs leading-relaxed text-muted-foreground">
-              This is not your Deposit Request ID.
+            <p id="tx-hash-help" className="text-xs text-muted-foreground">
+              Not your Request ID.
             </p>
           </div>
           <ScreenshotField />
@@ -501,7 +488,7 @@ function RequestStep({
       {message?.offerSupport || request.status === "needs_review" ? (
         <div className="space-y-2">
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Need help with this payment? Send us your Deposit Request ID{" "}
+            Need help with this payment? Send us your Request ID{" "}
             <span className="font-mono text-foreground">{request.id}</span> and the transaction
             hash.
           </p>
@@ -520,22 +507,23 @@ function RequestStep({
 }
 
 /**
- * "Change amount": a new request with a new exact amount. The server cancels
- * this one in the same transaction (`createDepositRequest`), so the two are
- * never both waiting for payment.
+ * "Send exactly X USDT", with Copy and — while nothing has been paid against
+ * the request — an inline Change. Changing asks the server for a new request,
+ * which cancels this one in the same transaction (`createDepositRequest`), so
+ * the two are never both waiting for payment.
  */
-function ChangeAmount({
-  currentRequestId,
-  currentAmount,
+function ExactAmount({
+  request,
+  editable,
   minimumDeposit,
   onReplaced,
 }: {
-  currentRequestId: string;
-  currentAmount: number;
+  request: DepositRequestView;
+  editable: boolean;
   minimumDeposit: number;
   onReplaced: (request: DepositRequestView, qrSvg: string | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -551,64 +539,105 @@ function ChangeAmount({
         setError(result.message ?? "Could not change the amount. Try again.");
         return;
       }
-      setOpen(false);
+      setEditing(false);
       setAmount("");
       // The same amount hands back the request they already have.
-      if (result.request.id === currentRequestId) {
+      if (result.request.id === request.id) {
         toast.message("That is already the amount of this request.");
         return;
       }
       onReplaced(result.request, result.qrSvg ?? null);
       toast.success("Amount changed", {
-        description: `New request ${result.request.id}. Send exactly ${result.request.expectedAmountUsdt} USDT.`,
+        description: `Send exactly ${result.request.expectedAmountUsdt} USDT.`,
       });
     });
   }
 
+  if (editing) {
+    return (
+      <form onSubmit={submit} className="space-y-2" noValidate>
+        <Label htmlFor="deposit-new-amount">New amount (USDT)</Label>
+        <div className="flex gap-2">
+          <Input
+            id="deposit-new-amount"
+            inputMode="decimal"
+            autoComplete="off"
+            autoFocus
+            placeholder={`Minimum ${minimumDeposit}`}
+            className="h-11 min-w-0 flex-1 text-base tabular"
+            value={amount}
+            onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))}
+            aria-invalid={error ? true : undefined}
+          />
+          <Button type="submit" variant="brand" size="lg" disabled={!valid || pending}>
+            {pending ? <Loader2 className="size-4 animate-spin" aria-hidden /> : "Update"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            disabled={pending}
+            onClick={() => {
+              setEditing(false);
+              setError(null);
+            }}
+            aria-label="Keep the current amount"
+          >
+            <X className="size-4" aria-hidden />
+          </Button>
+        </div>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          You&rsquo;ll get a new exact amount. Don&rsquo;t send the old one.
+        </p>
+        {error ? (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </form>
+    );
+  }
+
   return (
-    <>
-      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        <Pencil className="size-3.5" aria-hidden />
-        Change amount
-      </Button>
-      <Sheet open={open} onOpenChange={(next) => !pending && setOpen(next)}>
-        <SheetContent>
-          <form onSubmit={submit} noValidate>
-            <SheetHeader>
-              <SheetTitle>Change amount</SheetTitle>
-              <SheetDescription>
-                You will get a new Deposit Request ID and a new exact amount to send. Your current
-                request ({currentAmount} USDT) is cancelled. Do not send the old amount.
-              </SheetDescription>
-            </SheetHeader>
-            <SheetBody className="space-y-1.5">
-              <Label htmlFor="deposit-new-amount">New amount (USDT)</Label>
-              <Input
-                id="deposit-new-amount"
-                inputMode="decimal"
-                autoComplete="off"
-                placeholder={`Minimum ${minimumDeposit}`}
-                className="h-11 text-base tabular"
-                value={amount}
-                onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))}
-                aria-invalid={error ? true : undefined}
-              />
-              {error ? (
-                <p className="text-sm text-destructive" role="alert">
-                  {error}
-                </p>
-              ) : null}
-            </SheetBody>
-            <SheetFooter>
-              <Button type="submit" variant="brand" size="lg" block disabled={!valid || pending}>
-                {pending ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                {pending ? "Creating new request…" : "Use this amount"}
-              </Button>
-            </SheetFooter>
-          </form>
-        </SheetContent>
-      </Sheet>
-    </>
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-muted-foreground">Send exactly</p>
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-2">
+        <p className="tabular mr-auto text-3xl font-semibold tracking-tight">
+          {request.expectedAmountUsdt} <span className="text-base font-medium">USDT</span>
+        </p>
+        <div className="flex items-center gap-1">
+          <CopyAmountButton value={request.expectedAmountUsdt} />
+          {editable ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setEditing(true)}>
+              <Pencil className="size-3.5" aria-hidden />
+              Change
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Send this exact amount in one transfer — if a fee is taken from it, the deposit needs a
+        manual check.
+      </p>
+    </div>
+  );
+}
+
+function CopyAmountButton({ value }: { value: string }) {
+  const { copy, copied } = useCopyToClipboard();
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={async () => {
+        const ok = await copy(value);
+        toast[ok ? "success" : "error"](ok ? "Amount copied" : "Could not copy");
+      }}
+    >
+      {copied ? <Check className="size-3.5 text-positive" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+      {copied ? "Copied" : "Copy"}
+    </Button>
   );
 }
 
@@ -782,7 +811,7 @@ function ScreenshotField() {
           className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border border-dashed border-border px-3.5 py-2.5 text-sm text-muted-foreground hover:bg-secondary/60 focus-within:outline-2 focus-within:outline-ring"
         >
           <ImageIcon className="size-4 shrink-0" aria-hidden />
-          Add a screenshot for your reference
+          Upload screenshot
         </label>
       )}
       <input
@@ -792,25 +821,20 @@ function ScreenshotField() {
         accept="image/*"
         className="sr-only"
         onChange={onFile}
-        aria-describedby="payment-screenshot-help"
       />
       {error ? (
         <p className="text-xs text-destructive" role="alert">
           {error}
         </p>
       ) : null}
-      <p id="payment-screenshot-help" className="text-xs leading-relaxed text-muted-foreground">
-        Stays on this device only — it is not uploaded or stored, and it is not needed. Your
-        payment is verified from the transaction hash.
-      </p>
     </div>
   );
 }
 
 function StatusExplanation({ request }: { request: DepositRequestView }) {
   const text: Record<DepositRequestView["status"], string> = {
-    awaiting_payment:
-      "Waiting for your payment. A transfer of the exact amount is detected automatically; entering the transaction hash makes it faster.",
+    // Not rendered: the TxID prompt below is the instruction while waiting.
+    awaiting_payment: "",
     verifying:
       "Your transaction was found and is waiting for final confirmation on the TRON network, usually about a minute. This screen checks every few seconds.",
     credited: `Verified on the blockchain and credited${
@@ -826,8 +850,7 @@ function StatusExplanation({ request }: { request: DepositRequestView }) {
       "This request was cancelled. If you already sent the payment, it will still be detected and credited. Otherwise, start a new deposit.",
   };
   return (
-    <p className="rounded-xl border border-border bg-secondary/60 p-3.5 text-xs leading-relaxed text-muted-foreground" aria-live="polite">
-      <strong className="font-medium text-foreground">Status: </strong>
+    <p className="rounded-xl border border-border bg-secondary/60 p-3 text-xs leading-relaxed text-muted-foreground" aria-live="polite">
       {text[request.status]}
     </p>
   );
@@ -835,32 +858,18 @@ function StatusExplanation({ request }: { request: DepositRequestView }) {
 
 function NetworkWarnings({ isTestnet }: { isTestnet: boolean }) {
   return (
-    <>
-      {isTestnet ? (
-        <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
-          <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
-          <span>
-            This is a <strong className="font-medium text-foreground">test network</strong>. Send
-            test USDT only — real USDT sent here is permanently lost.
-          </span>
-        </p>
-      ) : (
-        <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
-          <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
-          <span>
-            A blockchain transfer cannot be reversed — check the address and the amount before
-            you send.
-          </span>
-        </p>
-      )}
-      <p className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs leading-relaxed">
-        <AlertTriangle className="mt-px size-3.5 shrink-0 text-destructive" aria-hidden />
-        <span className="text-muted-foreground">
-          <strong className="font-medium text-foreground">Send USDT (TRC-20) only.</strong> Do{" "}
-          <strong className="font-medium text-foreground">not</strong> send TRX or USDT on another
-          network (BEP20, ERC20, Polygon) — it cannot be detected or credited.
-        </span>
-      </p>
-    </>
+    <p className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/8 p-3 text-xs leading-relaxed text-muted-foreground">
+      <AlertTriangle className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
+      <span>
+        {isTestnet ? (
+          <>
+            <strong className="font-medium text-foreground">Test network</strong> — send test USDT
+            only.{" "}
+          </>
+        ) : null}
+        Send <strong className="font-medium text-foreground">USDT on TRON (TRC-20)</strong> only —
+        not TRX, BEP20, ERC20 or Polygon. Blockchain transfers can&rsquo;t be reversed.
+      </span>
+    </p>
   );
 }

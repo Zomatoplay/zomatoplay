@@ -26,6 +26,7 @@ import type { AdminUserOption } from "@/types/admin";
 import { traceAction } from "@/server/trace-action";
 import { requirePermission } from "@/server/admin/session";
 import { isLegacyEmailSignInEnabled } from "@/server/auth/phone-sign-in";
+import { hashPassword } from "@/server/auth/password-hash";
 import { findUsersForPicker } from "@/server/services/admin.service";
 import { revalidate, revalidateCatalogue } from "@/server/revalidate";
 import {
@@ -1140,6 +1141,22 @@ function operatorPhone(raw: string | undefined): string {
   return phone;
 }
 
+/**
+ * An operator's console access code, validated and hashed — or null when the
+ * form left it blank (edit only). The plain code is never stored, logged,
+ * audited or returned.
+ */
+async function hashedAccessCode(raw: string | undefined, required: boolean): Promise<string | null> {
+  const code = String(raw ?? "").trim();
+  if (code === "" && !required) return null;
+  if (!/^[A-Za-z0-9]{10}$/.test(code)) {
+    throw Object.assign(new Error("The access code must be exactly 10 letters and digits."), {
+      name: "AdminValidationError",
+    });
+  }
+  return hashPassword(code);
+}
+
 /** A unique-index violation on an operator's phone or email, said plainly. */
 function rethrowPhoneConflict(error: unknown): never {
   const text = describeError(error);
@@ -1160,6 +1177,7 @@ export async function createAgentAction(input: {
   name: string;
   email: string;
   phone: string;
+  accessCode?: string;
   permissions: AdminPermissionSet;
   note?: string;
 }): Promise<AdminActionResult> {
@@ -1170,6 +1188,7 @@ export async function createAgentAction(input: {
       throw new Error("Enter a valid work email address.");
     }
     const phone = operatorPhone(input.phone);
+    const accessCodeHash = await hashedAccessCode(input.accessCode, true);
 
     await mutate(operator.actor, async ({ tx, now, audit }) => {
       const id = newId("agt", now);
@@ -1182,6 +1201,7 @@ export async function createAgentAction(input: {
         // sign-in; the number is an authorization, not yet a credential.
         status: "invited",
         phoneE164: phone,
+        accessCodeHash,
         createdAt: now,
         note: input.note?.trim() || null,
       }).catch(rethrowPhoneConflict);
@@ -1191,14 +1211,14 @@ export async function createAgentAction(input: {
       audit({
         action: "agent_created",
         target: { type: "agent", id, label: input.name.trim() },
-        details: `Invited ${input.name.trim()} to sign in with ${maskIndianMobile(phone)}.`,
+        details: `Invited ${input.name.trim()} to sign in with ${maskIndianMobile(phone)} and an access code.`,
       });
     });
 
     revalidate("/admin/agents", "/admin");
     return {
       ok: true,
-      message: "Operator invited. They can sign in with their mobile number now.",
+      message: "Operator invited. They sign in with their mobile number, the access code you set, and an SMS code.",
     };
   } catch (error) {
     return failed(error, "The operator was not created.");
@@ -1211,22 +1231,36 @@ export async function updateAgentAction(input: {
   email: string;
   /** A new sign-in number, or empty to keep the current one. */
   phone?: string;
+  /** A new access code, or empty to keep the current one. */
+  accessCode?: string;
   permissions: AdminPermissionSet;
   note?: string;
 }): Promise<AdminActionResult> {
   try {
     const operator = await requirePermission("agents");
     const newPhone = input.phone?.trim() ? operatorPhone(input.phone) : null;
+    const newAccessCodeHash = await hashedAccessCode(input.accessCode, false);
 
     await mutate(operator.actor, async ({ tx, now, audit }) => {
       void now;
       const [current] = await tx
-        .select({ phoneE164: t.adminAgents.phoneE164 })
+        .select({ phoneE164: t.adminAgents.phoneE164, role: t.adminAgents.role })
         .from(t.adminAgents)
         .where(eq(t.adminAgents.id, input.agentId))
         .limit(1)
         .for("update");
       if (!current) throw new Error("That operator no longer exists.");
+      // A master admin's credentials are changed only by a master admin.
+      if (
+        current.role === "master_admin" &&
+        operator.role !== "master_admin" &&
+        (newPhone !== null || newAccessCodeHash !== null)
+      ) {
+        throw Object.assign(
+          new Error("Only a master admin can change a master admin's number or access code."),
+          { name: "AdminValidationError" },
+        );
+      }
       const phoneChanged = newPhone !== null && newPhone !== current.phoneE164;
 
       await tx
@@ -1246,6 +1280,7 @@ export async function updateAgentAction(input: {
                 sessionEpoch: sql`${t.adminAgents.sessionEpoch} + 1`,
               }
             : {}),
+          ...(newAccessCodeHash ? { accessCodeHash: newAccessCodeHash } : {}),
         })
         .where(eq(t.adminAgents.id, input.agentId))
         .catch(rethrowPhoneConflict);
@@ -1255,9 +1290,11 @@ export async function updateAgentAction(input: {
       audit({
         action: "agent_permissions_changed",
         target: { type: "agent", id: input.agentId, label: input.name.trim() },
-        details: phoneChanged
-          ? `Updated ${input.name.trim()} and their permissions; sign-in number changed to ${maskIndianMobile(newPhone)} and their sessions ended.`
-          : `Updated ${input.name.trim()} and their permissions.`,
+        details:
+          (phoneChanged
+            ? `Updated ${input.name.trim()} and their permissions; sign-in number changed to ${maskIndianMobile(newPhone)} and their sessions ended.`
+            : `Updated ${input.name.trim()} and their permissions.`) +
+          (newAccessCodeHash ? " Access code replaced." : ""),
       });
     });
 

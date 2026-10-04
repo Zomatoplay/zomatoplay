@@ -87,6 +87,17 @@ export const adminAgents = pgTable(
      * phone change increment it, ending every session on every device.
      */
     sessionEpoch: integer("session_epoch").notNull().default(0),
+    /**
+     * This operator's own console access code, scrypt-hashed
+     * (`@/server/auth/password-hash`), set by a master admin in Admin →
+     * Agents. It is the second factor asked BEFORE the SMS is sent
+     * (`access-gate`), not a sign-in credential on its own: Firebase still has
+     * to prove the number. Null means no code has been set — the operator
+     * can then pass the gate only through the deployment's environment
+     * codes (the first master admin's bootstrap). Never selected into any
+     * read model, never returned, never logged.
+     */
+    accessCodeHash: text("access_code_hash"),
   },
   (table) => [
     uniqueIndex("admin_agents_auth_user_id_key").on(table.authUserId),

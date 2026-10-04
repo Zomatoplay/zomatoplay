@@ -90,6 +90,8 @@ export interface AdminAgent {
   phoneMasked?: string | null;
   /** True once the operator has signed in with that number by SMS. */
   phoneVerified?: boolean;
+  /** Whether a console access code has been set for this operator. Never the code. */
+  accessCodeSet?: boolean;
 }
 
 /**

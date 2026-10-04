@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Lock } from "lucide-react";
+import { Camera, Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -12,6 +12,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { usePrototypeStore } from "@/lib/prototype-store";
 import { updateProfileAction } from "@/app/(app)/settings/account-actions";
+import { saveAvatarAction } from "@/app/(auth)/complete-profile/actions";
+import { AVATAR_ACCEPT, uploadAvatarFile } from "@/components/settings/avatar-upload";
 import { formatDate, initials } from "@/utils/format";
 
 /**
@@ -28,12 +30,41 @@ import { formatDate, initials } from "@/utils/format";
  * This form used to `setTimeout(500)` and then claim success while persisting
  * nothing.
  */
-export function ProfileForm() {
+export function ProfileForm({ avatarUploadAvailable }: { avatarUploadAvailable: boolean }) {
   const { profile } = usePrototypeStore();
   const router = useRouter();
   const [fullName, setFullName] = useState(profile.fullName);
   const [phone, setPhone] = useState(profile.phone);
   const [saving, startTransition] = useTransition();
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  /** Uploads to private S3, then the server checks the object and saves the key. */
+  async function changePhoto(file: File) {
+    setPhotoBusy(true);
+    try {
+      const uploaded = await uploadAvatarFile(file);
+      if (!uploaded.ok) {
+        toast.error(uploaded.message);
+        return;
+      }
+      const saved = await saveAvatarAction({ avatarKey: uploaded.key });
+      if (!saved.ok) {
+        URL.revokeObjectURL(uploaded.previewUrl);
+        toast.error(saved.message);
+        return;
+      }
+      setPreview(uploaded.previewUrl);
+      toast.success(saved.message);
+      router.refresh();
+    } catch {
+      toast.error("The photo could not be saved. Try again.");
+    } finally {
+      setPhotoBusy(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -50,13 +81,56 @@ export function ProfileForm() {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="flex flex-col items-center gap-3">
-        <Avatar className="size-20">
-          {profile.avatarUrl ? <AvatarImage src={profile.avatarUrl} alt="" /> : null}
-          <AvatarFallback className="text-xl">
-            {initials(fullName || profile.fullName)}
-          </AvatarFallback>
-        </Avatar>
+      <div className="flex flex-col items-center gap-2">
+        <div className="relative">
+          <Avatar className="size-20">
+            {preview || profile.avatarUrl ? (
+              <AvatarImage src={preview ?? profile.avatarUrl ?? undefined} alt="" />
+            ) : null}
+            <AvatarFallback className="text-xl">
+              {initials(fullName || profile.fullName)}
+            </AvatarFallback>
+          </Avatar>
+          {photoBusy ? (
+            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-background/70">
+              <Loader2 className="size-5 animate-spin text-brand" aria-hidden />
+            </span>
+          ) : null}
+          {avatarUploadAvailable ? (
+            <>
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                disabled={photoBusy}
+                className="absolute -bottom-1 -right-1 flex size-9 items-center justify-center rounded-full border-2 border-background bg-brand text-brand-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={profile.avatarUrl || preview ? "Change profile photo" : "Add a profile photo"}
+              >
+                <Camera className="size-4" aria-hidden />
+              </button>
+              <input
+                ref={fileInput}
+                type="file"
+                accept={AVATAR_ACCEPT}
+                className="sr-only"
+                tabIndex={-1}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void changePhoto(file);
+                }}
+              />
+            </>
+          ) : null}
+        </div>
+        {avatarUploadAvailable ? (
+          <button
+            type="button"
+            onClick={() => fileInput.current?.click()}
+            disabled={photoBusy}
+            className="text-sm font-medium text-brand hover:underline"
+          >
+            {profile.avatarUrl || preview ? "Change photo" : "Add photo"}
+          </button>
+        ) : null}
         <p className="text-xs text-muted-foreground">
           Member since {formatDate(profile.memberSince)}
         </p>

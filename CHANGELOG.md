@@ -4,6 +4,46 @@ Factual record of development on Zomato Play (formerly Nanotron). Newest first.
 
 ---
 
+## 2026-10-04 (Compact KYC, deposit and profile screens; validated KYC details; per-agent access codes)
+
+Migration `0028`, additive (`admin_agents.access_code_hash`, nullable).
+
+- **KYC submission without photos — root cause and fix.** The only
+  "upload failed, check your connection" text came from the browser's direct
+  PUT to S3 failing at network level (CORS), i.e. a photo had been attached;
+  a details-only submission sends no upload at all. The server action itself
+  was never wrapped, so a failed request had no message. Now: each failure has
+  its own message, unexpected ones carry a reference (the correlation id), and
+  a failed S3 PUT is recorded server-side as `kyc.upload.failed`.
+  `npm run kyc:s3-check` tests the real bucket path from EC2, including the
+  browser's CORS preflight.
+- **KYC details validated on both sides** (`@/lib/kyc-identity`): DOB must be a
+  real date, not in the future, 18+ on the IST calendar; document number per
+  type (Aadhaar 12 digits + Verhoeff check, PAN, passport, Indian driving
+  licence layouts, other ID). The full number now reaches the server for that
+  check; only the mask is stored, as before.
+- **KYC screen compacted:** profile fields (mobile, gender, email) no longer
+  repeated; document type is a dropdown beside the number; photo steps are
+  short (Choose from this device / Camera; Camera for the live photo) and are
+  not shown at all when no document store is configured; one privacy line;
+  storage paragraphs removed.
+- **Add funds compacted:** exact amount with Copy and an inline Change, the QR
+  and address on the first screen, one warning line, the "Status: waiting…"
+  block removed, then "After you have paid, enter your transaction hash / TxID
+  below." with the TxID field, optional screenshot and Confirm payment. Deposit
+  request, matching, verification and leave-guard logic unchanged.
+- **Wallet overview:** deposit address and support block removed.
+- **Profile:** setup screen fits one phone screen (logo, welcome + number on
+  one line, optional photo, name, gender, email, Continue); the long email
+  paragraph removed. Edit profile can add or replace the photo (private S3,
+  verified server-side, audited).
+- **Administrators without per-admin env vars:** a master admin sets each
+  operator's access code in Admin → Agents (scrypt-hashed). The environment
+  codes remain the first-master-admin bootstrap. The number step no longer
+  reveals whether a number is an operator.
+
+---
+
 ## 2026-10-04 (Durations, multi-admin sign-in, onboarding, optional KYC uploads, Manual Funds)
 
 Migrations `0026` and `0027`, both additive (new `plan_duration_rates`;

@@ -3,11 +3,9 @@
 import { redirect } from "next/navigation";
 
 import {
-  accessCodeMatches,
+  accessCodeAccepted,
   clearAccessPass,
   hasAccessPass,
-  isAccessGateConfigured,
-  isAuthorizedAdminMobile,
   issueAccessPass,
 } from "@/server/admin/access-gate";
 import {
@@ -66,10 +64,13 @@ const GATE_NUMBER_LIMIT = { attempts: 20, windowMs: 60 * 60 * 1000 };
 const GATE_REFUSED = "Administrator access could not be confirmed.";
 
 /**
- * Step 1 of operator sign-in: may this number start it at all?
- * With `code` absent it only answers that; with a code it checks the access
- * code and, when right, issues the short-lived pass the sign-in requires. Any
- * refusal says the same thing — it does not say which part was wrong.
+ * Step 1 of operator sign-in. With `code` absent it only checks the number is
+ * a well-formed Indian mobile — deliberately NOT whether it belongs to an
+ * operator, so this screen cannot be used to discover which numbers are
+ * administrators. With a code it checks the code against that number (the
+ * operator's own code from Admin → Agents, or the environment's bootstrap
+ * code) and, when right, issues the short-lived pass the sign-in requires.
+ * Every refusal says the same thing.
  */
 export async function checkAdminAccess(input: {
   phone: string;
@@ -83,14 +84,26 @@ export async function checkAdminAccess(input: {
   if (!withinLimit) {
     return { ok: false, message: "Too many attempts. Please wait a few minutes and try again." };
   }
-  if (!isAccessGateConfigured() || !isOperatorSessionConfigured()) {
+  if (!isOperatorSessionConfigured()) {
     return { ok: false, message: "Operator sign-in is not configured on this server." };
   }
-  if (!isAuthorizedAdminMobile(phoneE164) || !phoneE164) {
-    return { ok: false, message: GATE_REFUSED };
-  }
+  if (!phoneE164) return { ok: false, message: "Enter a valid 10-digit Indian mobile number." };
   if (input.code === undefined) return { ok: true, message: "Enter your access code." };
-  if (!accessCodeMatches(phoneE164, input.code)) {
+  let accepted: boolean;
+  try {
+    accepted = await accessCodeAccepted(phoneE164, String(input.code));
+  } catch (error) {
+    recordPipelineEvent({
+      pipeline: "admin",
+      operation: "admin.access_gate.unavailable",
+      status: "failed",
+      message: "Operator access code could not be checked",
+      errorMessage: describeError(error),
+      metadata: errorDiagnostics(error),
+    });
+    return { ok: false, message: "Could not check your access code. Try again." };
+  }
+  if (!accepted) {
     recordPipelineEvent({
       pipeline: "admin",
       operation: "admin.access_gate.refused",

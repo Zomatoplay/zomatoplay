@@ -22,7 +22,24 @@ import { supportContact } from "@/lib/support";
  * `priority` because it is the first thing on the screen. The width and height
  * are fixed, so nothing shifts as it loads.
  */
-export function AuthLogo() {
+export function AuthLogo({ compact = false }: { compact?: boolean } = {}) {
+  if (compact) {
+    // One row, for screens where the form has to fit above the fold.
+    return (
+      <div className="flex items-center justify-center gap-2.5">
+        <Image
+          src="/logo.jpeg"
+          alt=""
+          width={40}
+          height={40}
+          priority
+          sizes="40px"
+          className="size-10 rounded-xl"
+        />
+        <span className="text-base font-semibold tracking-tight text-foreground">{APP_NAME}</span>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col items-center gap-3">
       <Image

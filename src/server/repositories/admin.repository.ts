@@ -113,6 +113,8 @@ export async function listAdminAgents(db: Database): Promise<AdminAgent[]> {
     // Masked here, server-side: the full number never reaches the browser.
     phoneMasked: agent.phoneE164 ? maskIndianMobile(agent.phoneE164) : null,
     phoneVerified: Boolean(agent.firebaseUid),
+    // Whether one exists, never the hash.
+    accessCodeSet: Boolean(agent.accessCodeHash),
   }));
 }
 

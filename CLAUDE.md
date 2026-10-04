@@ -302,6 +302,10 @@ aesthetics.
   `<RateNote />` is used only in the CRM.
 - **The deposit screen is that exception**: it shows `1 USDT = ₹<deposit rate>`
   as a plain "Rate" row and nothing else about conversion.
+- **The Wallet overview shows no deposit address and no support block**
+  (2026-10): the address and QR appear only inside Add funds, attached to a
+  deposit request's exact amount. Do not put the address back on the overview —
+  a transfer with no request behind it can only be credited by an operator.
 - The withdrawal screen still shows the payout rate, every fee and the exact net
   INR, because that is a quote for INR the customer will be paid, not a display
   conversion (next point).
@@ -1015,6 +1019,13 @@ in Postgres.
 `server/storage/kyc-document-store.ts`, and every row says which it is in
 (`kyc_documents.storage_backend`):
 
+- **`npm run kyc:s3-check`** (run on EC2 with the service's environment)
+  exercises the real path: presigned PUT under `kyc/` and `avatars/`,
+  HeadObject, presigned GET, and the browser's CORS preflight from the site's
+  origin. EC2 reaching S3 does not prove the browser can: a missing CORS rule
+  makes every upload fail as a "network" error. A failed browser PUT is also
+  reported to `pipeline_events` (`kyc.upload.failed`) with the reference the
+  customer is shown.
 - **`s3` — private AWS S3, the target on EC2.** Off unless
   `KYC_STORAGE_DRIVER=s3` *and* `KYC_S3_BUCKET` and a region are set; **there is
   no default bucket**. Keys are `kyc/{userId}/{document|selfie}/{uuid}` — no
@@ -1244,7 +1255,9 @@ property the test owns — never a fact about the physical table.**
 | `server/kyc-storage.integration.test.ts` | yes | RLS closed on every table, derived from the schema |
 | `server/commission-release.integration.test.ts` | partly | eligibility, missed-midnight recovery, pay-once-under-race |
 | `server/pipeline.integration.test.ts` | partly | redaction, correlation, recording |
-| `server/services/kyc-policy.test.ts` | no | both KYC files required; type and size rules |
+| `server/services/kyc-policy.test.ts` | no | KYC files optional; references whole; type and size rules |
+| `lib/kyc-identity.test.ts` | no | DOB (18+, IST, no future, real dates); document numbers per type; mask |
+| `server/admin/agent-access-code.integration.test.ts` | yes | per-operator access code: own number only, disabled/no-code refused, no env needed, hash stored |
 | `lib/image-compress.test.ts` | no | resize maths, PDFs untouched, no-DOM fallback |
 | `server/services/manual-credit.test.ts` | no | credit amount, customer id, key and note validation |
 | `server/manual-credit.integration.test.ts` | yes | ledger + record + audit, once under replay and race, rollback, permission |
@@ -1768,7 +1781,9 @@ OTP, no token. **There is a test asserting no column in the schema is named like
 one** — a second authority would start with somebody adding a column, and that
 fails the suite. It allows exactly one exception: `withdrawal_passwords.password_hash`,
 a scrypt hash of a spending authorisation the product itself defines (§27) — not
-a way to sign in. Do not widen that allowance.
+a way to sign in. Do not widen that allowance. (`admin_agents.access_code_hash`
+is the operator console's pre-SMS second factor, §20 — never sufficient to sign
+in, since Firebase must still prove the number.)
 
 `auth_user_id` is nullable because the seeded accounts have no credential; they
 exist to populate the CRM, and giving them auth users would create sign-in-able
@@ -1972,19 +1987,25 @@ project, `sign_in_provider = phone`, `auth_time` < 5 min), then
 - otherwise → not an operator.
 
 **The access-code gate comes first** (`server/admin/access-gate.ts`, tested).
-The number must be configured in `ADMIN_LOGIN_ACCOUNTS` (`mobile:code,…`, each
-administrator with their OWN 10-character code) or in the original
-`ADMIN_LOGIN_MOBILE` + shared `ADMIN_LOGIN_ACCESS_CODE`; the forms merge, a
-number with two different codes is dropped, and the typed code is compared
-against THAT number's code only. Server-only env values, read per call (a
-restart picks up a change), never stored, logged or returned. A correct code sets a 15-minute
+**Normal path: each operator's own code, set by a master admin in Admin →
+Agents** (create: required; edit: blank keeps it; a master admin's code only by
+a master admin), stored as a scrypt hash in `admin_agents.access_code_hash` and
+checked with a timing decoy when no row matches. A disabled operator's code
+never passes. **Adding an administrator needs no environment variable and no
+restart.** The environment is the bootstrap/break-glass path only:
+`ADMIN_LOGIN_ACCOUNTS` (`mobile:code,…`) or `ADMIN_LOGIN_MOBILE` + shared
+`ADMIN_LOGIN_ACCESS_CODE`; the forms merge, a number with two different codes is
+dropped, and the typed code is compared against THAT number's code only — this
+is how the first master admin gets in. Step 1 (number only) no longer says
+whether a number is an operator, so the screen cannot enumerate them. Codes
+are never logged or returned. A correct code sets a 15-minute
 signed httpOnly pass bound to that number, and `completeOperatorPhoneSignIn`
 refuses a verified SMS without it, because Firebase sends the SMS from the
 browser and the server cannot stop that call itself. Both refusals say the same
 thing, and both are rate-limited per address and per number. With either value
-unset, operator sign-in is refused (fails closed). **Every operator, agents
-included, needs their number in the gate AND an operator row** (Admin → Agents);
-a gate-authorised number with no row is told so after the SMS code.
+unset and no operator row with a code, operator sign-in is refused (fails
+closed). An env-authorised number with no operator row is told so after the SMS
+code.
 
 **First master-admin sign-in.** The seeded `agt_master` has no `phone_e164`, so
 no verified number could ever match it. That was the production failure. When
@@ -2198,13 +2219,19 @@ for weeks. Every level goes through `redact()`.
   size; the selfie step opens the device camera through `getUserMedia`, with an
   `<input capture>` fallback because `mediaDevices` does not exist on an insecure
   origin — which is every phone testing a LAN address. The person types their
-  document number and **only its last four characters leave the browser**; the
-  server composes the mask.
+  document number; the server validates it and stores only the mask.
 
   **Uploads are OPTIONAL (client decision, 2026-10)** — a submission needs a
-  verified mobile number, the onboarding profile, date of birth and the
-  document type + last four characters; the document photo/PDF and the live
-  photo are each optional (`kycFileReferencesRefusal`, pure and tested). A file
+  verified mobile number, the legal name, a date of birth at least 18 years
+  before today (IST, never in the future) and the document type + number,
+  validated per type (Aadhaar 12 digits + Verhoeff, PAN, Indian passport,
+  Indian driving-licence layouts, other ID 4–20 characters) by
+  `@/lib/kyc-identity` on the form AND again in `submitKycAction`. The full
+  number reaches the server for that check and only its mask
+  (`•••• •••• 1234`) is stored — never logged; Aadhaar may not be stored in
+  full. The document photo/PDF and the live photo are each optional
+  (`kycFileReferencesRefusal`, pure and tested); without a document store the
+  photo steps are not shown. A file
   that IS referenced must be a whole, verified upload: each storage key is
   bound to its kind, a selfie must be an image, and sizes and types are taken
   from storage after upload. A case without files carries `no_document_uploaded`

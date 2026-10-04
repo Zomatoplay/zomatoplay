@@ -1,0 +1,1 @@
+ALTER TABLE "admin_agents" ADD COLUMN "access_code_hash" text;

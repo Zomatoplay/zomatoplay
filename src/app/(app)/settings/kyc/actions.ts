@@ -23,10 +23,18 @@ import {
   kycFileReferencesRefusal,
 } from "@/server/services/kyc-policy";
 import {
+  KycError,
   startKyc,
   submitKyc,
   type KycUploadedDocument,
 } from "@/server/services/kyc-write.service";
+import {
+  dateOfBirthRefusal,
+  documentNumberRefusal,
+  isKycDocumentType,
+  maskDocumentNumber,
+  type KycDocumentType,
+} from "@/lib/kyc-identity";
 import type { Actor } from "@/server/write";
 
 /**
@@ -55,17 +63,27 @@ import type { Actor } from "@/server/write";
  * naming the reason — which is how the CRM already surfaces "a provider would
  * have told you something here and did not".
  *
- * THE DOCUMENT NUMBER ARRIVES ALREADY REDUCED
- * -------------------------------------------
- * The client sends four characters, not a number to be masked here. The
- * difference matters: a full identity number in a request body exists in a
- * process, possibly in an error, and possibly in a log, whatever the database
- * eventually stores. Four characters cannot leak a document number because
- * they are not one.
+ * THE DOCUMENT NUMBER IS VALIDATED HERE, AND ONLY ITS MASK IS KEPT
+ * ----------------------------------------------------------------
+ * It used to arrive as four characters, which kept the number out of the
+ * process but meant no server could check it — any four characters were a
+ * "document number". The full number now arrives (over TLS), is checked
+ * against its type's format (`@/lib/kyc-identity`, the same rules the form
+ * uses), and is reduced to its mask before anything is written. It is never
+ * put in a log, a pipeline event, an error or a response: the metadata below
+ * names its type only.
+ *
+ * UNEXPECTED FAILURES CARRY A REFERENCE
+ * -------------------------------------
+ * A refusal the person can fix (a field, "already under review") is shown as
+ * is. Anything else is described generically with the request's correlation
+ * id as `reference`, which is the key to the real error in the system log.
  */
 export interface KycActionResult {
   ok: boolean;
   message: string;
+  /** Set on unexpected failures only: what support searches the system log for. */
+  reference?: string;
   submissionId?: string;
   /** Ties this click to its rows in the CRM's system log. */
   correlationId?: string;
@@ -76,12 +94,13 @@ export interface KycSubmissionInput {
   dateOfBirth: string;
   nationality?: string;
   address?: string;
-  documentType: "passport" | "national_id" | "driving_licence" | "aadhaar" | "pan";
-  /** The last four characters of the document number. Never the whole thing. */
-  documentNumberLast4: string;
+  documentType: KycDocumentType;
+  /** The whole number as typed; validated, masked, and never stored or logged. */
+  documentNumber: string;
 
   /*
-   * BOTH FILES ARE REQUIRED (`@/server/services/kyc-policy`).
+   * BOTH FILES ARE OPTIONAL (`@/server/services/kyc-policy`), but one that is
+   * referenced must be a real upload.
    *
    * Each is a storage key the server issued for this account and this kind of
    * file, plus the display filename. The key is checked against the session's
@@ -98,9 +117,6 @@ export interface KycSubmissionInput {
   selfieFileName?: string;
   selfiePath?: string;
 }
-
-/** The document types the schema's enum accepts. Anything else is refused. */
-const DOCUMENT_TYPES = new Set(["passport", "national_id", "driving_licence", "aadhaar", "pan"]);
 
 /**
  * A filename safe to store and to show an operator.
@@ -151,21 +167,19 @@ async function resolveKycSubmission(
   /* ---------------------------------------------------------------- */
   /* Identity fields — required at every policy setting                */
   /* ---------------------------------------------------------------- */
-  const legalName = input.legalName.trim();
-  if (legalName.length < 2) {
+  const legalName = String(input.legalName ?? "").trim();
+  if (legalName.length < 2 || legalName.length > 120) {
     return reject("Enter your full legal name.", correlationId);
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.dateOfBirth)) {
-    return reject("Enter your date of birth.", correlationId);
-  }
-  if (!DOCUMENT_TYPES.has(input.documentType)) {
+  const dateOfBirth = String(input.dateOfBirth ?? "");
+  const dobRefusal = dateOfBirthRefusal(dateOfBirth);
+  if (dobRefusal) return reject(dobRefusal, correlationId);
+  if (!isKycDocumentType(input.documentType)) {
     return reject("Choose a document type.", correlationId);
   }
-
-  const last4 = input.documentNumberLast4.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-  if (last4.length !== 4) {
-    return reject("Enter your document number.", correlationId);
-  }
+  const documentNumber = String(input.documentNumber ?? "");
+  const numberRefusal = documentNumberRefusal(input.documentType, documentNumber);
+  if (numberRefusal) return reject(numberRefusal, correlationId);
 
   // The mobile number is required, and it must be the one verified by OTP.
   if (!account.phoneE164) {
@@ -237,14 +251,14 @@ async function resolveKycSubmission(
       userId: account.userId,
       errorMessage: describeError(error),
     });
-    return {
-      ok: false,
-      correlationId,
-      message:
-        error instanceof KycStorageError
-          ? error.message
-          : "Your documents could not be verified. Try uploading them again.",
-    };
+    return error instanceof KycStorageError
+      ? { ok: false, correlationId, message: error.message }
+      : {
+          ok: false,
+          correlationId,
+          reference: correlationId,
+          message: "Your photos could not be checked. Remove them and submit, or try again.",
+        };
   }
 
   const actor: Actor = {
@@ -276,13 +290,12 @@ async function resolveKycSubmission(
           {
             userId: account.userId,
             legalName,
-            dateOfBirth: input.dateOfBirth,
+            dateOfBirth,
             nationality: input.nationality,
             address: input.address,
             documentType: input.documentType,
-            // Composed here, from four characters. The full number was never
-            // sent and does not exist in this process.
-            documentNumberMasked: `•••• •••• ${last4}`,
+            // Only the mask leaves this function; the full number is dropped.
+            documentNumberMasked: maskDocumentNumber(documentNumber),
             document,
             selfie,
           },
@@ -322,7 +335,16 @@ async function resolveKycSubmission(
       errorMessage: describeError(error),
       metadata: { errorCategory: failure.category, ...errorDiagnostics(error) },
     });
-    return { ok: false, message: failure.message, correlationId };
+    // A refusal written for the person (KycError) is shown as is; anything
+    // else gets the generic sentence and a reference into the system log.
+    return failure.category === "VALIDATION_ERROR" || error instanceof KycError
+      ? { ok: false, message: failure.message, correlationId }
+      : {
+          ok: false,
+          message: "Unable to submit your verification right now. Please try again.",
+          reference: correlationId,
+          correlationId,
+        };
   }
 }
 
@@ -417,4 +439,49 @@ export async function createKycUploadTargetAction(input: {
           : "Could not prepare the upload. Try again.",
     };
   }
+}
+
+/**
+ * The browser's report that a direct upload to storage failed.
+ *
+ * The PUT goes from the browser straight to S3, so a failure there — most
+ * often the bucket's CORS rule not allowing this site's origin, which looks
+ * to the browser like a dropped connection — never reaches this server and
+ * would leave no trace. This records it (stage and HTTP status only: no key,
+ * no URL, no file) and returns the correlation id as the reference the
+ * person can quote.
+ */
+export async function reportKycUploadProblemAction(input: {
+  kind: "document" | "selfie";
+  stage: "prepare" | "put" | "timeout";
+  httpStatus?: number;
+}): Promise<{ reference: string }> {
+  return traceAction(
+    { name: "kyc.upload_problem", actorType: "user", pipeline: "kyc" },
+    () => recordUploadProblem(input),
+  );
+}
+
+async function recordUploadProblem(input: {
+  kind: "document" | "selfie";
+  stage: "prepare" | "put" | "timeout";
+  httpStatus?: number;
+}): Promise<{ reference: string }> {
+  const correlationId = currentCorrelationId();
+  const account = await getUsableAccount().catch(() => null);
+  const kind = input?.kind === "selfie" ? "selfie" : "document";
+  const stage = ["prepare", "put", "timeout"].includes(input?.stage) ? input.stage : "put";
+  const httpStatus = Number.isInteger(input?.httpStatus) ? Number(input.httpStatus) : 0;
+  recordPipelineEvent({
+    pipeline: "kyc",
+    operation: "kyc.upload.failed",
+    status: "failed",
+    message:
+      stage === "put" && httpStatus === 0
+        ? "Browser could not reach S3 for the upload (check the bucket CORS rule for this origin)"
+        : `KYC ${kind} upload failed at ${stage}${httpStatus ? ` (HTTP ${httpStatus})` : ""}`,
+    userId: account?.userId,
+    metadata: { kind, stage, httpStatus },
+  });
+  return { reference: correlationId };
 }

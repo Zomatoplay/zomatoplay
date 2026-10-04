@@ -6,7 +6,10 @@ import { Camera, RotateCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { prepareKycImage, type KycImageKind } from "@/lib/image-compress";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
-import { createKycUploadTargetAction } from "@/app/(app)/settings/kyc/actions";
+import {
+  createKycUploadTargetAction,
+  reportKycUploadProblemAction,
+} from "@/app/(app)/settings/kyc/actions";
 import type { KycUploadMode } from "@/types";
 
 /**
@@ -85,7 +88,7 @@ function describeCameraError(error: unknown): {
     return {
       phase: "denied",
       message:
-        "Camera access was blocked. Allow it for this site in your browser settings, or use the photo option below.",
+        "Camera access was blocked. Allow it in your browser settings, or tap Camera to use the camera app.",
     };
   }
   if (name === "NotFoundError" || name === "OverconstrainedError") {
@@ -119,6 +122,14 @@ export function SelfieCapture({
   const streamRef = useRef<MediaStream | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [problem, setProblem] = useState<string | null>(null);
+  const [preferNative, setPreferNative] = useState(false);
+
+  useEffect(() => {
+    setPreferNative(
+      window.matchMedia?.("(pointer: coarse)").matches === true ||
+        !navigator.mediaDevices?.getUserMedia,
+    );
+  }, []);
 
   const stop = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -138,11 +149,7 @@ export function SelfieCapture({
     // address — see the note at the top of this file.
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       setPhase("unsupported");
-      setProblem(
-        window.isSecureContext === false
-          ? "Live camera preview needs a secure (https) connection. Use the photo option below."
-          : "This browser does not support the live camera preview. Use the photo option below.",
-      );
+      setProblem(null);
       return;
     }
 
@@ -203,7 +210,7 @@ export function SelfieCapture({
         <img
           src={value.previewUrl}
           alt="The selfie you captured"
-          className="mx-auto max-h-64 w-full rounded-xl border border-border object-cover"
+          className="mx-auto max-h-48 w-auto rounded-xl border border-border object-cover"
         />
         <Button
           type="button"
@@ -233,11 +240,8 @@ export function SelfieCapture({
           playsInline
           muted
           autoPlay
-          className="mx-auto max-h-72 w-full scale-x-[-1] rounded-xl border border-border bg-black object-cover"
+          className="mx-auto max-h-60 w-full scale-x-[-1] rounded-xl border border-border bg-black object-cover"
         />
-        <p className="text-center text-xs text-muted-foreground">
-          Look straight at the camera in good light, then capture.
-        </p>
         <div className="flex gap-2">
           <Button type="button" variant="brand" size="lg" className="flex-1" onClick={capture}>
             <Camera className="size-4" aria-hidden />
@@ -260,41 +264,42 @@ export function SelfieCapture({
     );
   }
 
+  // On a phone, the OS camera app is the better camera: full resolution, its
+  // own permission handling, and it works in in-app browsers that block
+  // `getUserMedia`. The live preview is for laptops and desktops.
+  if (preferNative || phase === "denied" || phase === "unsupported") {
+    return (
+      <div className="space-y-2">
+        <FilePhotoButton
+          label="Camera"
+          icon={Camera}
+          variant="brand"
+          kind="selfie"
+          capture="user"
+          onFile={onCapture}
+          onProblem={setProblem}
+        />
+        {problem ? (
+          <p className="text-xs leading-relaxed text-muted-foreground" role="status">
+            {problem}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-3">
-      <Button
-        type="button"
-        variant="brand"
-        size="lg"
-        block
-        disabled={phase === "starting"}
-        onClick={start}
-      >
-        <Camera className="size-4" aria-hidden />
-        {phase === "starting" ? "Opening camera…" : "Open camera"}
-      </Button>
-
-      {problem ? (
-        <p className="text-xs leading-relaxed text-muted-foreground" role="status">
-          {problem}
-        </p>
-      ) : null}
-
-      {/*
-        Always offered, not only after a failure.
-
-        On an in-app browser (Instagram, some Android WebViews) `getUserMedia`
-        can be present and still never resolve, so a fallback reachable only
-        from the error path is a fallback nobody reaches.
-      */}
-      <FilePhotoButton
-        label="Take a photo with the camera app"
-        kind="selfie"
-        capture="user"
-        onFile={onCapture}
-        onProblem={setProblem}
-      />
-    </div>
+    <Button
+      type="button"
+      variant="brand"
+      size="lg"
+      block
+      disabled={phase === "starting"}
+      onClick={start}
+    >
+      <Camera className="size-4" aria-hidden />
+      {phase === "starting" ? "Opening camera…" : "Camera"}
+    </Button>
   );
 }
 
@@ -354,6 +359,8 @@ export function FilePhotoButton({
   kind,
   capture,
   accept = "image/*",
+  variant = "outline",
+  icon: Icon,
   onFile,
   onProblem,
 }: {
@@ -361,6 +368,8 @@ export function FilePhotoButton({
   kind: KycImageKind;
   capture?: "user" | "environment";
   accept?: string;
+  variant?: "outline" | "brand";
+  icon?: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
   onFile: (image: CapturedImage) => void;
   onProblem?: (message: string) => void;
 }) {
@@ -400,12 +409,13 @@ export function FilePhotoButton({
       />
       <Button
         type="button"
-        variant="outline"
+        variant={variant}
         size="lg"
         block
         disabled={preparing}
         onClick={() => inputRef.current?.click()}
       >
+        {Icon && !preparing ? <Icon className="size-4" aria-hidden /> : null}
         {preparing ? "Preparing photo…" : label}
       </Button>
     </>
@@ -511,7 +521,7 @@ async function uploadToS3(
     throw new UploadError(target.message ?? "Could not prepare the upload. Try again.");
   }
 
-  const status = await new Promise<number>((resolve, reject) => {
+  const outcome = await new Promise<{ status: number; timedOut?: boolean }>((resolve) => {
     const request = new XMLHttpRequest();
     request.open("PUT", target.url as string);
     for (const [name, value] of Object.entries(target.headers ?? {})) {
@@ -520,15 +530,29 @@ async function uploadToS3(
     request.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) onProgress?.(event.loaded / event.total);
     };
-    request.onload = () => resolve(request.status);
-    request.onerror = () => reject(new UploadError("The upload failed. Check your connection and try again."));
-    request.ontimeout = () => reject(new UploadError("The upload timed out. Check your connection and try again."));
+    request.onload = () => resolve({ status: request.status });
+    // Status 0: the browser refused or lost the request. With S3 reachable
+    // from the server, that is almost always the bucket's CORS rule.
+    request.onerror = () => resolve({ status: 0 });
+    request.ontimeout = () => resolve({ status: 0, timedOut: true });
     request.timeout = 120_000;
     request.send(image.blob);
   });
 
-  if (status < 200 || status >= 300) {
-    throw new UploadError("The upload was refused. Try again, or choose a different file.");
+  if (outcome.status < 200 || outcome.status >= 300) {
+    // Recorded server-side so the failure is visible in the system log,
+    // with a reference the person can quote. Never blocks on its own failure.
+    const report = await reportKycUploadProblemAction({
+      kind,
+      stage: outcome.timedOut ? "timeout" : "put",
+      httpStatus: outcome.status,
+    }).catch(() => null);
+    const reference = report?.reference ? ` Reference: ${report.reference}` : "";
+    throw new UploadError(
+      outcome.timedOut
+        ? `The upload timed out. Try again, or remove the photo and submit without it.${reference}`
+        : `Your photo couldn't be uploaded. Try again, or remove the photo and submit without it.${reference}`,
+    );
   }
   onProgress?.(1);
   return target.key;

@@ -16,14 +16,7 @@ import { SectionHeader } from "@/components/shared/section-header";
 import { EarningsBreakdown } from "@/components/wallet/earnings-breakdown";
 import { TransactionBrowser } from "@/components/wallet/transaction-browser";
 import { DepositConfirmation } from "@/components/wallet/deposit-confirmation";
-import { PlatformInfo } from "@/components/wallet/platform-info";
 import { WalletOverview } from "@/components/wallet/wallet-overview";
-import { getActiveDepositAddress } from "@/server/services/deposit-settings.service";
-import {
-  getPlatformFinance,
-  getSupportEmail,
-  getSupportTelegramUrl,
-} from "@/server/services/catalogue.service";
 import { getNewDepositsAction } from "@/app/(app)/wallet/deposit/actions";
 import {
   getEarningsSummary,
@@ -38,6 +31,12 @@ export const metadata: Metadata = {
 
 /**
  * The wallet's structure renders immediately; every figure on it waits.
+ *
+ * No deposit address and no support block here (client decision, 2026-10):
+ * the address belongs to Add funds, where a deposit request quotes the exact
+ * amount that lets a transfer be matched. An address on the overview invited
+ * transfers with no request behind them. The withdrawal fee is quoted on the
+ * withdrawal screen; support lives in Settings → Help centre.
  *
  * WHAT IS AND IS NOT ALLOWED TO BE LATE HERE
  * ------------------------------------------
@@ -65,13 +64,6 @@ export default function WalletPage() {
         <Suspense fallback={<BalanceSkeleton />}>
           <WalletOverviewSection />
         </Suspense>
-
-        <section className="space-y-3">
-          <SectionHeader title="Rates, fees & support" />
-          <SectionBoundary title="Rates, fees & support" fallback={<CardSkeleton lines={3} />}>
-            <PlatformInfoSection />
-          </SectionBoundary>
-        </section>
 
         <section className="space-y-3">
           <SectionHeader title="Earnings" />
@@ -142,29 +134,6 @@ async function DepositConfirmationSection() {
     <DepositConfirmation
       deposits={newDeposits.deposits}
       availableUsdt={newDeposits.availableUsdt}
-    />
-  );
-}
-
-/**
- * The administrator's current rates, fee, deposit address and support contacts.
- * Cross-request cached configuration (the catalogue cache) plus the one deposit
- * address read; read-only for the customer.
- */
-async function PlatformInfoSection() {
-  const [finance, address, supportEmail, telegramUrl] = await Promise.all([
-    getPlatformFinance(),
-    getActiveDepositAddress().catch(() => null),
-    getSupportEmail(),
-    getSupportTelegramUrl(),
-  ]);
-  return (
-    <PlatformInfo
-      finance={finance}
-      depositAddress={address?.address ?? null}
-      network={address ? (address.network === "mainnet" ? "TRON" : address.network) : null}
-      supportEmail={supportEmail}
-      telegramUrl={telegramUrl}
     />
   );
 }
